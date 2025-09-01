@@ -7,13 +7,16 @@
   "scripts": {
     "build": "tsc --build",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "setup": "tsx scripts/setup.ts"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "inquirer": "^8.2.7",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "uuid": "^11.1.0"
   },
   "dependencies": {
     "axios": "^1.11.0",

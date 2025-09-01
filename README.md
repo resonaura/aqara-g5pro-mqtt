@@ -34,7 +34,7 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
   - SD Card Status
 - Automatic state synchronization after any command.
 - Logging with emoji for clarity.
-- Auto-generation of `.env.example` from schema in development mode.
+- Guided setup with `npm run setup` (generates your `.env`).
 
 ---
 
@@ -47,46 +47,48 @@ git clone https://github.com/resonaura/aqara-g5pro-mqtt.git
 cd aqara-g5pro-mqtt
 npm install
 
-# Create your .env file based on the example and fill in your credentials
-cp .env.example .env
-# then edit .env with your Aqara and MQTT details
+# Run setup wizard to generate .env
+npm run setup
 
 npm run build
 npm start
-```
+````
 
 ### Run with Docker
-
-Build and start using `docker compose`:
 
 ```bash
 git clone https://github.com/resonaura/aqara-g5pro-mqtt.git
 cd aqara-g5pro-mqtt
+npm install
 
-# Create your .env file based on the example and fill in your credentials
-cp .env.example .env
-# then edit .env with your Aqara and MQTT details
+# Run setup wizard once on the host to generate .env
+npm run setup
 
 docker compose up --build -d
 ```
 
-⚠️ **Note:** The container requires a valid `.env` file. Make sure you create it from `.env.example` and update it with your own Aqara and MQTT configuration before running `docker compose up`.
+⚠️ **Note:** The container requires a valid `.env` file.
+You can generate it automatically via `npm run setup` before starting Docker.
 
 ---
 
 ## ⚙️ Configuration
 
 All settings are provided via `.env`.
-An `.env.example` file is automatically generated in development.
+The setup wizard (`npm run setup`) asks for:
 
-Example:
+* Aqara account (username, password, region)
+* MQTT broker URL, username, password
+* Device selection from your Aqara account
+
+Example of generated `.env`:
 
 ```env
 NODE_ENV=production
 AQUARA_URL=https://aiot-rpc-usa.aqara.com
-APPID=your_appid
-TOKEN=your_token
-SUBJECT_ID=lumi3.your_device_id
+APPID=444c476ef7135e53330f46e7
+TOKEN=xxxxxxxxxxxxxxxxxxxx
+SUBJECT_ID=lumi3.a5e395b63ce5e6de
 MQTT_URL=mqtt://192.168.1.100:1883
 MQTT_USER=hauser
 MQTT_PASS=hasecret
@@ -124,6 +126,8 @@ docker compose logs -f aqara-g5pro-mqtt
 2. Publishes entity configs using MQTT Discovery.
 3. Polls the camera periodically (default every 5s).
 4. Commands from Home Assistant → forwarded to Aqara → updated states are published instantly.
+
+---
 
 ## 📜 License
 
