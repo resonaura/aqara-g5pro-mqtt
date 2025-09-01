@@ -8,9 +8,6 @@ services:
     env_file: .env
     environment:
       - NODE_ENV=production
-    # optional: bind mount for live dev
-    volumes:
-      - .:/usr/src/app
     depends_on: []
     networks:
       - default
