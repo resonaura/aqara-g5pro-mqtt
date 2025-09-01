@@ -38,6 +38,13 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
 
 ---
 
+## 🛠 Requirements
+
+- Node.js **≈22.x** (tested on v22.16.0)  
+- Running MQTT broker (Mosquitto, EMQX, or Home Assistant MQTT add-on)
+
+---
+
 ## 🚀 Installation
 
 ### Clone & run locally
