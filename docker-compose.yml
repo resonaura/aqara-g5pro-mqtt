@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   aqara-g5pro-mqtt:
     build: .
@@ -8,6 +6,4 @@ services:
     env_file: .env
     environment:
       - NODE_ENV=production
-    depends_on: []
-    networks:
-      - default
+    network_mode: host
