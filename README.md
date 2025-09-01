@@ -43,7 +43,7 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
 ### Clone & run locally
 
 ```bash
-git clone https://gitlab.com/yourname/aqara-g5pro-mqtt-bridge.git
+git clone https://gitlab.com/resonaura/aqara-g5pro-mqtt-bridge.git
 cd aqara-g5pro-mqtt-bridge
 npm install
 npm run build
