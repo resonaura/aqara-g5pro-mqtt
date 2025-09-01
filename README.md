@@ -70,6 +70,8 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
+⚠️ **Note:** The container requires a valid `.env` file. Make sure you create it from `.env.example` and update it with your own Aqara and MQTT configuration before running `docker compose up`.
+
 **docker-compose.yml (MQTT broker not included):**
 
 ```yaml
