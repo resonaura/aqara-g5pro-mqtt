@@ -1,0 +1,24 @@
+{
+  "name": "aqara-g5pro-mqtt",
+  "description": "MQTT bridge for integrating Aqara G5 Pro with Home Assistant",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "axios": "^1.11.0",
+    "dotenv": "^17.2.1",
+    "mqtt": "^5.14.0",
+    "zod": "^3.25.76"
+  }
+}
