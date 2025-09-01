@@ -46,6 +46,11 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
 git clone https://github.com/resonaura/aqara-g5pro-mqtt.git
 cd aqara-g5pro-mqtt
 npm install
+
+# Create your .env file based on the example and fill in your credentials
+cp .env.example .env
+# then edit .env with your Aqara and MQTT details
+
 npm run build
 npm start
 ```
@@ -57,6 +62,11 @@ Build and start using `docker compose`:
 ```bash
 git clone https://github.com/resonaura/aqara-g5pro-mqtt.git
 cd aqara-g5pro-mqtt
+
+# Create your .env file based on the example and fill in your credentials
+cp .env.example .env
+# then edit .env with your Aqara and MQTT details
+
 docker compose up --build -d
 ```
 
