@@ -1,21 +1,20 @@
 import { EntityConfig, MQTTDevice } from "./types.js";
 import { MqttClient } from "mqtt";
 
-export function publishDiscovery(
+function publishDiscoveryEntity(
   client: MqttClient,
   mqttDevice: MQTTDevice,
-  entity: EntityConfig
+  entity: EntityConfig,
+  overrides: Record<string, any> = {}
 ) {
   const objectId = entity.attr;
-  const discoveryTopic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${objectId}/config`;
-  console.log(discoveryTopic);
+  const baseTopic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${objectId}`;
+
   const payload = {
-    name: `${entity.name}`,
-    unique_id: `${objectId}`,
-    state_topic: `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${objectId}/state`,
-    command_topic: entity.command
-      ? `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${objectId}/set`
-      : undefined,
+    name: entity.name,
+    unique_id: objectId,
+    state_topic: `${baseTopic}/state`,
+    command_topic: entity.command ? `${baseTopic}/set` : undefined,
     icon: entity.icon,
     device: {
       identifiers: mqttDevice.identifiers,
@@ -23,37 +22,43 @@ export function publishDiscovery(
       model: mqttDevice.model,
       name: mqttDevice.name,
     },
+    ...overrides,
   };
 
-  client.publish(discoveryTopic, JSON.stringify(payload), { retain: true });
+  client.publish(`${baseTopic}/config`, JSON.stringify(payload), {
+    retain: true,
+  });
+}
+
+export function publishDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice,
+  entity: EntityConfig
+) {
+  publishDiscoveryEntity(client, mqttDevice, entity);
 }
 
 export function publishLightDiscovery(
   client: MqttClient,
   mqttDevice: MQTTDevice
 ) {
-  const payload = {
-    name: "Spotlight",
-    unique_id: "spotlight",
-    schema: "json",
-    command_topic: `homeassistant/light/${mqttDevice._simpleModel}/spotlight/set`,
-    state_topic: `homeassistant/light/${mqttDevice._simpleModel}/spotlight/state`,
-    brightness: true,
-    icon: "mdi:lightbulb",
-    device: {
-      identifiers: mqttDevice.identifiers,
-      manufacturer: mqttDevice.manufacturer,
-      model: mqttDevice.model,
-      name: mqttDevice.name,
+  publishDiscoveryEntity(
+    client,
+    mqttDevice,
+    {
+      domain: "light",
+      name: "Spotlight",
+      attr: "spotlight",
+      icon: "mdi:lightbulb",
+      command: true,
     },
-  };
-
-  client.publish(
-    `homeassistant/light/${mqttDevice._simpleModel}/spotlight/config`,
-    JSON.stringify(payload),
-    { retain: true }
+    {
+      schema: "json",
+      brightness: true,
+    }
   );
-  console.log("💡 Published light discovery for Spotlight");
+
+  console.log("💡 Published discovery for Spotlight");
 }
 
 export function publishSdCardDiscovery(
@@ -67,26 +72,14 @@ export function publishSdCardDiscovery(
     { id: "sdcard_percent", name: "SD Card Used", unit: "%" },
   ];
 
-  sensors.forEach((s) => {
-    const payload = {
-      name: s.name,
-      unique_id: `${s.id}`,
-      state_topic: `homeassistant/sensor/${mqttDevice._simpleModel}/${s.id}/state`,
-      unit_of_measurement: s.unit,
-      icon: "mdi:sd",
-      device: {
-        identifiers: mqttDevice.identifiers,
-        manufacturer: mqttDevice.manufacturer,
-        model: mqttDevice.model,
-        name: mqttDevice.name,
-      },
-    };
+  sensors.forEach((s) =>
+    publishDiscoveryEntity(
+      client,
+      mqttDevice,
+      { domain: "sensor", name: s.name, attr: s.id, icon: "mdi:sd" },
+      { unit_of_measurement: s.unit }
+    )
+  );
 
-    client.publish(
-      `homeassistant/sensor/${mqttDevice._simpleModel}/${s.id}/config`,
-      JSON.stringify(payload),
-      { retain: true }
-    );
-    console.log(`💾 Published discovery for ${s.name}`);
-  });
+  console.log("💾 Published discovery for SD Card sensors");
 }

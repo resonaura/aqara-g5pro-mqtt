@@ -97,3 +97,21 @@ export async function generateEnvExample(path = ".env.example") {
   await writeFile(path, output);
   console.log(`Generated ${path}`);
 }
+
+export function normalizeValue(domain: string, attr: string, value: any): any {
+  if (domain === "switch" || domain === "binary_sensor") {
+    return value === "1" ? "ON" : "OFF";
+  }
+
+  if (attr === "device_battery_power") {
+    if (!value || value === "null" || value === "-1") return "unavailable";
+  }
+
+  if (attr === "work_mode") {
+    return { "0": "Day", "1": "Night", "2": "Auto" }[value] ?? value;
+  }
+
+  if (domain === "number") return Number(value);
+
+  return value;
+}

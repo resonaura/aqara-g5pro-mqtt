@@ -1,72 +1,50 @@
-import * as dotenv from "dotenv";
 import "./config.js";
 import { createMqttClient } from "./mqtt.js";
-import { publishDiscovery, publishLightDiscovery, publishSdCardDiscovery } from "./discovery.js";
+import {
+  publishDiscovery,
+  publishLightDiscovery,
+  publishSdCardDiscovery,
+} from "./discovery.js";
 import { ENTITIES } from "./entities.js";
-import { aqaraDeviceToMQTT, getDevice, queryAttrs, writeAttr } from "./aqara.js";
-import { generateEnvExample } from "./utils.js";
-
-dotenv.config();
+import {
+  aqaraDeviceToMQTT,
+  getDevice,
+  queryAttrs,
+  writeAttr,
+} from "./aqara.js";
+import { generateEnvExample, normalizeValue } from "./utils.js";
 
 if (process.env.NODE_ENV !== "production") {
-  await generateEnvExample(); // вот он, генератор
+  await generateEnvExample();
 }
 
 const subjectId = process.env.SUBJECT_ID!;
 const deviceInfo = await getDevice(subjectId);
 const mqttDevice = aqaraDeviceToMQTT(deviceInfo);
 
-console.log("🔧 Device Info:", deviceInfo);
-console.log("🔧 MQTT Device:", mqttDevice);
-
 const client = createMqttClient();
+const interval = Number(process.env.POLL_INTERVAL || 1) * 1000;
 
-const interval = parseInt(process.env.POLL_INTERVAL || "5", 10) * 1000;
-
-// ========== MQTT CONNECT ==========
+// === DISCOVERY ===
 client.on("connect", () => {
-  console.log("🚀 Connected to MQTT broker, publishing discovery configs...");
+  console.log("🚀 MQTT connected, publishing discovery...");
 
   ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
-  publishLightDiscovery(client, mqttDevice); // полноценный светильник
-  publishSdCardDiscovery(client, mqttDevice); // отдельные сенсоры SD карты
+  publishLightDiscovery(client, mqttDevice);
+  publishSdCardDiscovery(client, mqttDevice);
 
-  client.subscribe(`homeassistant/+/${mqttDevice._simpleModel}/+/set`, (err) => {
-    if (err) {
-      console.error("❌ Failed to subscribe:", err);
-    } else {
-      console.log("📡 Subscribed to HA command topics");
-    }
-  });
+  client.subscribe(`homeassistant/+/${mqttDevice._simpleModel}/+/set`);
 });
 
-// ========== HANDLE COMMANDS ==========
-client.on("message", async (topic, msg) => {
-  const value = msg.toString();
-  const parts = topic.split("/");
-  const domain = parts[1];
-  const attr = parts[3];
-
-  console.log(
-    `⬅️  HA → Command: domain=${domain}, attr=${attr}, value=${value}`
-  );
-
-  try {
-    if (domain === "switch") {
-      const aqaraValue = value === "ON" ? 1 : 0;
-      await writeAttr(attr, aqaraValue, subjectId);
-      console.log(`➡️ Aqara set ${attr}=${aqaraValue}`);
-      await pollSingle(attr);
-    }
-
-    if (domain === "number") {
-      const aqaraValue = parseInt(value, 10);
-      await writeAttr(attr, aqaraValue, subjectId);
-      console.log(`➡️ Aqara set ${attr}=${aqaraValue}`);
-      await pollSingle(attr);
-    }
-
-    if (domain === "light" && attr === "spotlight") {
+// === COMMAND HANDLERS ===
+const handlers: Record<string, (attr: string, value: string) => Promise<void>> =
+  {
+    switch: async (attr, value) =>
+      writeAttr(attr, value === "ON" ? 1 : 0, subjectId),
+    number: async (attr, value) =>
+      writeAttr(attr, parseInt(value, 10), subjectId),
+    light: async (attr, value) => {
+      if (attr !== "spotlight") return;
       const payload = JSON.parse(value);
       if (payload.state !== undefined) {
         await writeAttr(
@@ -79,187 +57,102 @@ client.on("message", async (topic, msg) => {
         const percent = Math.round((payload.brightness / 255) * 100);
         await writeAttr("white_light_level", percent, subjectId);
       }
-      console.log(`➡️ Aqara set Spotlight=${value}`);
-      await pollSingle("white_light_enable");
-    }
+    },
+  };
 
-    console.log("🔄 Status refreshed for", attr);
+client.on("message", async (topic, msg) => {
+  const [_, domain, __, attr] = topic.split("/");
+  const value = msg.toString();
+
+  console.log(`⬅️ HA → ${domain}.${attr}=${value}`);
+  try {
+    await handlers[domain]?.(attr, value);
+    await pollSingle(attr);
   } catch (err) {
-    console.error(`❌ Command failed:`, err);
+    console.error("❌ Command failed:", err);
   }
 });
 
-// ========== POLLING LOOP ==========
+// === POLLING ===
 async function poll() {
-  try {
-    const attrs = ENTITIES.map((e) => e.attr).concat([
-      "white_light_enable",
-      "white_light_level",
-    ]);
+  const attrs = ENTITIES.map((e) => e.attr).concat([
+    "white_light_enable",
+    "white_light_level",
+  ]);
+  const res = await queryAttrs(attrs, subjectId);
 
-    const res = await queryAttrs(attrs, subjectId);
-    const results = res.result || [];
-
-    console.log(`📡 Aqara → Received ${results.length} attributes`);
-
-    // Spotlight
-    const state = results.find(
-      (r: any) => r.attr === "white_light_enable"
-    )?.value;
-    const level = parseInt(
-      results.find((r: any) => r.attr === "white_light_level")?.value || "0",
-      10
-    );
-    publishLightState(state, level);
-
-    // Остальные сенсоры
-    results.forEach((r: any) => {
-      if (["white_light_enable", "white_light_level"].includes(r.attr)) return;
-      if (r.attr === "sdcard_status") {
-        publishSdCard(r.value);
-        return;
-      }
-
-      const entity = ENTITIES.find((e) => e.attr === r.attr);
-      if (!entity) return;
-
-      const topic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${r.attr}/state`;
-      const value = normalizeValue(entity.domain, r.attr, r.value);
-
-      client.publish(topic, String(value), { retain: true });
-      console.log(`📊 Aqara → Publish ${r.attr}=${value}`);
-    });
-  } catch (err) {
-    console.error("❌ Polling error:", err);
+  for (const r of res.result || []) {
+    await publishAttr(r.attr, r.value);
   }
 }
 
-// ========== POLL SINGLE ==========
 async function pollSingle(attr: string) {
-  try {
-    const res = await queryAttrs([attr], subjectId);
-    const result = res.result?.[0];
-    if (!result) return;
+  const res = await queryAttrs([attr], subjectId);
+  const result = res.result?.[0];
+  if (result) await publishAttr(result.attr, result.value, true);
+}
 
-    if (["white_light_enable", "white_light_level"].includes(attr)) {
-      const state = (
-        await queryAttrs(["white_light_enable", "white_light_level"], subjectId)
-      ).result;
-      const power = state.find(
-        (r: any) => r.attr === "white_light_enable"
-      )?.value;
-      const level = parseInt(
-        state.find((r: any) => r.attr === "white_light_level")?.value || "0",
-        10
+// === ATTRIBUTE PUBLISHER ===
+async function publishAttr(attr: string, rawValue: any, refreshed = false) {
+  if (["white_light_enable", "white_light_level"].includes(attr)) {
+    const [power, level] = await Promise.all([
+      queryAttrs(["white_light_enable"], subjectId),
+      queryAttrs(["white_light_level"], subjectId),
+    ]);
+    const state = power.result?.[0]?.value === "1" ? "ON" : "OFF";
+    const brightness = Math.round(
+      (Number(level.result?.[0]?.value || 0) / 100) * 255
+    );
+    client.publish(
+      `homeassistant/light/${mqttDevice._simpleModel}/spotlight/state`,
+      JSON.stringify({ state, brightness }),
+      { retain: true }
+    );
+    console.log(`${refreshed ? "🔄" : "💡"} Spotlight=${state}, ${brightness}`);
+    return;
+  }
+
+  if (attr === "sdcard_status") {
+    try {
+      const parsed = JSON.parse(rawValue);
+      const usedPercent = Math.round(
+        ((parsed.totalsize - parsed.freesize) / parsed.totalsize) * 100
       );
-      publishLightState(power, level, true);
-      return;
+      client.publish(
+        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_total/state`,
+        String(parsed.totalsize),
+        { retain: true }
+      );
+      client.publish(
+        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_free/state`,
+        String(parsed.freesize),
+        { retain: true }
+      );
+      client.publish(
+        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_status/state`,
+        String(parsed.sdstatus),
+        { retain: true }
+      );
+      client.publish(
+        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_percent/state`,
+        String(usedPercent),
+        { retain: true }
+      );
+    } catch {
+      console.error("❌ Failed to parse sdcard_status:", rawValue);
     }
-
-    if (result.attr === "sdcard_status") {
-      publishSdCard(result.value);
-      return;
-    }
-
-    const entity = ENTITIES.find((e) => e.attr === result.attr);
-    if (!entity) {
-      console.warn(`⚠️ pollSingle: no entity found for ${result.attr}`);
-      return;
-    }
-
-    const topic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${result.attr}/state`;
-    const value = normalizeValue(entity.domain, result.attr, result.value);
-
-    client.publish(topic, String(value), { retain: true });
-    console.log(`📊 Refreshed ${result.attr}=${value}`);
-  } catch (err) {
-    console.error(`❌ pollSingle(${attr}) failed:`, err);
+    return;
   }
+
+  const entity = ENTITIES.find((e) => e.attr === attr);
+  if (!entity) return;
+
+  const topic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${attr}/state`;
+  const value = normalizeValue(entity.domain, attr, rawValue);
+  client.publish(topic, String(value), { retain: true });
+  console.log(`📊 ${attr}=${value}`);
 }
 
-// ========== HELPERS ==========
-
-// Светильник (Spotlight)
-function publishLightState(state: string, level: number, refreshed = false) {
-  const lightPayload = {
-    state: state === "1" ? "ON" : "OFF",
-    brightness: Math.round((level / 100) * 255),
-  };
-
-  client.publish(
-    `homeassistant/light/${mqttDevice._simpleModel}/spotlight/state`,
-    JSON.stringify(lightPayload),
-    { retain: true }
-  );
-
-  const prefix = refreshed
-    ? "💡 Spotlight refreshed →"
-    : "💡 Spotlight state →";
-  console.log(`${prefix} ${JSON.stringify(lightPayload)}`);
-}
-
-// SD Card
-function publishSdCard(raw: string) {
-  try {
-    const parsed = JSON.parse(raw);
-    const used = parsed.totalsize - parsed.freesize;
-    const usedPercent = Math.round((used / parsed.totalsize) * 100);
-
-    client.publish(
-      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_total/state`,
-      String(parsed.totalsize),
-      { retain: true }
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_free/state`,
-      String(parsed.freesize),
-      { retain: true }
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_status/state`,
-      String(parsed.sdstatus),
-      { retain: true }
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_percent/state`,
-      String(usedPercent),
-      { retain: true }
-    );
-
-    console.log(
-      `💾 SD Card → total=${parsed.totalsize}MB free=${parsed.freesize}MB (${usedPercent}%) status=${parsed.sdstatus}`
-    );
-  } catch (e) {
-    console.error("❌ Failed to parse sdcard_status:", raw);
-  }
-}
-
-// Value normalization
-function normalizeValue(domain: string, attr: string, value: any): any {
-  if (domain === "switch" || domain === "binary_sensor") {
-    return value === "1" ? "ON" : "OFF";
-  }
-
-  if (attr === "device_battery_power") {
-    if (!value || value === "null" || value === "-1") return "unavailable";
-  }
-
-  if (attr === "work_mode") {
-    const mapping: Record<string, string> = {
-      "0": "Day",
-      "1": "Night",
-      "2": "Auto",
-    };
-    return mapping[value] ?? value;
-  }
-
-  if (domain === "number") {
-    return Number(value);
-  }
-
-  return value;
-}
-
-// ========== START ==========
+// === START ===
 setInterval(poll, interval);
 poll();
