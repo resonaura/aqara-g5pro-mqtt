@@ -1,9 +1,9 @@
 import * as dotenv from "dotenv";
 import "./config.js";
 import { createMqttClient } from "./mqtt.js";
-import { publishDiscovery } from "./discovery.js";
+import { publishDiscovery, publishLightDiscovery, publishSdCardDiscovery } from "./discovery.js";
 import { ENTITIES } from "./entities.js";
-import { queryAttrs, writeAttr } from "./aqara.js";
+import { aqaraDeviceToMQTT, getDevice, queryAttrs, writeAttr } from "./aqara.js";
 import { generateEnvExample } from "./utils.js";
 
 dotenv.config();
@@ -12,19 +12,26 @@ if (process.env.NODE_ENV !== "production") {
   await generateEnvExample(); // вот он, генератор
 }
 
-const client = createMqttClient();
 const subjectId = process.env.SUBJECT_ID!;
+const deviceInfo = await getDevice(subjectId);
+const mqttDevice = aqaraDeviceToMQTT(deviceInfo);
+
+console.log("🔧 Device Info:", deviceInfo);
+console.log("🔧 MQTT Device:", mqttDevice);
+
+const client = createMqttClient();
+
 const interval = parseInt(process.env.POLL_INTERVAL || "5", 10) * 1000;
 
 // ========== MQTT CONNECT ==========
 client.on("connect", () => {
   console.log("🚀 Connected to MQTT broker, publishing discovery configs...");
 
-  ENTITIES.forEach((e) => publishDiscovery(client, subjectId, e));
-  publishLightDiscovery(); // полноценный светильник
-  publishSdCardDiscovery(); // отдельные сенсоры SD карты
+  ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
+  publishLightDiscovery(client, mqttDevice); // полноценный светильник
+  publishSdCardDiscovery(client, mqttDevice); // отдельные сенсоры SD карты
 
-  client.subscribe("homeassistant/+/aqara_g5_pro/+/set", (err) => {
+  client.subscribe(`homeassistant/+/${mqttDevice._simpleModel}/+/set`, (err) => {
     if (err) {
       console.error("❌ Failed to subscribe:", err);
     } else {
@@ -116,7 +123,7 @@ async function poll() {
       const entity = ENTITIES.find((e) => e.attr === r.attr);
       if (!entity) return;
 
-      const topic = `homeassistant/${entity.domain}/aqara_g5_pro/${r.attr}/state`;
+      const topic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${r.attr}/state`;
       const value = normalizeValue(entity.domain, r.attr, r.value);
 
       client.publish(topic, String(value), { retain: true });
@@ -160,7 +167,7 @@ async function pollSingle(attr: string) {
       return;
     }
 
-    const topic = `homeassistant/${entity.domain}/aqara_g5_pro/${result.attr}/state`;
+    const topic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${result.attr}/state`;
     const value = normalizeValue(entity.domain, result.attr, result.value);
 
     client.publish(topic, String(value), { retain: true });
@@ -180,7 +187,7 @@ function publishLightState(state: string, level: number, refreshed = false) {
   };
 
   client.publish(
-    "homeassistant/light/aqara_g5_pro/spotlight/state",
+    `homeassistant/light/${mqttDevice._simpleModel}/spotlight/state`,
     JSON.stringify(lightPayload),
     { retain: true }
   );
@@ -199,22 +206,22 @@ function publishSdCard(raw: string) {
     const usedPercent = Math.round((used / parsed.totalsize) * 100);
 
     client.publish(
-      "homeassistant/sensor/aqara_g5_pro/sdcard_total/state",
+      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_total/state`,
       String(parsed.totalsize),
       { retain: true }
     );
     client.publish(
-      "homeassistant/sensor/aqara_g5_pro/sdcard_free/state",
+      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_free/state`,
       String(parsed.freesize),
       { retain: true }
     );
     client.publish(
-      "homeassistant/sensor/aqara_g5_pro/sdcard_status/state",
+      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_status/state`,
       String(parsed.sdstatus),
       { retain: true }
     );
     client.publish(
-      "homeassistant/sensor/aqara_g5_pro/sdcard_percent/state",
+      `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_percent/state`,
       String(usedPercent),
       { retain: true }
     );
@@ -251,64 +258,6 @@ function normalizeValue(domain: string, attr: string, value: any): any {
   }
 
   return value;
-}
-
-// ========== DISCOVERY HELPERS ==========
-function publishLightDiscovery() {
-  const payload = {
-    name: "Aqara G5 Pro Spotlight",
-    unique_id: "aqara_g5_pro_spotlight",
-    schema: "json",
-    command_topic: "homeassistant/light/aqara_g5_pro/spotlight/set",
-    state_topic: "homeassistant/light/aqara_g5_pro/spotlight/state",
-    brightness: true,
-    icon: "mdi:lightbulb",
-    device: {
-      identifiers: [subjectId],
-      manufacturer: "Aqara",
-      model: "Camera Hub G5 Pro",
-      name: "Aqara G5 Pro",
-    },
-  };
-
-  client.publish(
-    "homeassistant/light/aqara_g5_pro/spotlight/config",
-    JSON.stringify(payload),
-    { retain: true }
-  );
-  console.log("💡 Published light discovery for Spotlight");
-}
-
-function publishSdCardDiscovery() {
-  const sensors = [
-    { id: "sdcard_total", name: "SD Card Total", unit: "MB" },
-    { id: "sdcard_free", name: "SD Card Free", unit: "MB" },
-    { id: "sdcard_status", name: "SD Card Status" },
-    { id: "sdcard_percent", name: "SD Card Used", unit: "%" },
-  ];
-
-  sensors.forEach((s) => {
-    const payload = {
-      name: s.name,
-      unique_id: `aqara_g5_pro_${s.id}`,
-      state_topic: `homeassistant/sensor/aqara_g5_pro/${s.id}/state`,
-      unit_of_measurement: s.unit,
-      icon: "mdi:sd",
-      device: {
-        identifiers: [subjectId],
-        manufacturer: "Aqara",
-        model: "Camera Hub G5 Pro",
-        name: "Aqara G5 Pro",
-      },
-    };
-
-    client.publish(
-      `homeassistant/sensor/aqara_g5_pro/${s.id}/config`,
-      JSON.stringify(payload),
-      { retain: true }
-    );
-    console.log(`💾 Published discovery for ${s.name}`);
-  });
 }
 
 // ========== START ==========
