@@ -81,14 +81,6 @@ export const ENTITIES: EntityConfig[] = [
     command: true,
   },
   {
-    domain: "number",
-    name: "Report Interval",
-    attr: "report_status_sec",
-    icon: "mdi:timer",
-    command: true,
-    unit: "s",
-  },
-  {
     domain: "sensor",
     name: "WiFi RSSI",
     attr: "device_wifi_rssi",
