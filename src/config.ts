@@ -18,7 +18,7 @@ export const envSchema = z.object({
   MQTT_PASS: z.string().default(""),
 
   // General
-  POLL_INTERVAL: z.coerce.number().min(1).default(5), // секунд
+  POLL_INTERVAL: z.coerce.number().min(1).default(1), // секунд
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 

@@ -168,7 +168,7 @@ SUBJECT_ID=${subjectId}
 MQTT_URL=${mqttUrl}
 MQTT_USER=${mqttUser}
 MQTT_PASS=${mqttPass}
-POLL_INTERVAL=5
+POLL_INTERVAL=1
 LOG_LEVEL=info
 `;
 
