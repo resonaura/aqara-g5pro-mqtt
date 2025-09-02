@@ -1,9 +1,13 @@
 services:
-  aqara-g5pro-mqtt:
+  aqara:
     build: .
-    container_name: aqara-g5pro-mqtt
+    container_name: aqara
     restart: unless-stopped
     env_file: .env
     environment:
       - NODE_ENV=production
     network_mode: host
+    working_dir: /app
+    volumes:
+      - .:/app
+      - /app/node_modules
