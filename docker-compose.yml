@@ -7,6 +7,3 @@ services:
     environment:
       - NODE_ENV=production
     network_mode: host
-    working_dir: /app
-    volumes:
-      - /app/node_modules
