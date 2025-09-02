@@ -122,7 +122,7 @@ docker compose up -d
 Check logs:
 
 ```bash
-docker compose logs -f aqara-g5pro-mqtt
+docker compose logs -f aqara
 ```
 
 ---
