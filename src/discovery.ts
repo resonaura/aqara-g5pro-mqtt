@@ -16,6 +16,7 @@ export function publishDiscovery(
     command_topic: entity.command
       ? `homeassistant/${entity.domain}/aqara_g5_pro/${objectId}/set`
       : undefined,
+    icon: entity.icon,
     device: {
       identifiers: [deviceId],
       manufacturer: "Aqara",

@@ -262,6 +262,7 @@ function publishLightDiscovery() {
     command_topic: "homeassistant/light/aqara_g5_pro/spotlight/set",
     state_topic: "homeassistant/light/aqara_g5_pro/spotlight/state",
     brightness: true,
+    icon: "mdi:lightbulb",
     device: {
       identifiers: [subjectId],
       manufacturer: "Aqara",
@@ -292,6 +293,7 @@ function publishSdCardDiscovery() {
       unique_id: `aqara_g5_pro_${s.id}`,
       state_topic: `homeassistant/sensor/aqara_g5_pro/${s.id}/state`,
       unit_of_measurement: s.unit,
+      icon: "mdi:sd",
       device: {
         identifiers: [subjectId],
         manufacturer: "Aqara",
