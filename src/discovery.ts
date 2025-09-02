@@ -8,7 +8,7 @@ function publishDiscoveryEntity(
   overrides: Record<string, any> = {}
 ) {
   const objectId = entity.attr;
-  const baseTopic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${objectId}`;
+  const baseTopic = `homeassistant/${entity.domain}/${mqttDevice.id}/${objectId}`;
 
   const payload = {
     name: entity.name,

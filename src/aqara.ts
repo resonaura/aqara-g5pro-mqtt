@@ -42,7 +42,7 @@ export function aqaraDeviceToMQTT(device: Device): MQTTDevice {
     manufacturer: "Aqara",
     model: device.originalName,
     name: device.deviceName,
-    _simpleModel: device.model.replaceAll('.', '_')
+    id: device.did.replaceAll('.', '_')
   };
 }
 

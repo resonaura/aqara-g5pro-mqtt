@@ -33,7 +33,7 @@ client.on("connect", () => {
   publishLightDiscovery(client, mqttDevice);
   publishSdCardDiscovery(client, mqttDevice);
 
-  client.subscribe(`homeassistant/+/${mqttDevice._simpleModel}/+/set`);
+  client.subscribe(`homeassistant/+/${mqttDevice.id}/+/set`);
 });
 
 // === COMMAND HANDLERS ===
@@ -104,7 +104,7 @@ async function publishAttr(attr: string, rawValue: any, refreshed = false) {
       (Number(level.result?.[0]?.value || 0) / 100) * 255
     );
     client.publish(
-      `homeassistant/light/${mqttDevice._simpleModel}/spotlight/state`,
+      `homeassistant/light/${mqttDevice.id}/spotlight/state`,
       JSON.stringify({ state, brightness }),
       { retain: true }
     );
@@ -119,22 +119,22 @@ async function publishAttr(attr: string, rawValue: any, refreshed = false) {
         ((parsed.totalsize - parsed.freesize) / parsed.totalsize) * 100
       );
       client.publish(
-        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_total/state`,
+        `homeassistant/sensor/${mqttDevice.id}/sdcard_total/state`,
         String(parsed.totalsize),
         { retain: true }
       );
       client.publish(
-        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_free/state`,
+        `homeassistant/sensor/${mqttDevice.id}/sdcard_free/state`,
         String(parsed.freesize),
         { retain: true }
       );
       client.publish(
-        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_status/state`,
+        `homeassistant/sensor/${mqttDevice.id}/sdcard_status/state`,
         String(parsed.sdstatus),
         { retain: true }
       );
       client.publish(
-        `homeassistant/sensor/${mqttDevice._simpleModel}/sdcard_percent/state`,
+        `homeassistant/sensor/${mqttDevice.id}/sdcard_percent/state`,
         String(usedPercent),
         { retain: true }
       );
@@ -147,7 +147,7 @@ async function publishAttr(attr: string, rawValue: any, refreshed = false) {
   const entity = ENTITIES.find((e) => e.attr === attr);
   if (!entity) return;
 
-  const topic = `homeassistant/${entity.domain}/${mqttDevice._simpleModel}/${attr}/state`;
+  const topic = `homeassistant/${entity.domain}/${mqttDevice.id}/${attr}/state`;
   const value = normalizeValue(entity.domain, attr, rawValue);
   client.publish(topic, String(value), { retain: true });
   console.log(`📊 ${attr}=${value}`);

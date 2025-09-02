@@ -61,5 +61,5 @@ export interface MQTTDevice {
   manufacturer: string;
   model: string;
   name: string;
-  _simpleModel: string;
+  id: string;
 }
