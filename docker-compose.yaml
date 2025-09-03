@@ -1,6 +1,6 @@
 services:
   aqara:
-    build: ./app
+    build: .
     container_name: aqara
     restart: unless-stopped
     env_file: ./app/.env
