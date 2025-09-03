@@ -3,7 +3,7 @@ FROM node:22.16.0-slim AS build
 
 WORKDIR /app
 
-RUN ls
+CMD ["ls"]
 
 COPY package*.json ./
 RUN npm install
