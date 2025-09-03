@@ -1,0 +1,10 @@
+# We need to specify these explicitly otherwise :latest will be
+# used by the builder, and that will fail the cosign chain of trust.
+# This should probably be kept in sync with the settings in
+# https://github.com/home-assistant/builder/blob/master/build.yaml
+build_from:
+  aarch64: "ghcr.io/home-assistant/aarch64-base-debian:bookworm"
+  armv7: "ghcr.io/home-assistant/armv7-base-debian:bookworm"
+  armhf: "ghcr.io/home-assistant/armhf-base-debian:bookworm"
+  amd64: "ghcr.io/home-assistant/amd64-base-debian:bookworm"
+  i386: "ghcr.io/home-assistant/i386-base-debian:bookworm"
