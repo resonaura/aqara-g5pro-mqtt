@@ -1,20 +1,20 @@
-# Use Node 22 (matches your host version)
-FROM node:22.16.0-slim
+# Stage 1: Build
+FROM node:22.16.0-slim AS build
 
-# Set working directory inside container
 WORKDIR /app
 
-# Copy package files first (для кэширования зависимостей)
 COPY ./app/package*.json ./
-
-# Install dependencies
 RUN npm install
 
-# Copy весь проект внутрь контейнера
 COPY ./app .
-
-# Build TypeScript
 RUN npm run build
 
-# Expose nothing (only MQTT client is used)
-CMD [ "npm", "start" ]
+# Stage 2: Run
+FROM node:22.16.0-slim
+
+WORKDIR /app
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/package*.json ./
+
+CMD ["node", "dist/index.js"]
