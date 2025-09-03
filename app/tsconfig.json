@@ -10,11 +10,11 @@
     "allowSyntheticDefaultImports": true,
     "target": "esnext",
     "sourceMap": true,
-    "outDir": "app/dist",
+    "outDir": "./dist",
     "baseUrl": "./",
     "incremental": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "typeRoots": ["./node_modules/@types", "app/src/types"]
+    "typeRoots": ["./node_modules/@types", "./src/types"]
   }
 }
