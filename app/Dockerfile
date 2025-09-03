@@ -6,8 +6,6 @@ COPY * ./
 
 RUN npm install
 
-COPY src ./src
-
 RUN npm run build
 
 COPY run.sh /run.sh
