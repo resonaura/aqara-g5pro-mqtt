@@ -1,6 +1,4 @@
 #!/usr/bin/with-contenv bashio
-set -e
-
 CONFIG_PATH=/data/options.json
 ENV_FILE="/usr/src/app/.env"
 
