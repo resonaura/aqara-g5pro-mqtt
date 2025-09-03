@@ -3,7 +3,7 @@ services:
     build: ./app
     container_name: aqara
     restart: unless-stopped
-    env_file: .env
+    env_file: ./app/.env
     environment:
       - NODE_ENV=production
     network_mode: host
