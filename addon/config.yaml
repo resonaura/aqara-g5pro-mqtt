@@ -1,0 +1,28 @@
+name: "Aqara G5 Pro Integration"
+slug: "aqara_g5_pro"
+description: "MQTT integration for Aqara G5 Pro camera via Home Assistant"
+version: "1.0.0"
+arch:
+  - amd64
+  - arm64
+startup: services
+boot: auto
+ports: {}
+map:
+  - config:rw
+options:
+  username: ""
+  password: ""
+  area: "US"
+  mqtt_user: ""
+  mqtt_pass: ""
+  poll_interval: 1
+  log_level: "info"
+schema:
+  username: str
+  password: str
+  area: list(CN|EU|US|RU|KR|JP|AU|OTHER)
+  mqtt_user: str?
+  mqtt_pass: str?
+  poll_interval: int(1,60)
+  log_level: list(debug|info|warn|error)

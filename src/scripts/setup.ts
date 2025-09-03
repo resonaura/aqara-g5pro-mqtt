@@ -4,6 +4,7 @@ import inquirer from "inquirer";
 import axios from "axios";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
+import yargs from "yargs";
 
 const AREAS: Record<string, { server: string; appid: string }> = {
   CN: {
@@ -28,7 +29,6 @@ const AREAS: Record<string, { server: string; appid: string }> = {
   },
 };
 
-// Aqara RSA public key (same as Python version)
 const PUBKEY = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCG46slB57013JJs4Vvj5cVyMpR
 9b+B2F+YJU6qhBEYbiEmIdWpFPpOuBikDs2FcPS19MiWq1IrmxJtkICGurqImRUt
@@ -56,35 +56,69 @@ interface SetupAnswers {
 }
 
 async function main() {
-  console.log("\n#### Aqara G5 Pro Setup ####\n");
+  const argv = await yargs(process.argv.slice(2)).option({
+    auto: { type: "boolean", default: false },
+    username: { type: "string" },
+    password: { type: "string" },
+    area: { type: "string" },
+    "mqtt-url": { type: "string" },
+    "mqtt-user": { type: "string" },
+    "mqtt-pass": { type: "string" },
+    "poll-interval": { type: "number", default: 1 },
+    "log-level": { type: "string", default: "info" },
+  }).argv;
 
-  const answers = await inquirer.prompt([
-    { name: "username", message: "Aqara Username (email):", type: "input" },
-    {
-      name: "password",
-      message: "Aqara Password:",
-      type: "password",
-      mask: "*",
-    },
-    {
-      name: "area",
-      message: "Region:",
-      type: "list",
-      choices: Object.keys(AREAS),
-      default: "US",
-    },
-    { name: "mqttUrl", message: "MQTT URL:", default: "mqtt://127.0.0.1:1883" },
-    {
-      name: "mqttUser",
-      message: "MQTT Username (leave empty if none):",
-      default: "",
-    },
-    {
-      name: "mqttPass",
-      message: "MQTT Password (leave empty if none):",
-      default: "",
-    },
-  ]);
+  let answers: SetupAnswers;
+
+  if (argv.auto) {
+    // 🚀 Non-interactive mode (for Home Assistant add-on)
+    if (!argv.username || !argv.password || !argv.area || !argv["mqtt-url"]) {
+      console.error("❌ Missing required arguments for --auto mode");
+      process.exit(1);
+    }
+
+    answers = {
+      username: argv.username,
+      password: argv.password,
+      area: argv.area as keyof typeof AREAS,
+      mqttUrl: argv["mqtt-url"],
+      mqttUser: argv["mqtt-user"] || "",
+      mqttPass: argv["mqtt-pass"] || "",
+    };
+  } else {
+    // 🖐 Interactive mode (works as before)
+    answers = await inquirer.prompt([
+      { name: "username", message: "Aqara Username (email):", type: "input" },
+      {
+        name: "password",
+        message: "Aqara Password:",
+        type: "password",
+        mask: "*",
+      },
+      {
+        name: "area",
+        message: "Region:",
+        type: "list",
+        choices: Object.keys(AREAS),
+        default: "US",
+      },
+      {
+        name: "mqttUrl",
+        message: "MQTT URL:",
+        default: "mqtt://127.0.0.1:1883",
+      },
+      {
+        name: "mqttUser",
+        message: "MQTT Username (leave empty if none):",
+        default: "",
+      },
+      {
+        name: "mqttPass",
+        message: "MQTT Password (leave empty if none):",
+        default: "",
+      },
+    ]);
+  }
 
   const { username, password, area, mqttUrl, mqttUser, mqttPass } = answers;
   const { server, appid } = AREAS[area];
@@ -108,12 +142,7 @@ async function main() {
         encryptType: 2,
         password: encryptPassword(password),
       },
-      {
-        headers: {
-          ...headers,
-          Appid: appid,
-        },
-      }
+      { headers: { ...headers, Appid: appid } }
     );
 
     if (resp.data.code !== 0) {
@@ -127,37 +156,40 @@ async function main() {
     // Get device list
     const deviceResp = await axios.get(
       `${server}/app/v1.0/lumi/app/position/device/query`,
-      {
-        headers: {
-          ...headers,
-          Token: token,
-          Appid: appid,
-        },
-      }
+      { headers: { ...headers, Token: token, Appid: appid } }
     );
 
-    const devices = (deviceResp.data.result?.devices || [])?.filter((d: any) => d.model?.startsWith("lumi.camera"));
+    const devices = (deviceResp.data.result?.devices || [])?.filter((d: any) =>
+      d.model?.startsWith("lumi.camera")
+    );
+
     if (!devices.length) {
       console.error("❌ No devices found for this account");
       process.exit(1);
     }
 
-    // Let user pick device
-    const deviceChoice = await inquirer.prompt<{ subjectId: string }>([
-      {
-        name: "subjectId",
-        message: "Select your device:",
-        type: "list",
-        choices: devices.map((d: any) => {
-          return {
+    // If interactive → ask which device
+    let subjectId: string;
+    if (!argv.auto) {
+      const deviceChoice = await inquirer.prompt<{ subjectId: string }>([
+        {
+          name: "subjectId",
+          message: "Select your device:",
+          type: "list",
+          choices: devices.map((d: any) => ({
             name: `${d.deviceName} (${d.model}) — ${d.did}`,
             value: d.did,
-          };
-        }),
-      },
-    ]);
-
-    const subjectId = deviceChoice.subjectId;
+          })),
+        },
+      ]);
+      subjectId = deviceChoice.subjectId;
+    } else {
+      // If auto → pick the first device
+      subjectId = devices[0].did;
+      console.log(
+        `✅ Selected device: ${devices[0].deviceName} (${subjectId})`
+      );
+    }
 
     // Build .env
     const envContent = `NODE_ENV=production
@@ -168,8 +200,8 @@ SUBJECT_ID=${subjectId}
 MQTT_URL=${mqttUrl}
 MQTT_USER=${mqttUser}
 MQTT_PASS=${mqttPass}
-POLL_INTERVAL=1
-LOG_LEVEL=info
+POLL_INTERVAL=${argv["poll-interval"]}
+LOG_LEVEL=${argv["log-level"]}
 `;
 
     fs.writeFileSync(path.join(process.cwd(), ".env"), envContent, "utf-8");
