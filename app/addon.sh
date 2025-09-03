@@ -1,8 +1,15 @@
-#!/usr/bin/env bash
+#!/usr/bin/with-contenv bashio
 set -e
 
 CONFIG_PATH=/data/options.json
 ENV_FILE="/usr/src/app/.env"
+
+if bashio::services.available mqtt ; then
+  export SYSTEM_MQTT_HOST="$(bashio::services mqtt 'host')"
+  export SYSTEM_MQTT_PORT="$(bashio::services mqtt 'port')"
+  export SYSTEM_MQTT_USER="$(bashio::services mqtt 'username')"
+  export SYSTEM_MQTT_PASS="$(bashio::services mqtt 'password')"
+fi
 
 # Читаем user config
 USERNAME=$(jq -r '.username' $CONFIG_PATH)
@@ -18,19 +25,19 @@ LOG_LEVEL=$(jq -r '.log_level' $CONFIG_PATH)
 if [ -n "$USER_MQTT_URL" ]; then
   MQTT_URL="$USER_MQTT_URL"
 else
-  MQTT_URL="mqtt://${MQTT_HOST:-core-mosquitto}:${MQTT_PORT:-1883}"
+  MQTT_URL="mqtt://${SYSTEM_MQTT_HOST:-core-mosquitto}:${SYSTEM_MQTT_PORT:-1883}"
 fi
 
 if [ -n "$USER_MQTT_USER" ]; then
   MQTT_USER="$USER_MQTT_USER"
 else
-  MQTT_USER="$MQTT_USERNAME"
+  MQTT_USER="$SYSTEM_MQTT_USER"
 fi
 
 if [ -n "$USER_MQTT_PASS" ]; then
   MQTT_PASS="$USER_MQTT_PASS"
 else
-  MQTT_PASS="$MQTT_PASSWORD"
+  MQTT_PASS="$SYSTEM_MQTT_PASS"
 fi
 
 function needs_regen() {
