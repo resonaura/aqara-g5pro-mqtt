@@ -11,7 +11,7 @@ COPY * ./
 RUN npm install
 RUN npm run build
 
-COPY run.sh /addon.sh
+COPY addon.sh /addon.sh
 RUN chmod a+x /addon.sh
 
 CMD ["/addon.sh"]
