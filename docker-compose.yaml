@@ -1,7 +1,7 @@
 services:
-  aqara:
+  aqara-g5pro-mqtt:
     build: .
-    container_name: aqara
+    container_name: aqara-g5pro-mqtt
     restart: unless-stopped
     env_file: ./app/.env
     environment:
