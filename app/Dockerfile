@@ -8,7 +8,7 @@ COPY ../src ./src
 COPY ../package*.json ./
 
 # Install deps & build
-RUN npm install --omit=dev && npm run build
+RUN npm install && npm run build
 
 # Copy run script
 COPY run.sh /run.sh
