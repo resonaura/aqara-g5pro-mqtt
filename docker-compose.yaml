@@ -1,0 +1,9 @@
+services:
+  aqara:
+    build: .
+    container_name: aqara
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    network_mode: host
