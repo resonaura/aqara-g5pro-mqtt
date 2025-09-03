@@ -40,7 +40,7 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
 
 ## 🛠 Requirements
 
-- Node.js **≈22.x** (tested on v22.16.0)  
+- Node.js **≈22.x** (tested on v22.16.0)
 - Running MQTT broker (Mosquitto, EMQX, or Home Assistant MQTT add-on)
 
 ---
@@ -59,7 +59,7 @@ npm run setup
 
 npm run build
 npm start
-````
+```
 
 ### Run with Docker
 
@@ -86,9 +86,9 @@ You can generate it automatically via `npm run setup` before starting Docker.
 All settings are provided via `.env`.
 The setup wizard (`npm run setup`) asks for:
 
-* Aqara account (username, password, region)
-* MQTT broker URL, username, password
-* Device selection from your Aqara account
+- Aqara account (username, password, region)
+- MQTT broker URL, username, password
+- Device selection from your Aqara account
 
 Example of generated `.env`:
 
@@ -124,7 +124,7 @@ docker compose up -d
 Check logs:
 
 ```bash
-docker compose logs -f aqara
+docker compose logs -f aqara-g5pro-mqtt
 ```
 
 ---
