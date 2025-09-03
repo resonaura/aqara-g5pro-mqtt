@@ -17,6 +17,9 @@ FROM node:22.16.0-slim
 
 WORKDIR /app
 
+COPY ./app/package*.json ./
+RUN npm install --production
+
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package*.json ./
 
