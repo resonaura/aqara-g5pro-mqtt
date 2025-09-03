@@ -1,6 +1,5 @@
 # Use Home Assistant base with Node.js 22
-ARG BUILD_FROM=ghcr.io/hassio-addons/base-nodejs:22
-FROM $BUILD_FROM
+FROM node:22.16.0-slim
 
 WORKDIR /usr/src/app
 
