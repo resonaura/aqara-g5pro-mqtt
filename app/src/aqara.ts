@@ -36,6 +36,47 @@ export async function getDevice(id: string): Promise<Device> {
   return response.result.devices.find((device) => device.did === id);
 }
 
+export async function getCameras(): Promise<Device[]> {
+  const response = await getDevices();
+  
+  console.log("🔍 API Response:", {
+    code: response.code,
+    message: response.message,
+    deviceCount: response.result?.devices?.length || 0
+  });
+  
+  if (!response.result || !response.result.devices) {
+    console.log("⚠️ No devices found in API response");
+    return [];
+  }
+  
+  // Показываем все найденные устройства для отладки
+  console.log("📱 All devices found:");
+  response.result.devices.forEach(device => {
+    console.log(`  - ${device.deviceName} (${device.model}) - ${device.originalName}`);
+  });
+  
+  // Filter only Aqara cameras using model prefix like in setup script
+  const cameras = response.result.devices.filter((device) => 
+    device.model?.startsWith("lumi.camera")
+  );
+  
+  return cameras;
+}
+
+export async function checkDeviceCapabilities(subjectId: string): Promise<{hasSpotlight: boolean}> {
+  try {
+    // Проверяем наличие spotlight через попытку получить атрибуты
+    const res = await queryAttrs(["white_light_enable", "white_light_level"], subjectId);
+    const hasSpotlight = res.result && res.result.length > 0 && 
+      res.result.some(r => r.attr === "white_light_enable");
+    return { hasSpotlight };
+  } catch (error) {
+    console.log(`⚠️ Could not check spotlight capabilities for ${subjectId}:`, error.message);
+    return { hasSpotlight: false };
+  }
+}
+
 export function aqaraDeviceToMQTT(device: Device): MQTTDevice {
   return {
     identifiers: [device.did],

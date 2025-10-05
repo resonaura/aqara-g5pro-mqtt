@@ -164,39 +164,20 @@ async function main() {
     );
 
     if (!devices.length) {
-      console.error("❌ No devices found for this account");
+      console.error("❌ No cameras found for this account");
       process.exit(1);
     }
 
-    // If interactive → ask which device
-    let subjectId: string;
-    if (!argv.auto) {
-      const deviceChoice = await inquirer.prompt<{ subjectId: string }>([
-        {
-          name: "subjectId",
-          message: "Select your device:",
-          type: "list",
-          choices: devices.map((d: any) => ({
-            name: `${d.deviceName} (${d.model}) — ${d.did}`,
-            value: d.did,
-          })),
-        },
-      ]);
-      subjectId = deviceChoice.subjectId;
-    } else {
-      // If auto → pick the first device
-      subjectId = devices[0].did;
-      console.log(
-        `✅ Selected device: ${devices[0].deviceName} (${subjectId})`
-      );
-    }
+    console.log(`✅ Found ${devices.length} camera(s):`);
+    devices.forEach((d: any) => console.log(`  - ${d.deviceName} (${d.did})`));
+
+    // Убираем выбор устройства, так как теперь поддерживаем все камеры автоматически
 
     // Build .env
     const envContent = `NODE_ENV=production
 AQUARA_URL=${server}
 APPID=${appid}
 TOKEN=${token}
-SUBJECT_ID=${subjectId}
 MQTT_URL=${mqttUrl}
 MQTT_USER=${mqttUser}
 MQTT_PASS=${mqttPass}

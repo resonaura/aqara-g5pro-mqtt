@@ -40,8 +40,14 @@ export function publishDiscovery(
 
 export function publishLightDiscovery(
   client: MqttClient,
-  mqttDevice: MQTTDevice
+  mqttDevice: MQTTDevice,
+  hasSpotlight: boolean = true
 ) {
+  if (!hasSpotlight) {
+    console.log(`⚠️ Skipping spotlight discovery for ${mqttDevice.name} - not supported`);
+    return;
+  }
+
   publishDiscoveryEntity(
     client,
     mqttDevice,
@@ -58,7 +64,7 @@ export function publishLightDiscovery(
     }
   );
 
-  console.log("💡 Published discovery for Spotlight");
+  console.log(`💡 Published discovery for Spotlight on ${mqttDevice.name}`);
 }
 
 export function publishSdCardDiscovery(

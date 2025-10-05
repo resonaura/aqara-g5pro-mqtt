@@ -10,7 +10,6 @@ export const envSchema = z.object({
   AQUARA_URL: z.string().url().default("https://aiot-rpc-usa.aqara.com"),
   APPID: z.string().min(8),
   TOKEN: z.string().min(16),
-  SUBJECT_ID: z.string().min(10),
 
   // MQTT
   MQTT_URL: z.string().url().default("mqtt://localhost:1883"),

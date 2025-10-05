@@ -7,7 +7,9 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
 
 ## ✨ Features
 
-- Full **Spotlight** as a `light` entity (ON/OFF + brightness).
+- **🎥 Multi-Camera Support**: Automatically discovers and connects all Aqara cameras in your account
+- **🔍 Smart Capability Detection**: Automatically detects if camera supports spotlight before creating entities
+- Full **Spotlight** as a `light` entity (ON/OFF + brightness) - only for supported cameras
 - Switches (`switch`):
   - Lens Obstruction Detection
   - AI Sound Detection
@@ -33,7 +35,7 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
   - SD Card Used (%)
   - SD Card Status
 - Automatic state synchronization after any command.
-- Logging with emoji for clarity.
+- Per-camera logging for easy identification.
 - Guided setup with `npm run setup` (generates your `.env`).
 
 ---
@@ -88,7 +90,8 @@ The setup wizard (`npm run setup`) asks for:
 
 - Aqara account (username, password, region)
 - MQTT broker URL, username, password
-- Device selection from your Aqara account
+
+**Note**: The setup automatically discovers all cameras in your account - no need to select specific devices.
 
 Example of generated `.env`:
 
@@ -97,7 +100,6 @@ NODE_ENV=production
 AQUARA_URL=https://aiot-rpc-usa.aqara.com
 APPID=444c476ef7135e53330f46e7
 TOKEN=xxxxxxxxxxxxxxxxxxxx
-SUBJECT_ID=lumi3.a5e395b63ce5e6de
 MQTT_URL=mqtt://192.168.1.100:1883
 MQTT_USER=hauser
 MQTT_PASS=hasecret
@@ -131,10 +133,11 @@ docker compose logs -f aqara-g5pro-mqtt
 
 ## 📡 How it works
 
-1. On startup, the bridge connects to **Aqara Cloud API** and your **MQTT broker**.
-2. Publishes entity configs using MQTT Discovery.
-3. Polls the camera periodically (default every 5s).
-4. Commands from Home Assistant → forwarded to Aqara → updated states are published instantly.
+1. On startup, the bridge connects to **Aqara Cloud API** and discovers all cameras in your account.
+2. For each camera, checks capabilities (spotlight support, etc.) and publishes entity configs using MQTT Discovery.
+3. Polls all cameras periodically (default every 5s) for state updates.
+4. Commands from Home Assistant → forwarded to appropriate camera → updated states are published instantly.
+5. Each camera gets its own unique device ID in Home Assistant for easy management.
 
 ---
 
