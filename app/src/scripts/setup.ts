@@ -38,10 +38,11 @@ rZzBHsMuBwA4LQdxBwIDAQAB
 
 function encryptPassword(password: string): string {
   const md5 = crypto.createHash("md5").update(password).digest("hex");
+  console.log(`   MD5 hash:     ${md5}`);
   const pub = crypto.createPublicKey(PUBKEY);
   const encrypted = crypto.publicEncrypt(
     { key: pub, padding: crypto.constants.RSA_PKCS1_PADDING },
-    Buffer.from(md5)
+    Buffer.from(md5),
   );
   return encrypted.toString("base64");
 }
@@ -86,7 +87,7 @@ async function main() {
       mqttPass: argv["mqtt-pass"] || "",
     };
   } else {
-    // 🖐 Interactive mode (works as before)
+    // 🖐 Interactive mode
     answers = await inquirer.prompt([
       { name: "username", message: "Aqara Username (email):", type: "input" },
       {
@@ -124,6 +125,8 @@ async function main() {
   const { server, appid } = AREAS[area];
 
   const phoneId = uuidv4().toUpperCase();
+  const time = Date.now().toString();
+  const nonce = uuidv4().replace(/-/g, "").substring(0, 16);
   const headers = {
     "User-Agent": "AqaraSetup/1.0.0",
     "App-Version": "3.0.0",
@@ -131,36 +134,84 @@ async function main() {
     Lang: "en",
     "Phone-Model": "NodeSetup",
     PhoneId: phoneId,
+    Time: time,
+    Nonce: nonce,
   };
 
+  console.log("\n🌐 Login request details:");
+  console.log(`   Server:       ${server}`);
+  console.log(`   Area:         ${area}`);
+  console.log(`   AppID:        ${appid}`);
+  console.log(`   Username:     ${username}`);
+  console.log(`   PhoneId:      ${phoneId}`);
+
+  const encryptedPassword = encryptPassword(password);
+  console.log(
+    `   Encrypted pw: ${encryptedPassword.substring(0, 20)}... (len=${encryptedPassword.length})`,
+  );
+
+  const requestHeaders = { ...headers, Appid: appid };
+  console.log(`   Request headers: ${JSON.stringify(requestHeaders, null, 2)}`);
+
+  const loginBody = {
+    account: username,
+    encryptType: 2,
+    password: encryptedPassword,
+  };
+  console.log(
+    `📤 Request body: ${JSON.stringify({ ...loginBody, password: loginBody.password.substring(0, 20) + "..." }, null, 2)}`,
+  );
+  console.log(`   Full URL: ${server}/app/v1.0/lumi/user/login\n`);
+
   try {
-    // Login
     const resp = await axios.post(
       `${server}/app/v1.0/lumi/user/login`,
+      loginBody,
       {
-        account: username,
-        encryptType: 2,
-        password: encryptPassword(password),
+        headers: requestHeaders,
+        timeout: 15000,
       },
-      { headers: { ...headers, Appid: appid } }
     );
 
+    console.log(`📥 HTTP status:    ${resp.status} ${resp.statusText}`);
+    console.log(
+      `📥 Response headers: ${JSON.stringify(resp.headers, null, 2)}`,
+    );
+    console.log(`📥 Response body:  ${JSON.stringify(resp.data, null, 2)}`);
+
     if (resp.data.code !== 0) {
-      console.error("❌ Login failed:", resp.data.message);
+      console.error(
+        `\n❌ Login failed (code=${resp.data.code}): ${resp.data.message}`,
+      );
+      console.error(
+        `   Full error response: ${JSON.stringify(resp.data, null, 2)}`,
+      );
       process.exit(1);
     }
 
     const token = resp.data.result.token;
-    console.log("✅ Login success");
+    console.log(`\n✅ Login success`);
+    console.log(`   Token: ${token.substring(0, 10)}... (len=${token.length})`);
 
     // Get device list
+    console.log("\n📋 Fetching device list...");
     const deviceResp = await axios.get(
       `${server}/app/v1.0/lumi/app/position/device/query`,
-      { headers: { ...headers, Token: token, Appid: appid } }
+      { headers: { ...headers, Token: token, Appid: appid }, timeout: 15000 },
     );
 
-    const devices = (deviceResp.data.result?.devices || [])?.filter((d: any) =>
-      d.model?.startsWith("lumi.camera")
+    console.log(
+      `📥 Devices response (code=${deviceResp.data.code}): ${JSON.stringify(deviceResp.data, null, 2)}`,
+    );
+
+    const allDevices: any[] = deviceResp.data.result?.devices || [];
+    console.log(`   Total devices in account: ${allDevices.length}`);
+    allDevices.forEach((d: any) =>
+      console.log(`     • ${d.deviceName} | model=${d.model} | did=${d.did}`),
+    );
+
+    const devices = allDevices.filter((d: any) =>
+      d.model?.startsWith("lumi.camera"),
     );
 
     if (!devices.length) {
@@ -168,10 +219,8 @@ async function main() {
       process.exit(1);
     }
 
-    console.log(`✅ Found ${devices.length} camera(s):`);
+    console.log(`\n✅ Found ${devices.length} camera(s):`);
     devices.forEach((d: any) => console.log(`  - ${d.deviceName} (${d.did})`));
-
-    // Убираем выбор устройства, так как теперь поддерживаем все камеры автоматически
 
     // Build .env
     const envContent = `NODE_ENV=production
@@ -188,7 +237,22 @@ LOG_LEVEL=${argv["log-level"]}
     fs.writeFileSync(path.join(process.cwd(), ".env"), envContent, "utf-8");
     console.log("✅ .env generated successfully");
   } catch (err: any) {
-    console.error("❌ Error:", err.message);
+    if (axios.isAxiosError(err)) {
+      console.error(`\n❌ HTTP Error: ${err.message}`);
+      console.error(`   Code:    ${err.code}`);
+      console.error(`   Status:  ${err.response?.status}`);
+      console.error(`   URL:     ${err.config?.url}`);
+      console.error(
+        `   Request headers: ${JSON.stringify(err.config?.headers, null, 2)}`,
+      );
+      console.error(`   Request body:    ${err.config?.data}`);
+      console.error(
+        `   Response body:   ${JSON.stringify(err.response?.data, null, 2)}`,
+      );
+    } else {
+      console.error(`\n❌ Error: ${err.message}`);
+      console.error(err.stack);
+    }
     process.exit(1);
   }
 }
