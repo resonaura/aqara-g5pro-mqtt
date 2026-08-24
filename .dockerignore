@@ -1,0 +1,9 @@
+node_modules
+dist
+app/node_modules
+app/dist
+app/signer
+app/src/scripts/test_patterns.py
+apk
+.git
+.env
