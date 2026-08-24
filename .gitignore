@@ -4,3 +4,7 @@ output.mp4
 storage
 .env
 package-lock.json
+apk
+apk/signer/target/
+signer/*.so
+app/signer/target/

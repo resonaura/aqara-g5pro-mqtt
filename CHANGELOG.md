@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.2.0 - Working Authentication (Sign + AppKey)
+
+### ✨ New Features
+
+- **Working login**: The `/app/v1.0/lumi/user/login` endpoint works again — the sign formula
+  now appends the app's `APPKEY` (`uOJy0qmKwXj6aHUB2KQEIJuXHMDVTAJi`) to the signed string:
+  `MD5("Appid=..&Nonce=..&Time=..[&Token=..][&body]&APPKEY")`, empty segments omitted
+- **Automatic login**: If `TOKEN` is not set, the bridge logs in with `AQARA_USER`/`AQARA_PASS`
+- **New `npm run login` script**: Verify credentials and list account devices
+- **Per-request signing**: All API requests are now signed (Sign header) with Token/Userid headers
+
+### 🔧 Fixed
+
+- Requests rejected with `code=106 "Invalid sign"` — caused by missing APPKEY in the signature
+- POST bodies are now serialized before signing so the signature matches the exact payload
+
 ## v1.1.0 - Multi-Camera Support
 
 ### ✨ New Features

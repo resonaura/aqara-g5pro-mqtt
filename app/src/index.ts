@@ -12,12 +12,20 @@ import {
   queryAttrs,
   writeAttr,
   checkDeviceCapabilities,
+  login,
 } from "./aqara.js";
 import { generateEnvExample, normalizeValue } from "./utils.js";
 import { Device, MQTTDevice } from "./types.js";
 
 if (process.env.NODE_ENV !== "production") {
   await generateEnvExample();
+}
+
+// Автологин по email/password, если TOKEN не задан
+if (!process.env.TOKEN && process.env.AQARA_USER && process.env.AQARA_PASS) {
+  console.log("🔑 No TOKEN provided, logging in with credentials...");
+  await login(process.env.AQARA_USER, process.env.AQARA_PASS);
+  console.log("✅ Login successful");
 }
 
 // Получаем все камеры

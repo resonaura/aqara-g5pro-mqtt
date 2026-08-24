@@ -107,6 +107,23 @@ POLL_INTERVAL=5
 LOG_LEVEL=info
 ```
 
+### 🔑 Authentication
+
+You can either provide a ready `TOKEN` or let the bridge log in automatically with your
+Aqara account credentials (token is obtained via the signed `/user/login` endpoint):
+
+```env
+AQARA_USER=you@example.com
+AQARA_PASS=yourpassword
+```
+
+If both `TOKEN` and credentials are provided, `TOKEN` takes precedence.
+You can also verify credentials and list devices manually:
+
+```bash
+AQARA_USER=... AQARA_PASS=... npm run login
+```
+
 ---
 
 ## ▶️ Usage

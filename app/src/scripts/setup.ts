@@ -123,19 +123,33 @@ async function main() {
 
   const { username, password, area, mqttUrl, mqttUser, mqttPass } = answers;
   const { server, appid } = AREAS[area];
+  const appkey = "uOJy0qmKwXj6aHUB2KQEIJuXHMDVTAJi";
+
+  const md5 = (s: string) => crypto.createHash("md5").update(s).digest("hex");
+
+  function aqaraSign(opts: {
+    nonce: string;
+    time: string;
+    token?: string;
+    body?: string;
+  }): string {
+    let pre = `Appid=${appid}&Nonce=${opts.nonce}&Time=${opts.time}`;
+    if (opts.token) pre += `&Token=${opts.token}`;
+    if (opts.body) pre += `&${opts.body}`;
+    pre += `&${appkey}`;
+    return md5(pre);
+  }
 
   const phoneId = uuidv4().toUpperCase();
-  const time = Date.now().toString();
-  const nonce = uuidv4().replace(/-/g, "").substring(0, 16);
-  const headers = {
-    "User-Agent": "AqaraSetup/1.0.0",
-    "App-Version": "3.0.0",
-    "Sys-Type": "1",
-    Lang: "en",
-    "Phone-Model": "NodeSetup",
-    PhoneId: phoneId,
-    Time: time,
-    Nonce: nonce,
+  const baseHeaders: Record<string, string> = {
+    "Content-Type": "application/json; charset=utf-8",
+    lang: "en",
+    "app-version": "6.1.6",
+    "sys-type": "1",
+    "sys-version": "14",
+    "phone-model": "NodeSetup",
+    phoneid: phoneId,
+    appid,
   };
 
   console.log("\n🌐 Login request details:");
@@ -143,48 +157,37 @@ async function main() {
   console.log(`   Area:         ${area}`);
   console.log(`   AppID:        ${appid}`);
   console.log(`   Username:     ${username}`);
-  console.log(`   PhoneId:      ${phoneId}`);
 
   const encryptedPassword = encryptPassword(password);
-  console.log(
-    `   Encrypted pw: ${encryptedPassword.substring(0, 20)}... (len=${encryptedPassword.length})`,
-  );
 
-  const requestHeaders = { ...headers, Appid: appid };
-  console.log(`   Request headers: ${JSON.stringify(requestHeaders, null, 2)}`);
-
-  const loginBody = {
+  const loginBody = JSON.stringify({
     account: username,
     encryptType: 2,
     password: encryptedPassword,
-  };
-  console.log(
-    `📤 Request body: ${JSON.stringify({ ...loginBody, password: loginBody.password.substring(0, 20) + "..." }, null, 2)}`,
-  );
-  console.log(`   Full URL: ${server}/app/v1.0/lumi/user/login\n`);
+  });
+  const loginTime = Date.now().toString();
+  const loginNonce = crypto.randomBytes(16).toString("hex").toUpperCase();
 
   try {
     const resp = await axios.post(
       `${server}/app/v1.0/lumi/user/login`,
       loginBody,
       {
-        headers: requestHeaders,
+        headers: {
+          ...baseHeaders,
+          Time: loginTime,
+          Nonce: loginNonce,
+          Sign: aqaraSign({ nonce: loginNonce, time: loginTime, body: loginBody }),
+        },
         timeout: 15000,
       },
     );
 
     console.log(`📥 HTTP status:    ${resp.status} ${resp.statusText}`);
-    console.log(
-      `📥 Response headers: ${JSON.stringify(resp.headers, null, 2)}`,
-    );
-    console.log(`📥 Response body:  ${JSON.stringify(resp.data, null, 2)}`);
 
     if (resp.data.code !== 0) {
       console.error(
         `\n❌ Login failed (code=${resp.data.code}): ${resp.data.message}`,
-      );
-      console.error(
-        `   Full error response: ${JSON.stringify(resp.data, null, 2)}`,
       );
       process.exit(1);
     }
@@ -195,13 +198,24 @@ async function main() {
 
     // Get device list
     console.log("\n📋 Fetching device list...");
+    const devTime = Date.now().toString();
+    const devNonce = crypto.randomBytes(16).toString("hex").toUpperCase();
     const deviceResp = await axios.get(
       `${server}/app/v1.0/lumi/app/position/device/query`,
-      { headers: { ...headers, Token: token, Appid: appid }, timeout: 15000 },
+      {
+        headers: {
+          ...baseHeaders,
+          Token: token,
+          Time: devTime,
+          Nonce: devNonce,
+          Sign: aqaraSign({ nonce: devNonce, time: devTime, token }),
+        },
+        timeout: 15000,
+      },
     );
 
     console.log(
-      `📥 Devices response (code=${deviceResp.data.code}): ${JSON.stringify(deviceResp.data, null, 2)}`,
+      `📥 Devices response (code=${deviceResp.data.code})`,
     );
 
     const allDevices: any[] = deviceResp.data.result?.devices || [];
