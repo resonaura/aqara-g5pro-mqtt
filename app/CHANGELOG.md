@@ -1,3 +1,11 @@
+## 1.2.0
+
+- **Feature**: Working authentication — request signature now includes the app `APPKEY` (`MD5("Appid=..&Nonce=..&Time=..[&Token=..][&body]&APPKEY")`, empty segments omitted). Fixes `code: 106 (Invalid sign)` on all requests
+- **Feature**: Automatic login — if `TOKEN` is not set, the bridge logs in with `AQARA_USER`/`AQARA_PASS` credentials
+- **Feature**: New `npm run login` script to verify credentials and list account devices
+- **Fix**: POST bodies are serialized before signing so the signature matches the exact payload
+- **Fix**: Setup wizard (`npm run setup`) uses the working signed login flow
+
 ## 1.1.1
 
 - **Fix**: Added missing `Time` (Unix timestamp ms) and `Nonce` (random string) headers to Aqara API login request — root cause of `Login failed: Request failed. Please try again.`
