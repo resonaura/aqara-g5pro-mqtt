@@ -41,8 +41,7 @@ fi
 function needs_regen() {
   [ ! -f "$ENV_FILE" ] && return 0
 
-  grep -q "TOKEN=" "$ENV_FILE" || return 0
-  grep -q "SUBJECT_ID=" "$ENV_FILE" || return 0
+  grep -q "^TOKEN=" "$ENV_FILE" || return 0
 
   CURRENT_HASH=$(echo "$USERNAME|$PASSWORD|$AREA|$MQTT_USER|$MQTT_PASS|$MQTT_URL|$POLL_INTERVAL|$LOG_LEVEL" | sha256sum | cut -d' ' -f1)
   SAVED_HASH=$(grep '^CONFIG_HASH=' "$ENV_FILE" | cut -d'=' -f2- || echo "")
