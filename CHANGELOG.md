@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.3.0 - Motion Sensor + RTSP Stream
+
+### ✨ New Features
+
+- **Motion binary_sensor**: generic per-camera motion entity. Polls `detect_*_event`
+  attribute timestamps; any change publishes `ON` to `homeassistant/binary_sensor/<id>/motion/state`,
+  auto-`OFF` after `MOTION_RESET` seconds (default 30). Verified live on Camera E1
+- **RTSP Stream sensor** (G5 Pro family): fetches the camera's stream URLs from the
+  cloud `rtsp_url` attribute and publishes the highest-quality one as
+  `sensor.rtsp_stream` — ready for go2rtc / Frigate / Generic Camera in HA.
+  Verified: H264 2688×1520 + AAC on port 8554 (`ch1`…`ch4` = 1520p→360p)
+- **Spotlight verified end-to-end**: ON/OFF + brightness via `res/write`
+  (`white_light_enable` / `white_light_level`) work against the G5 Pro
+
+### 🔎 Research notes
+
+- Camera E1 exposes detection events as cloud attributes; G5 Pro does not store
+  detection events in the cloud at all — they only travel through the phone push
+  channel (`wss://<host>/app/v1.0/lumi/push/ws/aqarahome`, subscription via
+  `/app/v1.0/lumi/res/subscribe`, exact body format still unknown)
+- G5 Pro has no ONVIF; E1 has neither RTSP nor events
+
 ## v1.2.0 - Working Authentication (Sign + AppKey)
 
 ### ✨ New Features

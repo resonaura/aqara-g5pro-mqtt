@@ -1,7 +1,7 @@
 name: "Aqara G5 Pro Integration"
 slug: "aqara_g5_pro"
 description: "MQTT integration for Aqara G5 Pro camera via Home Assistant"
-version: "1.2.0"
+version: "1.3.0"
 arch:
   - aarch64
   - amd64

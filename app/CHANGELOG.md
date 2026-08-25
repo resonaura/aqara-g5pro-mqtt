@@ -1,3 +1,9 @@
+## 1.3.0
+
+- **Feature**: Generic Motion `binary_sensor` per camera — polls `detect_*_event` attribute timestamps, publishes ON on any detection event and OFF after `MOTION_RESET` seconds (default 30). Verified live on Camera E1
+- **Feature**: RTSP Stream sensor for G5 Pro family — publishes the highest-quality stream URL from the cloud `rtsp_url` attribute (`ch1`…`ch4` = 1520p→360p on camera port 8554)
+- **Verified**: Spotlight ON/OFF + brightness via `res/write` work end-to-end on G5 Pro
+
 ## 1.2.0
 
 - **Feature**: Working authentication — request signature now includes the app `APPKEY` (`MD5("Appid=..&Nonce=..&Time=..[&Token=..][&body]&APPKEY")`, empty segments omitted). Fixes `code: 106 (Invalid sign)` on all requests
