@@ -89,3 +89,18 @@ export function publishSdCardDiscovery(
 
   console.log("💾 Published discovery for SD Card sensors");
 }
+
+export function publishRtspDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice
+) {
+  publishDiscoveryEntity(
+    client,
+    mqttDevice,
+    { domain: "sensor", name: "RTSP Stream", attr: "rtsp_stream", icon: "mdi:video-input" },
+    {
+      icon: "mdi:video",
+    }
+  );
+  console.log(`📹 Published discovery for RTSP Stream on ${mqttDevice.name}`);
+}

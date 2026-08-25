@@ -4,6 +4,7 @@ import {
   publishDiscovery,
   publishLightDiscovery,
   publishSdCardDiscovery,
+  publishRtspDiscovery,
 } from "./discovery.js";
 import { ENTITIES } from "./entities.js";
 import {
@@ -74,6 +75,7 @@ client.on("connect", () => {
     publishLightDiscovery(client, mqttDevice, hasSpotlight);
     publishSdCardDiscovery(client, mqttDevice);
     publishMotionDiscovery(client, mqttDevice);
+    publishRtspDiscovery(client, mqttDevice);
   });
 
   // Подписываемся на команды для всех камер
@@ -128,6 +130,28 @@ client.on("message", async (topic, msg) => {
   }
 });
 
+// === RTSP STREAM URLS (редко меняются, но читаем каждый цикл вместе с остальными) ===
+const QUALITY_ORDER = ["1520p", "1080p", "720p", "360p"];
+
+async function publishRtspState(subjectId: string, cameraInfo: typeof cameraData[0]) {
+  const res = await queryAttrs(["rtsp_url"], subjectId);
+  const raw = res.result?.[0]?.value;
+  if (!raw) return;
+  try {
+    const urls = JSON.parse(raw);
+    const best = QUALITY_ORDER.find((q) => urls[q]);
+    if (!best) return;
+    client.publish(
+      `homeassistant/sensor/${cameraInfo.mqttDevice.id}/rtsp_stream/state`,
+      urls[best],
+      { retain: true }
+    );
+    console.log(`📹 ${cameraInfo.device.deviceName} RTSP=${urls[best]}`);
+  } catch {
+    console.error("❌ Failed to parse rtsp_url:", raw);
+  }
+}
+
 // === POLLING ===
 async function poll() {
   const attrs = ENTITIES.map((e) => e.attr).concat([
@@ -147,6 +171,7 @@ async function poll() {
       if (events.code === 0) {
         processEventAttrs(client, cameraInfo.mqttDevice, events.result || []);
       }
+      await publishRtspState(cameraInfo.device.did, cameraInfo);
     } catch (error) {
       console.error(`❌ Polling failed for ${cameraInfo.device.deviceName}:`, error.message);
     }
