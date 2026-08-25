@@ -34,7 +34,7 @@ function aqaraSign(opts: {
   return md5(pre);
 }
 
-const api = axios.create({
+export const api = axios.create({
   baseURL: process.env.AQUARA_URL,
   headers: {
     "Content-Type": "application/json; charset=utf-8",

@@ -16,6 +16,11 @@ import {
 } from "./aqara.js";
 import { generateEnvExample, normalizeValue } from "./utils.js";
 import { Device, MQTTDevice } from "./types.js";
+import {
+  EVENT_ATTRS,
+  processEventAttrs,
+  publishMotionDiscovery,
+} from "./motion.js";
 
 if (process.env.NODE_ENV !== "production") {
   await generateEnvExample();
@@ -68,6 +73,7 @@ client.on("connect", () => {
     ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
     publishLightDiscovery(client, mqttDevice, hasSpotlight);
     publishSdCardDiscovery(client, mqttDevice);
+    publishMotionDiscovery(client, mqttDevice);
   });
 
   // Подписываемся на команды для всех камер
@@ -135,6 +141,11 @@ async function poll() {
       const res = await queryAttrs(attrs, cameraInfo.device.did);
       for (const r of res.result || []) {
         await publishAttr(r.attr, r.value, cameraInfo);
+      }
+      // событийные атрибуты детекции → generic motion sensor
+      const events = await queryAttrs(EVENT_ATTRS, cameraInfo.device.did);
+      if (events.code === 0) {
+        processEventAttrs(client, cameraInfo.mqttDevice, events.result || []);
       }
     } catch (error) {
       console.error(`❌ Polling failed for ${cameraInfo.device.deviceName}:`, error.message);
