@@ -85,6 +85,48 @@ client.on("connect", () => {
 });
 
 // === COMMAND HANDLERS ===
+// === OPTIMISTIC STATE ===
+// Публикуем ожидаемое состояние сразу, не дожидаясь облачного опроса.
+const stateTopic = (domain: string, deviceId: string, attr: string) =>
+  `homeassistant/${domain}/${deviceId}/${attr}/state`;
+
+async function optimistic(domain: string, deviceId: string, attr: string, value: string, cameraInfo: typeof cameraData[0]) {
+  switch (domain) {
+    case "switch":
+      client.publish(stateTopic("switch", deviceId, attr), value, { retain: true });
+      console.log(`⚡ ${cameraInfo.device.deviceName} ${attr}=${value} (optimistic)`);
+      break;
+    case "number":
+      client.publish(stateTopic("number", deviceId, attr), String(parseInt(value, 10)), { retain: true });
+      console.log(`⚡ ${cameraInfo.device.deviceName} ${attr}=${parseInt(value, 10)} (optimistic)`);
+      break;
+    case "light":
+      if (attr !== "spotlight") return;
+      {
+        const payload = JSON.parse(value);
+        // текущее состояние берём из последнего опубликованного
+        const cur = lastLightState.get(deviceId) ?? { state: "OFF", brightness: 255 };
+        const next = {
+          state: payload.state ?? cur.state,
+          brightness:
+            payload.brightness !== undefined
+              ? Math.round((payload.brightness / 255) * 100) * 2.55 | 0
+              : cur.brightness,
+        };
+        lastLightState.set(deviceId, next);
+        client.publish(
+          stateTopic("light", deviceId, "spotlight"),
+          JSON.stringify(next),
+          { retain: true }
+        );
+        console.log(`⚡ ${cameraInfo.device.deviceName} spotlight=${next.state}, ${next.brightness} (optimistic)`);
+      }
+      break;
+  }
+}
+
+const lastLightState = new Map<string, { state: string; brightness: number }>();
+
 const handlers: Record<string, (attr: string, value: string, subjectId: string) => Promise<void>> =
   {
     switch: async (attr, value, subjectId) =>
@@ -121,10 +163,15 @@ client.on("message", async (topic, msg) => {
 
   const subjectId = cameraInfo.device.did;
   console.log(`⬅️ HA → ${cameraInfo.device.deviceName}.${attr}=${value}`);
-  
+
   try {
+    await optimistic(domain, deviceId, attr, value, cameraInfo);
     await handlers[domain]?.(attr, value, subjectId);
-    await pollSingle(attr, subjectId, cameraInfo.mqttDevice);
+    // подтверждение реальным состоянием через короткую задержку,
+    // чтобы камера успела применить команду
+    setTimeout(() => {
+      pollSingle(attr, subjectId, cameraInfo.mqttDevice).catch(() => {});
+    }, 2000);
   } catch (err) {
     console.error("❌ Command failed:", err);
   }
@@ -202,9 +249,11 @@ async function publishAttr(attr: string, rawValue: any, cameraInfo: typeof camer
     const brightness = Math.round(
       (Number(level.result?.[0]?.value || 0) / 100) * 255
     );
+    const lightState = { state, brightness };
+    lastLightState.set(mqttDevice.id, lightState);
     client.publish(
       `homeassistant/light/${mqttDevice.id}/spotlight/state`,
-      JSON.stringify({ state, brightness }),
+      JSON.stringify(lightState),
       { retain: true }
     );
     console.log(`${refreshed ? "🔄" : "💡"} ${device.deviceName} Spotlight=${state}, ${brightness}`);
