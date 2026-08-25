@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.1 - Optimistic State Updates
+
+### ✨ New Features
+
+- **Optimistic UI**: switches, numbers and the spotlight publish their expected state to MQTT
+  immediately on command (before the cloud round-trip), then confirm with a real attribute poll
+  after 2 seconds — no more toggle flip-back in Home Assistant
+
 ## v1.3.0 - Motion Sensor + RTSP Stream
 
 ### ✨ New Features

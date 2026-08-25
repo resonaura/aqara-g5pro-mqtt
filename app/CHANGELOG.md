@@ -1,3 +1,7 @@
+## 1.3.1
+
+- **Feature**: Optimistic state updates — expected state is published to MQTT instantly on command, confirmed by a real poll after 2s
+
 ## 1.3.0
 
 - **Feature**: Generic Motion `binary_sensor` per camera — polls `detect_*_event` attribute timestamps, publishes ON on any detection event and OFF after `MOTION_RESET` seconds (default 30). Verified live on Camera E1
