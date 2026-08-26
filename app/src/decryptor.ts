@@ -180,19 +180,10 @@ export class AqaraStreamDecryptor extends EventEmitter {
     if (frame.readUInt16LE(0) !== 0x0088) return frame;
     const payLen = frame.readUInt32LE(28);
     const nonce = frame.subarray(32, 40);
-    const rawPayload = (payLen > 0 && payLen <= frame.length - 40 && payLen <= 4096)
+    const enc = (payLen > 0 && payLen <= frame.length - 40 && payLen <= 4096)
       ? frame.subarray(40, 40 + payLen)
       : frame.subarray(40);
 
-    // Truncate any trailing interleaved Lumi AI metadata start codes (00 00 00 01)
-    let audioLen = rawPayload.length;
-    for (let i = 0; i <= rawPayload.length - 4; i++) {
-      if (rawPayload[i] === 0 && rawPayload[i + 1] === 0 && rawPayload[i + 2] === 0 && rawPayload[i + 3] === 1) {
-        audioLen = i;
-        break;
-      }
-    }
-    const enc = rawPayload.subarray(0, audioLen);
     return this.chacha20Xor(nonce, enc, 0);
   }
 

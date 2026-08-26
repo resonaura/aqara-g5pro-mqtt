@@ -514,14 +514,14 @@ export class RtspServer extends EventEmitter {
   public broadcastAudio(audioData: Buffer, timestampMs?: number): void {
     if (this.clients.size === 0 || !audioData.length) return;
 
-    // Strip ADTS header (7 bytes without CRC, 9 bytes with CRC) if present
+    // Strip ADTS header and slice exact declared ADTS frame length
     let rawAac = audioData;
     if (audioData.length >= 7 && audioData[0] === 0xFF && (audioData[1] & 0xF0) === 0xF0) {
       const hasCrc = (audioData[1] & 0x01) === 0;
       const hdrLen = hasCrc ? 9 : 7;
-      if (audioData.length > hdrLen) {
-        rawAac = audioData.subarray(hdrLen);
-      }
+      const adtsLen = ((audioData[3] & 0x03) << 11) | (audioData[4] << 3) | ((audioData[5] & 0xE0) >> 5);
+      const frameEnd = (adtsLen > hdrLen && adtsLen <= audioData.length) ? adtsLen : audioData.length;
+      rawAac = audioData.subarray(hdrLen, frameEnd);
     }
 
     let rtpTimestamp: number;
