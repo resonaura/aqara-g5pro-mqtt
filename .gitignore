@@ -1,10 +1,51 @@
-node_modules
-dist
-output.mp4
-storage
-.env
+# Dependencies
+node_modules/
 package-lock.json
-apk
-apk/signer/target/
-signer/*.so
+
+# Build outputs
+dist/
+build/
+target/
 app/signer/target/
+*.so
+*.dylib
+*.dll
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+app.log
+logs/
+
+# Analysis & Dumps
+analysis/
+captures/
+snapshots/
+notes/
+reports/
+PROMPT*.md
+REPORT*.md
+apk/
+app/signer/src/main/java/com/aqara/signer/Test*
+*.pcap
+*.pcapng
+*.bin
+*.h264
+*.mp4
+*.meta
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Storage
+storage/
+app.log

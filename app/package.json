@@ -8,6 +8,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
+    "rtsp": "tsx src/scripts/rtsp_server.ts",
+    "capture": "tsx src/scripts/capture_all.ts",
     "setup": "tsx src/scripts/setup.ts",
     "login": "tsx src/scripts/login.ts"
   },

@@ -105,6 +105,41 @@ export function publishRtspDiscovery(
   console.log(`📹 Published discovery for RTSP Stream on ${mqttDevice.name}`);
 }
 
+export function publishP2pStreamSwitchDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice
+) {
+  publishDiscoveryEntity(
+    client,
+    mqttDevice,
+    {
+      domain: "switch",
+      name: "P2P Stream",
+      attr: "p2p_stream",
+      icon: "mdi:video-wireless",
+      command: true,
+    }
+  );
+  console.log(`🔀 Published discovery for P2P Stream Switch on ${mqttDevice.name}`);
+}
+
+export function publishP2pRtspDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice
+) {
+  publishDiscoveryEntity(
+    client,
+    mqttDevice,
+    {
+      domain: "sensor",
+      name: "P2P RTSP Stream",
+      attr: "p2p_rtsp_stream",
+      icon: "mdi:video-wireless-outline",
+    }
+  );
+  console.log(`📹 Published discovery for P2P RTSP Stream on ${mqttDevice.name}`);
+}
+
 export function publishCameraDiscovery(
   client: MqttClient,
   mqttDevice: MQTTDevice,
@@ -127,4 +162,5 @@ export function publishCameraDiscovery(
   client.publish(`${baseTopic}/config`, JSON.stringify(payload), { retain: true });
   console.log(`🎥 Published discovery for Camera entity on ${mqttDevice.name}`);
 }
+
 

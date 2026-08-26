@@ -6,8 +6,10 @@ import {
   publishSdCardDiscovery,
   publishRtspDiscovery,
   publishCameraDiscovery,
+  publishP2pStreamSwitchDiscovery,
+  publishP2pRtspDiscovery,
 } from "./discovery.js";
-import { AqaraCameraBridge } from "./bridge.js";
+import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
 import { ENTITIES } from "./entities.js";
 import {
   aqaraDeviceToMQTT,
@@ -29,15 +31,25 @@ if (process.env.NODE_ENV !== "production") {
   await generateEnvExample();
 }
 
-// Автологин по email/password, если TOKEN не задан
-if (!process.env.TOKEN && process.env.AQARA_USER && process.env.AQARA_PASS) {
-  console.log("🔑 No TOKEN provided, logging in with credentials...");
-  await login(process.env.AQARA_USER, process.env.AQARA_PASS);
-  console.log("✅ Login successful");
+// Автологин по email/password, если TOKEN не задан или устарел
+if (process.env.AQARA_USER && process.env.AQARA_PASS) {
+  console.log("🔑 Logging in with Aqara credentials...");
+  try {
+    await login(process.env.AQARA_USER, process.env.AQARA_PASS);
+    console.log("✅ Login successful");
+  } catch (err: any) {
+    console.warn("⚠️ Login failed:", err.message);
+  }
 }
 
 // Получаем все камеры
-const cameras = await getCameras();
+let cameras = await getCameras();
+if (cameras.length === 0 && process.env.AQARA_USER && process.env.AQARA_PASS) {
+  console.log("🔄 Retrying login and camera discovery...");
+  await login(process.env.AQARA_USER, process.env.AQARA_PASS);
+  cameras = await getCameras();
+}
+
 console.log(`🎥 Found ${cameras.length} camera(s):`);
 cameras.forEach(camera => console.log(`  - ${camera.deviceName} (${camera.did})`));
 
@@ -61,35 +73,11 @@ for (let i = 0; i < cameras.length; i++) {
   const mqttDevice = aqaraDeviceToMQTT(camera);
   const capabilities = await checkDeviceCapabilities(camera.did);
 
-  let bridge: AqaraCameraBridge | undefined;
-  if (process.env.ENABLE_P2P_RTSP === "true" && process.env.TOKEN) {
-    try {
-      const rtspPort = rtspBasePort + i;
-      bridge = new AqaraCameraBridge({
-        did: camera.did,
-        token: process.env.TOKEN,
-        rtspPort,
-        videoKey: process.env.VIDEO_KEY,
-      });
-      bridge.on("rtsp_ready", (url) => {
-        console.log(`📹 [P2P RTSP] ${camera.deviceName} stream ready at ${url}`);
-      });
-      bridge.on("connected", ({ ip, port }) => {
-        console.log(`🔌 [P2P Tunnel] ${camera.deviceName} connected to ${ip}:${port}`);
-      });
-      bridge.connect().catch((err) => {
-        console.warn(`⚠️ [P2P Bridge] Could not start P2P stream for ${camera.deviceName}: ${err.message}`);
-      });
-    } catch (err: any) {
-      console.warn(`⚠️ Failed to initialize P2P bridge for ${camera.deviceName}:`, err.message);
-    }
-  }
-
   cameraData.push({
     device: camera,
     mqttDevice,
     hasSpotlight: capabilities.hasSpotlight,
-    bridge,
+    bridge: undefined,
   });
   console.log(`📋 ${camera.deviceName}: spotlight=${capabilities.hasSpotlight ? "✅" : "❌"}`);
 }
@@ -108,7 +96,14 @@ client.on("connect", () => {
     publishSdCardDiscovery(client, mqttDevice);
     publishMotionDiscovery(client, mqttDevice);
     publishRtspDiscovery(client, mqttDevice);
-    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || "localhost"}:${rtspBasePort + idx}/live/${device.did}`;
+    publishP2pStreamSwitchDiscovery(client, mqttDevice);
+    publishP2pRtspDiscovery(client, mqttDevice);
+
+    // Initial state: P2P Stream OFF by default
+    client.publish(`homeassistant/switch/${mqttDevice.id}/p2p_stream/state`, "OFF", { retain: true });
+    client.publish(`homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`, "OFF", { retain: true });
+
+    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspBasePort + idx}/live/${device.did}`;
     publishCameraDiscovery(client, mqttDevice, rtspStreamUrl);
   });
 
@@ -118,9 +113,7 @@ client.on("connect", () => {
   });
 });
 
-// === COMMAND HANDLERS ===
 // === OPTIMISTIC STATE ===
-// Публикуем ожидаемое состояние сразу, не дожидаясь облачного опроса.
 const stateTopic = (domain: string, deviceId: string, attr: string) =>
   `homeassistant/${domain}/${deviceId}/${attr}/state`;
 
@@ -138,7 +131,6 @@ async function optimistic(domain: string, deviceId: string, attr: string, value:
       if (attr !== "spotlight") return;
       {
         const payload = JSON.parse(value);
-        // текущее состояние берём из последнего опубликованного
         const cur = lastLightState.get(deviceId) ?? { state: "OFF", brightness: 255 };
         const next = {
           state: payload.state ?? cur.state,
@@ -198,11 +190,59 @@ client.on("message", async (topic, msg) => {
   const subjectId = cameraInfo.device.did;
   console.log(`⬅️ HA → ${cameraInfo.device.deviceName}.${attr}=${value}`);
 
+  // === SPECIAL HANDLER FOR P2P STREAM SWITCH ===
+  if (attr === "p2p_stream") {
+    const p2pSwitchTopic = `homeassistant/switch/${deviceId}/p2p_stream/state`;
+    const p2pRtspTopic = `homeassistant/sensor/${deviceId}/p2p_rtsp_stream/state`;
+    const idx = cameraData.indexOf(cameraInfo);
+    const rtspPort = rtspBasePort + idx;
+
+    if (value === "ON") {
+      console.log(`🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`);
+      client.publish(p2pSwitchTopic, "ON", { retain: true });
+
+      if (!cameraInfo.bridge) {
+        const bridge = new AqaraCameraBridge({
+          did: cameraInfo.device.did,
+          token: process.env.TOKEN || "",
+          rtspPort,
+          videoKey: process.env.VIDEO_KEY,
+        });
+
+        bridge.on("rtsp_ready", (url) => {
+          console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
+          const streamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspPort}/live/${cameraInfo.device.did}`;
+          client.publish(p2pRtspTopic, streamUrl, { retain: true });
+        });
+
+        bridge.on("connected", ({ ip, port }) => {
+          console.log(`🔌 [P2P Tunnel] ${cameraInfo.device.deviceName} connected to ${ip}:${port}`);
+        });
+
+        bridge.connect().catch((err) => {
+          console.warn(`⚠️ [P2P Bridge] Could not start P2P stream for ${cameraInfo.device.deviceName}: ${err.message}`);
+          client.publish(p2pSwitchTopic, "OFF", { retain: true });
+          client.publish(p2pRtspTopic, "OFF", { retain: true });
+          cameraInfo.bridge = undefined;
+        });
+
+        cameraInfo.bridge = bridge;
+      }
+    } else {
+      console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
+      if (cameraInfo.bridge) {
+        cameraInfo.bridge.stop();
+        cameraInfo.bridge = undefined;
+      }
+      client.publish(p2pSwitchTopic, "OFF", { retain: true });
+      client.publish(p2pRtspTopic, "OFF", { retain: true });
+    }
+    return;
+  }
+
   try {
     await optimistic(domain, deviceId, attr, value, cameraInfo);
     await handlers[domain]?.(attr, value, subjectId);
-    // подтверждение реальным состоянием через короткую задержку,
-    // чтобы камера успела применить команду
     setTimeout(() => {
       pollSingle(attr, subjectId, cameraInfo.mqttDevice).catch(() => {});
     }, 2000);
@@ -211,7 +251,7 @@ client.on("message", async (topic, msg) => {
   }
 });
 
-// === RTSP STREAM URLS (редко меняются, но читаем каждый цикл вместе с остальными) ===
+// === RTSP STREAM URLS (Официальный / облачный RTSP URL) ===
 const QUALITY_ORDER = ["1520p", "1080p", "720p", "360p"];
 
 async function publishRtspState(subjectId: string, cameraInfo: typeof cameraData[0]) {
@@ -227,7 +267,7 @@ async function publishRtspState(subjectId: string, cameraInfo: typeof cameraData
       urls[best],
       { retain: true }
     );
-    console.log(`📹 ${cameraInfo.device.deviceName} RTSP=${urls[best]}`);
+    console.log(`📹 ${cameraInfo.device.deviceName} Official RTSP=${urls[best]}`);
   } catch {
     console.error("❌ Failed to parse rtsp_url:", raw);
   }
@@ -240,21 +280,19 @@ async function poll() {
     "white_light_level",
   ]);
 
-  // Опрашиваем все камеры
   for (const cameraInfo of cameraData) {
     try {
       const res = await queryAttrs(attrs, cameraInfo.device.did);
       for (const r of res.result || []) {
         await publishAttr(r.attr, r.value, cameraInfo);
       }
-      // событийные атрибуты детекции → generic motion sensor
       const events = await queryAttrs(EVENT_ATTRS, cameraInfo.device.did);
       if (events.code === 0) {
         processEventAttrs(client, cameraInfo.mqttDevice, events.result || []);
       }
       await publishRtspState(cameraInfo.device.did, cameraInfo);
-    } catch (error) {
-      console.error(`❌ Polling failed for ${cameraInfo.device.deviceName}:`, error.message);
+    } catch (error: any) {
+      console.error(`❌ Polling failed for ${cameraInfo.device.deviceName}:`, error?.message || error);
     }
   }
 }

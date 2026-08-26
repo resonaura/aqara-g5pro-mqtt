@@ -5,8 +5,10 @@
 import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 import * as net from 'net';
+import * as os from 'os';
 import { EventEmitter } from 'events';
 import axios from 'axios';
+import { AqaraStreamDecryptor } from './decryptor.js';
 
 // ============= Type Definitions =============
 
@@ -46,7 +48,7 @@ export interface BridgeOptions {
   appId?: string;
   appKey?: string;
   rtspPort?: number;
-  videoKey?: string; // Hex key for AES-128-CBC video frame decryption
+  videoKey?: string;
 }
 
 // ============= Constants =============
@@ -61,12 +63,15 @@ export const MSG_ALIVE = 0xE0;
 export const MSG_ALIVE_ACK = 0xE1;
 export const PPPP_LAN_PORT = 32108;
 export const DRW_MARKER = 0xD1;
-export const CHAN_CMD = 0;
-export const CHAN_VIDEO = 4;
 
 export const LUMI_TYPE_LOGIN = 0x1000;
-export const LUMI_TYPE_COMMAND = 0x1020;
+export const LUMI_TYPE_LOGIN_RESP = 0x1001;
+export const LUMI_TYPE_SESSION_START = 0x1002;
+export const LUMI_TYPE_SESSION_START_RESP = 0x1003;
+export const LUMI_TYPE_STREAM_START = 0x101C;
+export const LUMI_TYPE_STREAM_START_RESP = 0x101D;
 export const LUMI_TYPE_KEEPALIVE = 0x1024;
+export const LUMI_TYPE_KEEPALIVE_RESP = 0x1025;
 
 export const PPCS_TABLE = Buffer.from(
   '7c9ce84a13dedcb22f2123e4307b3d8cbc0b270c3cf79ae7087196009785efc1' +
@@ -88,10 +93,28 @@ export const DEFAULT_CONFIG = {
   RTSP_PORT: 8554,
 } as const;
 
+export const TUTK_MASTER_SERVERS = [
+  '54.71.80.151',
+  '54.214.103.243',
+  '3.23.78.166',
+];
+
 // ============= Crypto & Packet Helpers =============
 
 function md5(s: string): string {
   return crypto.createHash('md5').update(s).digest('hex');
+}
+
+export function getLocalIpv4(): string {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal && iface.address.startsWith('192.168.')) {
+        return iface.address;
+      }
+    }
+  }
+  return '192.168.5.191';
 }
 
 export function ppcsEncrypt(key: Buffer, data: Buffer): Buffer {
@@ -158,30 +181,26 @@ export function buildPPPP(msgType: number, payload: Buffer = Buffer.alloc(0)): B
   ]);
 }
 
-export function encodeP2PID(p2pId: string): Buffer {
-  const parts = p2pId.split('-');
-  const prefix = parts[0] || '';
-  const num = parseInt(parts[1] || '0', 10);
-  const suffix = parts[2] || '';
-  const numBuf = Buffer.alloc(4);
-  numBuf.writeUInt32BE(num, 0);
-  return Buffer.concat([
-    Buffer.from(prefix.padEnd(8, '\0'), 'ascii'),
-    numBuf,
-    Buffer.from(suffix.padEnd(8, '\0'), 'ascii'),
-  ]);
+export function punchPayload(p2pId: string): Buffer {
+  const [pre, num, suf] = p2pId.split('-');
+  const b = Buffer.alloc(20);
+  b.write(pre || '', 0, 'ascii');
+  b[7] = 0; b[8] = 0;
+  const n = parseInt(num || '0', 10);
+  b[9] = (n >> 16) & 0xff;
+  b[10] = (n >> 8) & 0xff;
+  b[11] = n & 0xff;
+  b.write(suf || '', 12, 'ascii');
+  return b;
 }
 
 export function buildLumiFrame(type: number, payload: Buffer, seq: number = 1): Buffer {
-  const headerBuf = Buffer.alloc(12);
-  headerBuf.writeUInt32BE(type, 0);
-  headerBuf.writeUInt32BE(seq, 4);
-  headerBuf.writeUInt32BE(payload.length, 8);
-  return Buffer.concat([
-    Buffer.from('lumi'),
-    headerBuf,
-    payload,
-  ]);
+  const f = Buffer.alloc(16);
+  f.write('lumi', 0, 'ascii');
+  f.writeUInt32LE(type, 4);
+  f.writeUInt32LE(seq, 8);
+  f.writeUInt32LE(payload.length, 12);
+  return Buffer.concat([f, payload]);
 }
 
 // ============= RTSP Server Implementation =============
@@ -200,6 +219,8 @@ export class RtspServer extends EventEmitter {
   private clients: Set<RtspClient> = new Set();
   private rtpSeq: number = 0;
   private rtpSsrc: number = Math.floor(Math.random() * 0xFFFFFFFF);
+  public sps: Buffer | null = null;
+  public pps: Buffer | null = null;
 
   constructor(port: number, did: string) {
     super();
@@ -258,7 +279,7 @@ export class RtspServer extends EventEmitter {
   private handleRtspRequest(client: RtspClient, req: string): void {
     const lines = req.split('\r\n');
     const firstLine = lines[0] || '';
-    const [method, url, proto] = firstLine.split(' ');
+    const [method, url] = firstLine.split(' ');
 
     const cseqLine = lines.find((l) => l.toLowerCase().startsWith('cseq:'));
     const cseq = cseqLine ? parseInt(cseqLine.split(':')[1].trim(), 10) : client.cseq;
@@ -274,6 +295,10 @@ export class RtspServer extends EventEmitter {
       }
 
       case 'DESCRIBE': {
+        let fmtpLine = 'a=fmtp:96 packetization-mode=1';
+        if (this.sps && this.pps) {
+          fmtpLine += `;sprop-parameter-sets=${this.sps.toString('base64')},${this.pps.toString('base64')}`;
+        }
         const sdp =
           `v=0\r\n` +
           `o=- ${Date.now()} 1 IN IP4 127.0.0.1\r\n` +
@@ -282,7 +307,7 @@ export class RtspServer extends EventEmitter {
           `t=0 0\r\n` +
           `m=video 0 RTP/AVP 96\r\n` +
           `a=rtpmap:96 H264/90000\r\n` +
-          `a=fmtp:96 packetization-mode=1\r\n` +
+          `${fmtpLine}\r\n` +
           `a=control:track0\r\n`;
 
         const response =
@@ -325,6 +350,14 @@ export class RtspServer extends EventEmitter {
           `Session: ${client.session}\r\n` +
           `RTP-Info: url=${url}/track0;seq=${this.rtpSeq}\r\n\r\n`;
         client.socket.write(response);
+
+        // Send cached SPS / PPS immediately to initialize decoder
+        if (this.sps && this.pps) {
+          const now = Date.now();
+          this.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), this.sps, Buffer.from([0, 0, 0, 1]), this.pps]), now);
+        }
+        // Request instant keyframe from camera
+        this.emit('need_keyframe');
         break;
       }
 
@@ -353,7 +386,6 @@ export class RtspServer extends EventEmitter {
     const len = frameData.length;
 
     while (start < len) {
-      // Find start code (0x000001 or 0x00000001)
       let prefixLen = 0;
       if (start + 3 <= len && frameData[start] === 0 && frameData[start + 1] === 0 && frameData[start + 2] === 1) {
         prefixLen = 3;
@@ -363,7 +395,6 @@ export class RtspServer extends EventEmitter {
 
       if (prefixLen > 0) {
         const nalStart = start + prefixLen;
-        // Find next start code
         let nextStart = len;
         for (let i = nalStart; i < len - 3; i++) {
           if (frameData[i] === 0 && frameData[i + 1] === 0 && (frameData[i + 2] === 1 || (frameData[i + 2] === 0 && frameData[i + 3] === 1))) {
@@ -380,9 +411,15 @@ export class RtspServer extends EventEmitter {
       }
     }
 
-    // If no start codes found, treat the whole buffer as a single NAL unit
     if (nalUnits.length === 0) {
       nalUnits.push(frameData);
+    }
+
+    for (const nal of nalUnits) {
+      if (!nal || !nal.length) continue;
+      const nalType = nal[0] & 0x1F;
+      if (nalType === 7) this.sps = Buffer.from(nal);
+      if (nalType === 8) this.pps = Buffer.from(nal);
     }
 
     const rtpTimestamp = Math.floor((timestampMs * 90) % 0xFFFFFFFF);
@@ -394,57 +431,49 @@ export class RtspServer extends EventEmitter {
       const isLastNal = n === nalUnits.length - 1;
 
       if (nal.length <= MAX_PAYLOAD_SIZE) {
-        // Single NAL unit packet
         const rtpHeader = Buffer.alloc(12);
         rtpHeader[0] = 0x80;
-        rtpHeader[1] = (isLastNal ? 0x80 : 0x00) | 96; // Marker bit on last NAL
+        rtpHeader[1] = (isLastNal ? 0x80 : 0x00) | 96;
         rtpHeader.writeUInt16BE(this.rtpSeq++ & 0xFFFF, 2);
-        rtpHeader.writeUInt32BE(rtpTimestamp >>> 0, 4);
-        rtpHeader.writeUInt32BE(this.rtpSsrc >>> 0, 8);
+        rtpHeader.writeUInt32BE(rtpTimestamp, 4);
+        rtpHeader.writeUInt32BE(this.rtpSsrc, 8);
 
-        const rtpPacket = Buffer.concat([rtpHeader, nal]);
-        this.sendInterleavedTcp(0, rtpPacket);
+        this.sendInterleavedRtp(0, Buffer.concat([rtpHeader, nal]));
       } else {
         // FU-A Fragmentation
         const nalHeader = nal[0];
-        const nalPayload = nal.subarray(1);
-        const nalType = nalHeader & 0x1f;
-        const nri = nalHeader & 0x60;
-        const fuIndicator = nri | 28; // FU-A type 28
+        const nalType = nalHeader & 0x1F;
+        const nalNri = nalHeader & 0x60;
+        let offset = 1;
 
-        let offset = 0;
-        const totalPayloadLen = nalPayload.length;
-
-        while (offset < totalPayloadLen) {
-          const isStart = offset === 0;
-          const isEnd = offset + MAX_PAYLOAD_SIZE >= totalPayloadLen;
-          const chunkSize = Math.min(MAX_PAYLOAD_SIZE, totalPayloadLen - offset);
-
-          let fuHeader = nalType;
-          if (isStart) fuHeader |= 0x80; // S bit
-          if (isEnd) fuHeader |= 0x40;   // E bit
+        while (offset < nal.length) {
+          const chunkLen = Math.min(MAX_PAYLOAD_SIZE, nal.length - offset);
+          const isStart = offset === 1;
+          const isEnd = offset + chunkLen >= nal.length;
 
           const rtpHeader = Buffer.alloc(12);
           rtpHeader[0] = 0x80;
-          rtpHeader[1] = (isEnd && isLastNal ? 0x80 : 0x00) | 96;
+          rtpHeader[1] = (isLastNal && isEnd ? 0x80 : 0x00) | 96;
           rtpHeader.writeUInt16BE(this.rtpSeq++ & 0xFFFF, 2);
-          rtpHeader.writeUInt32BE(rtpTimestamp >>> 0, 4);
-          rtpHeader.writeUInt32BE(this.rtpSsrc >>> 0, 8);
+          rtpHeader.writeUInt32BE(rtpTimestamp, 4);
+          rtpHeader.writeUInt32BE(this.rtpSsrc, 8);
 
-          const fuPayload = Buffer.concat([
-            Buffer.from([fuIndicator, fuHeader]),
-            nalPayload.subarray(offset, offset + chunkSize),
-          ]);
+          const fuIndicator = nalNri | 28;
+          let fuHeader = nalType;
+          if (isStart) fuHeader |= 0x80;
+          if (isEnd) fuHeader |= 0x40;
 
-          const rtpPacket = Buffer.concat([rtpHeader, fuPayload]);
-          this.sendInterleavedTcp(0, rtpPacket);
-          offset += chunkSize;
+          const fuHeaderBuf = Buffer.from([fuIndicator, fuHeader]);
+          const payloadChunk = nal.subarray(offset, offset + chunkLen);
+
+          this.sendInterleavedRtp(0, Buffer.concat([rtpHeader, fuHeaderBuf, payloadChunk]));
+          offset += chunkLen;
         }
       }
     }
   }
 
-  private sendInterleavedTcp(channel: number, rtpPacket: Buffer): void {
+  private sendInterleavedRtp(channel: number, rtpPacket: Buffer): void {
     const tcpHeader = Buffer.alloc(4);
     tcpHeader[0] = 0x24; // '$'
     tcpHeader[1] = channel & 0xFF;
@@ -476,40 +505,47 @@ export class AqaraCameraBridge extends EventEmitter {
   private did: string;
   private token: string;
   private cameraIp: string | null = null;
-  private cameraPort: number = PPPP_LAN_PORT;
+  private cameraPort: number = 0;
   private baseUrl: string;
   private appId: string;
   private appKey: string;
   private rtspPort: number;
-  private videoKey: Buffer | null = null;
 
   private socket: dgram.Socket | null = null;
   private rtspServer: RtspServer | null = null;
   private keepaliveTimer: NodeJS.Timeout | null = null;
-  private seq: number = 1;
+  private discoveryTimer: NodeJS.Timeout | null = null;
+  private cmdSeq: number = 10;
+  private ch0Seq: number = 0;
+  private ch3Seq: number = 0;
   private isConnected: boolean = false;
+  private isStreamStarted: boolean = false;
 
   private p2pInfo: P2PInfo | null = null;
   private ppcsKeyBuf: Buffer = Buffer.alloc(0);
-  private sharedSecret: Buffer | null = null;
+  private punchBuf: Buffer = Buffer.alloc(0);
   private appPub: string = '';
   private appSign: string = '';
   private signTime: string = '';
+  private endpoints: Array<{ ip: string; port: number }> = [];
+
+  // Frame reassembly state
+  private frames: Record<string, { buf: Buffer; parts: number[] }> = {};
+  public frameCount: number = 0;
+  private decryptor: AqaraStreamDecryptor | null = null;
 
   constructor(options: BridgeOptions) {
     super();
     this.did = options.did;
     this.token = options.token;
     this.cameraIp = options.cameraIp || null;
-    this.cameraPort = options.cameraPort || PPPP_LAN_PORT;
+    this.cameraPort = options.cameraPort || 0;
     this.baseUrl = options.baseUrl || DEFAULT_CONFIG.BASE_URL;
     this.appId = options.appId || DEFAULT_CONFIG.APP_ID;
     this.appKey = options.appKey || DEFAULT_CONFIG.APP_KEY;
     this.rtspPort = options.rtspPort || DEFAULT_CONFIG.RTSP_PORT;
-
-    if (options.videoKey) {
-      this.videoKey = Buffer.from(options.videoKey, 'hex');
-    }
+    const videoKey = options.videoKey || 'fc639c2ec4167ee22f4dd023b113c9e46adbb18e427dd0fdaea48286dd54d3cf';
+    this.decryptor = new AqaraStreamDecryptor(videoKey);
   }
 
   private signHeaders(body: string = ''): Record<string, string> {
@@ -540,11 +576,8 @@ export class AqaraCameraBridge extends EventEmitter {
    */
   public async initCloudSession(): Promise<{
     appPub: string;
-    appPriv: string;
     sign: string;
-    devPub: string;
   }> {
-    // 1. Get p2p/info
     const infoUrl = `${this.baseUrl}/app/v1.0/lumi/devex/camera/p2p/info?did=${encodeURIComponent(this.did)}`;
     const infoResp = await axios.get(infoUrl, {
       headers: this.signHeaders(`did=${this.did}`),
@@ -557,43 +590,20 @@ export class AqaraCameraBridge extends EventEmitter {
 
     this.p2pInfo = infoResp.data.result;
     const initStringApp = this.p2pInfo?.initStringApp || '';
-    const keyPart = initStringApp.includes(':') ? initStringApp.split(':')[1] : initStringApp;
+    const keyPart = initStringApp.includes(':') ? initStringApp.split(':')[1] : initStringApp || 'aqaraus19kn';
     this.ppcsKeyBuf = Buffer.from(keyPart, 'ascii');
+    this.punchBuf = punchPayload(this.p2pInfo?.p2pId || 'AQARAUS-207160-BRSYM');
 
-    // 2. Generate ephemeral X25519 keypair
-    const { publicKey, privateKey } = crypto.generateKeyPairSync('x25519');
-    const appPub = Buffer.from(publicKey.export({ format: 'jwk' }).x!, 'base64').toString('hex');
-    const appPriv = Buffer.from(privateKey.export({ format: 'jwk' }).d!, 'base64').toString('hex');
+    // Generate ephemeral X25519 keypair
+    const kp = crypto.generateKeyPairSync('x25519');
+    (this as any).keyPair = kp;
+    const appPub = Buffer.from((kp.publicKey.export({ format: 'jwk' }) as any).x, 'base64url').toString('hex');
 
-    // 3. Request cloud signature for app public key
     const signBody = JSON.stringify({
       did: this.did,
       p2pAppPublicKey: appPub,
       devPwd: '',
     });
-
-    if (this.token) {
-      try {
-        console.log('📡 Querying cloud for native RTSP credentials & endpoints...');
-        const attrResp = await axios.post(
-          `${this.baseUrl || DEFAULT_CONFIG.BASE_URL}/app/v1.0/lumi/res/query`,
-          { data: [{ options: ['rtsp_url', 'rtsp_enable'], subjectId: this.did }] },
-          { headers: { 'Content-Type': 'application/json', token: this.token } }
-        );
-        const attrs = attrResp.data?.result || [];
-        const urlAttr = attrs.find((a: any) => a.attr === 'rtsp_url');
-        if (urlAttr?.value) {
-          const parsed = JSON.parse(urlAttr.value);
-          const nativeUrl = parsed['1520p'] || parsed['1080p'] || parsed['720p'] || parsed['360p'] || Object.values(parsed)[0];
-          if (nativeUrl) {
-            console.log(`🎥 Native RTSP Stream URL discovered: ${nativeUrl}`);
-            this.emit('native_rtsp', nativeUrl);
-          }
-        }
-      } catch (err: any) {
-        console.log('⚠️ Could not query native RTSP attributes:', err.message);
-      }
-    }
 
     const signResp = await axios.post(`${this.baseUrl}/app/v1.0/lumi/devex/camera/p2p/sign`, signBody, {
       headers: this.signHeaders(signBody),
@@ -605,54 +615,48 @@ export class AqaraCameraBridge extends EventEmitter {
     }
 
     const signResult = signResp.data.result;
-    const devPub = signResult?.p2pDevPublicKey || this.p2pInfo?.devP2pPublicKey;
-
-    // 4. Subscribe to camera video activation
-    try {
-      const subBody = JSON.stringify({
-        data: [{ attrs: ['set_video', 'work_mode'], subjectId: this.did }],
-      });
-      await axios.post(`${this.baseUrl}/app/v1.0/lumi/res/subscribe`, subBody, {
-        headers: this.signHeaders(subBody),
-        timeout: 15000,
-      });
-    } catch {
-      // Non-critical
-    }
-
-    // 5. Compute X25519 shared secret
-    if (devPub && devPub.length === 64) {
-      try {
-        const devPubJwk = {
-          kty: 'OKP',
-          crv: 'X25519',
-          x: Buffer.from(devPub, 'hex').toString('base64url'),
-        };
-        const pub = crypto.createPublicKey({ key: devPubJwk, format: 'jwk' });
-        this.sharedSecret = crypto.diffieHellman({ privateKey, publicKey: pub });
-        if (!this.videoKey && this.sharedSecret) {
-          this.videoKey = this.sharedSecret;
-        }
-      } catch (err: any) {
-        this.emit('warn', `Could not compute X25519 shared secret: ${err.message}`);
-      }
-    }
-
     this.appPub = appPub;
     this.appSign = signResult.sign;
     this.signTime = signResult.time;
 
+    // Derive session X25519 Shared Secret key for video decryption
+    if (this.p2pInfo?.devP2pPublicKey) {
+      try {
+        const devPubBuf = Buffer.from(this.p2pInfo.devP2pPublicKey, 'hex');
+        const devKeyObj = crypto.createPublicKey({
+          key: {
+            kty: 'OKP',
+            crv: 'X25519',
+            x: devPubBuf.toString('base64url'),
+          },
+          format: 'jwk',
+        });
+        const sharedSecret = crypto.diffieHellman({
+          privateKey: kp.privateKey,
+          publicKey: devKeyObj,
+        });
+        const sharedKeyHex = sharedSecret.toString('hex');
+        const videoKeyHex = AqaraStreamDecryptor.deriveKey(this.did, sharedSecret).toString('hex');
+        this.decryptor = new AqaraStreamDecryptor(videoKeyHex);
+        this.emit('info', `Computed X25519 shared: ${sharedKeyHex}, video key (sha256(did|shared)): ${videoKeyHex}`);
+      } catch (err: any) {
+        this.emit('warn', `Failed to derive X25519 shared secret: ${err.message}`);
+      }
+    }
+
     return {
       appPub,
-      appPriv,
       sign: signResult.sign,
-      devPub,
     };
   }
 
   /**
-   * Connect to the camera over UDP (LAN / PPPP tunnel) and start RTSP server
+   * Connect to the camera over P2P/LAN and start RTSP broadcasting
    */
+  public async start(): Promise<void> {
+    return this.connect();
+  }
+
   public async connect(): Promise<void> {
     await this.initCloudSession();
     this.socket = dgram.createSocket('udp4');
@@ -660,6 +664,11 @@ export class AqaraCameraBridge extends EventEmitter {
     // Start RTSP Server
     try {
       this.rtspServer = new RtspServer(this.rtspPort, this.did);
+      this.rtspServer.on('need_keyframe', () => {
+        if (this.isConnected) {
+          this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x1018, Buffer.alloc(0), this.cmdSeq++));
+        }
+      });
       await this.rtspServer.start();
       this.emit('rtsp_ready', `rtsp://0.0.0.0:${this.rtspPort}/live/${this.did}`);
     } catch (err: any) {
@@ -681,254 +690,267 @@ export class AqaraCameraBridge extends EventEmitter {
       });
     });
 
-    // Send discovery / punch packets periodically until connected
-    const p2pIdBuf = encodeP2PID(this.p2pInfo?.p2pId || 'AAAA-000000-AAAAA');
-    const punchPkt = buildPPPP(MSG_PUNCH_PKT, p2pIdBuf);
-    const searchPkt = Buffer.from([PPCS_MAGIC, 0x30, 0x00, 0x00]);
+    const myPort = this.socket.address().port;
+    const localIp = getLocalIpv4();
 
-    const sendPunch = () => {
+    // Query TUTK Master Servers for dynamic endpoint
+    const req20 = Buffer.alloc(36);
+    this.punchBuf.copy(req20, 0);
+    req20.writeUInt16LE(2, 20); // AF_INET
+    req20.writeUInt16LE(myPort, 22);
+    const ipParts = localIp.split('.').map(Number);
+    req20[24] = ipParts[3];
+    req20[25] = ipParts[2];
+    req20[26] = ipParts[1];
+    req20[27] = ipParts[0];
+
+    const queryPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(0x20, req20));
+    const helloPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(0x00));
+    const punchPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_PUNCH_PKT, this.punchBuf));
+
+    this.discoveryTimer = setInterval(() => {
       if (this.isConnected) return;
-      if (this.cameraIp) {
-        this.socket?.send(punchPkt, this.cameraPort, this.cameraIp);
-        this.socket?.send(searchPkt, PPPP_LAN_PORT, this.cameraIp);
+
+      for (const s of TUTK_MASTER_SERVERS) {
+        this.socket?.send(helloPkt, 32100, s);
+        this.socket?.send(queryPkt, 32100, s);
       }
-      this.socket?.send(punchPkt, PPPP_LAN_PORT, '255.255.255.255');
-      this.socket?.send(searchPkt, PPPP_LAN_PORT, '255.255.255.255');
-    };
+      for (const ep of this.endpoints) {
+        this.socket?.send(punchPkt, ep.port, ep.ip);
+      }
+      if (this.cameraIp && this.cameraPort) {
+        this.socket?.send(punchPkt, this.cameraPort, this.cameraIp);
+      }
+      // Broadcast discovery
+      this.socket?.send(Buffer.from([PPCS_MAGIC, 0x30, 0x00, 0x00]), PPPP_LAN_PORT, '255.255.255.255');
+    }, 200);
+  }
 
-    sendPunch();
-    const punchInterval = setInterval(sendPunch, 1000);
+  private sendEncDrw(chan: number, idx: number, data: Buffer): void {
+    if (!this.socket || !this.cameraIp || !this.cameraPort) return;
+    const inner = Buffer.concat([Buffer.from([DRW_MARKER, chan, (idx >> 8) & 0xff, idx & 0xff]), data]);
+    const h = Buffer.alloc(4);
+    h[0] = PPCS_MAGIC;
+    h[1] = MSG_DRW;
+    h.writeUInt16BE(inner.length, 2);
+    const pkt = ppcsEncrypt(this.ppcsKeyBuf, Buffer.concat([h, inner]));
+    this.socket.send(pkt, this.cameraPort, this.cameraIp);
+  }
 
-    this.on('connected', () => {
-      clearInterval(punchInterval);
-    });
-
-    // Start keepalive timer
-    this.keepaliveTimer = setInterval(() => {
-      this.sendKeepalive();
-    }, 25000);
+  private sendAck(chan: number, idx: number): void {
+    if (!this.socket || !this.cameraIp || !this.cameraPort) return;
+    const ackPayload = Buffer.from([DRW_MARKER, chan, 0x00, 0x01, (idx >> 8) & 0xff, idx & 0xff]);
+    const ackHdr = Buffer.from([PPCS_MAGIC, MSG_DRW_ACK, 0x00, 0x06]);
+    const pkt = ppcsEncrypt(this.ppcsKeyBuf, Buffer.concat([ackHdr, ackPayload]));
+    this.socket.send(pkt, this.cameraPort, this.cameraIp);
   }
 
   private handleUdpPacket(msg: Buffer, rinfo: dgram.RemoteInfo): void {
-    if (msg.length < 4 || msg[0] !== PPCS_MAGIC) return;
+    let pkt: Buffer = Buffer.from(msg);
+    if (pkt[0] !== PPCS_MAGIC) {
+      pkt = Buffer.from(ppcsDecrypt(this.ppcsKeyBuf, pkt));
+    }
+    if (pkt[0] !== PPCS_MAGIC) return;
 
-    const msgType = msg[1];
-    const len = msg.readUInt16BE(2);
-    const payload = msg.subarray(4, 4 + len);
+    const msgType = pkt[1];
+    const len = pkt.readUInt16BE(2);
+    const payload = pkt.subarray(4, 4 + len);
 
-    console.log(`📥 UDP [0x${msgType.toString(16)}] len=${len} from ${rinfo.address}:${rinfo.port}`);
-
-    switch (msgType) {
-      case MSG_PUNCH_PKT: {
-        this.cameraIp = rinfo.address;
-        this.cameraPort = rinfo.port;
-        const p2pIdBuf = payload.length === 20 ? payload : encodeP2PID(this.p2pInfo?.p2pId || 'AAAA-000000-AAAAA');
-        const punchPkt = buildPPPP(MSG_PUNCH_PKT, p2pIdBuf);
-        this.socket?.send(punchPkt, this.cameraPort, this.cameraIp);
-
-        const rdyPkt = buildPPPP(MSG_P2P_RDY);
-        this.socket?.send(rdyPkt, this.cameraPort, this.cameraIp);
-        console.log(`🤝 Exchanging PUNCH & RDY with ${this.cameraIp}:${this.cameraPort}`);
-        break;
+    // TUTK Master Server response: type 0x40 returns dynamic camera endpoint
+    if (msgType === 0x40 && payload.length >= 8) {
+      const port = (payload[3] << 8) | payload[2];
+      const ip = `${payload[7]}.${payload[6]}.${payload[5]}.${payload[4]}`;
+      if (!this.endpoints.some((e) => e.ip === ip && e.port === port)) {
+        this.endpoints.push({ ip, port });
       }
+      const punchPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_PUNCH_PKT, this.punchBuf));
+      this.socket?.send(punchPkt, port, ip);
+      return;
+    }
 
-      case MSG_P2P_RDY: {
-        this.cameraIp = rinfo.address;
-        this.cameraPort = rinfo.port;
-        const ack = buildPPPP(MSG_P2P_RDY_ACK);
-        this.socket?.send(ack, this.cameraPort, this.cameraIp);
-        console.log(`🎉 P2P RDY confirmed with ${this.cameraIp}:${this.cameraPort}, sending Lumi Login...`);
-        this.sendLumiLogin();
-        break;
+    if (msgType === MSG_PUNCH_PKT) {
+      this.cameraIp = rinfo.address;
+      this.cameraPort = rinfo.port;
+      const punchPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_PUNCH_PKT, this.punchBuf));
+      this.socket?.send(punchPkt, this.cameraPort, this.cameraIp);
+      const rdyPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_P2P_RDY, this.punchBuf));
+      this.socket?.send(rdyPkt, this.cameraPort, this.cameraIp);
+    } else if (msgType === MSG_P2P_RDY) {
+      this.cameraIp = rinfo.address;
+      this.cameraPort = rinfo.port;
+      const rdyAck = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_P2P_RDY_ACK));
+      this.socket?.send(rdyAck, this.cameraPort, this.cameraIp);
+      
+      if (!this.isConnected) {
+        this.isConnected = true;
+        if (this.discoveryTimer) clearInterval(this.discoveryTimer);
+        this.emit('connected', { ip: this.cameraIp, port: this.cameraPort });
+        this.startSessionFlow();
       }
+    } else if (msgType === MSG_ALIVE) {
+      const ack = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_ALIVE_ACK));
+      this.socket?.send(ack, rinfo.port, rinfo.address);
+    } else if ((msgType === MSG_DRW || msgType === 0xD8) && payload.length >= 4 && payload[0] === DRW_MARKER) {
+      const chan = payload[1];
+      const idx = payload.readUInt16BE(2);
+      const data = payload.subarray(4);
 
-      case MSG_P2P_RDY_ACK: {
-        this.cameraIp = rinfo.address;
-        this.cameraPort = rinfo.port;
-        console.log(`🎉 P2P RDY_ACK received from ${this.cameraIp}:${this.cameraPort}, sending Lumi Login...`);
-        this.sendLumiLogin();
-        break;
-      }
+      // Immediately send ACK for each incoming packet
+      this.sendAck(chan, idx);
 
-      case MSG_ALIVE: {
-        const ack = buildPPPP(MSG_ALIVE_ACK);
-        this.socket?.send(ack, rinfo.port, rinfo.address);
-        console.log(`💓 ALIVE packet acknowledged with ${rinfo.address}:${rinfo.port}`);
-        break;
-      }
-
-      case MSG_DRW: {
-        // Decrypt PPCS payload
-        const decrypted = ppcsDecrypt(this.ppcsKeyBuf, payload);
-        if (decrypted.length >= 4 && decrypted[0] === DRW_MARKER) {
-          const channel = decrypted[1];
-          const index = decrypted.readUInt16BE(2);
-
-          // Send DRW ACK immediately
-          const ackPayload = Buffer.from([channel, (index >> 8) & 0xff, index & 0xff, 0x00]);
-          const ackPkt = buildPPPP(MSG_DRW_ACK, ackPayload);
-          this.socket?.send(ackPkt, rinfo.port, rinfo.address);
-
-          const lumiPayload = decrypted.subarray(4);
-          this.handleLumiFrame(channel, lumiPayload);
-        }
-        break;
+      if (chan === 0) {
+        this.handleChannel0Data(data);
+      } else if (chan === 1) {
+        this.handleVideoData(idx, data);
       }
     }
   }
 
-  private sendLumiLogin(): void {
-    if (!this.socket || !this.cameraIp) return;
+  private startSessionFlow(): void {
+    if (!this.socket || !this.cameraIp || !this.cameraPort) return;
 
-    const loginPayload = JSON.stringify({
-      app_pub: this.appPub,
-      app_sign: this.appSign,
-      device_id: this.did,
-      did: this.did,
-      p2pAppPublicKey: this.appPub,
-      sign: this.appSign,
-      time: this.signTime ? parseInt(this.signTime, 10) : Date.now(),
-    });
+    // 1. Send E0 keepalive
+    this.socket.send(ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_ALIVE)), this.cameraPort, this.cameraIp);
 
-    // 1. Send Lumi-format login on channel 0
-    const lumiFrame = buildLumiFrame(LUMI_TYPE_LOGIN, Buffer.from(loginPayload), this.seq++);
-    const drwHeader1 = Buffer.from([CHAN_CMD, (this.seq >> 8) & 0xff, this.seq & 0xff, 0x00]);
-    const packetData1 = Buffer.concat([drwHeader1, lumiFrame]);
-    const encrypted1 = ppcsEncrypt(this.ppcsKeyBuf, packetData1);
-    this.socket.send(buildPPPP(MSG_DRW, encrypted1), this.cameraPort, this.cameraIp);
+    // 2. Send Lumi Login (0x1000)
+    setTimeout(() => {
+      const loginJson = JSON.stringify({
+        app_public_key: this.appPub,
+        app_sign: this.appSign,
+        device_id: this.did,
+        timestamp: String(this.signTime || Date.now()),
+      });
+      this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_LOGIN, Buffer.from(loginJson), this.cmdSeq++));
+    }, 200);
 
-    // 2. Also send AVIO-format auth request (0x1000)
-    const avioAuthHdr = Buffer.alloc(4);
-    avioAuthHdr.writeUInt16LE(0x1000, 0);
-    avioAuthHdr.writeUInt16LE(loginPayload.length, 2);
-    const avioPkt = Buffer.concat([avioAuthHdr, Buffer.from(loginPayload)]);
-    const drwHeader2 = Buffer.from([CHAN_CMD, (this.seq >> 8) & 0xff, this.seq & 0xff, 0x00]);
-    const packetData2 = Buffer.concat([drwHeader2, avioPkt]);
-    const encrypted2 = ppcsEncrypt(this.ppcsKeyBuf, packetData2);
-    this.socket.send(buildPPPP(MSG_DRW, encrypted2), this.cameraPort, this.cameraIp, () => {
-      this.isConnected = true;
-      this.emit('connected', { ip: this.cameraIp, port: this.cameraPort });
-
-      // Send start stream commands over channel 0
-      setTimeout(() => {
-        this.sendStartStreamCommand();
-      }, 300);
-    });
+    // 3. Keepalive timer
+    this.keepaliveTimer = setInterval(() => {
+      this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEEPALIVE, Buffer.alloc(0), this.cmdSeq++));
+    }, 10000);
   }
 
-  private sendStartStreamCommand(): void {
-    if (!this.socket || !this.cameraIp) return;
+  private async handleChannel0Data(data: Buffer): Promise<void> {
+    if (data.length >= 16 && data.toString('ascii', 0, 4) === 'lumi') {
+      const frameType = data.readUInt32LE(4);
+      if (frameType === LUMI_TYPE_LOGIN_RESP && !this.isStreamStarted) {
+        this.isStreamStarted = true;
+        console.log('📨 Camera Lumi Login Resp:', data.subarray(16).toString());
+        // Step 3: Keepalive 0x1024
+        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEEPALIVE, Buffer.alloc(0), this.cmdSeq++));
+        await new Promise(r => setTimeout(r, 150));
 
-    const startCmd = JSON.stringify({
-      cmd: 'start_stream',
-      channel: 4,
-      quality: 'high',
-      stream: 'live',
-      time: Date.now(),
-    });
+        // Step 4: Session trigger 0x1002
+        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_SESSION_START, Buffer.alloc(0), this.cmdSeq++));
+        await new Promise(r => setTimeout(r, 150));
 
-    // 1. Lumi format start command
-    const lumiFrame = buildLumiFrame(LUMI_TYPE_COMMAND, Buffer.from(startCmd), this.seq++);
-    const drwHeader1 = Buffer.from([CHAN_CMD, (this.seq >> 8) & 0xff, this.seq & 0xff, 0x00]);
-    const encrypted1 = ppcsEncrypt(this.ppcsKeyBuf, Buffer.concat([drwHeader1, lumiFrame]));
-    this.socket.send(buildPPPP(MSG_DRW, encrypted1), this.cameraPort, this.cameraIp);
+        // Step 4b: Set video stream quality 0x100E (videoStream: 0=2K, 1=1080p, 2=SD)
+        const qualityBody = Buffer.alloc(16);
+        qualityBody.writeUInt32LE(0, 0); // channel 0
+        qualityBody.writeUInt32LE(1, 4); // videoStream: 1 (1080p)
+        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x100e, qualityBody, this.cmdSeq++));
+        await new Promise(r => setTimeout(r, 150));
 
-    // 2. AVIO struct start stream request (0x1020)
-    const startAvioHdr = Buffer.alloc(4);
-    startAvioHdr.writeUInt16LE(0x1020, 0);
-    startAvioHdr.writeUInt16LE(8, 2);
-    const streamPayload = Buffer.alloc(8); // channel 0, stream 0
-    const avioPacket = Buffer.concat([startAvioHdr, streamPayload]);
-    const drwHeader2 = Buffer.from([CHAN_CMD, (this.seq >> 8) & 0xff, this.seq & 0xff, 0x00]);
-    const encrypted2 = ppcsEncrypt(this.ppcsKeyBuf, Buffer.concat([drwHeader2, avioPacket]));
-    this.socket.send(buildPPPP(MSG_DRW, encrypted2), this.cameraPort, this.cameraIp);
-  }
+        // Step 5: Stream trigger 0x101C on Channel 3
+        this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START, Buffer.alloc(0), this.cmdSeq++));
+        await new Promise(r => setTimeout(r, 100));
 
-  private sendKeepalive(): void {
-    if (!this.isConnected || !this.socket || !this.cameraIp) return;
+        // Step 6: Stream keyframe / session init 0x1018 on Channel 0
+        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x1018, Buffer.alloc(0), this.cmdSeq++));
+        await new Promise(r => setTimeout(r, 100));
 
-    const lumiFrame = buildLumiFrame(LUMI_TYPE_KEEPALIVE, Buffer.alloc(0), this.seq++);
-    const drwHeader = Buffer.from([DRW_MARKER, CHAN_CMD, 0x00, 0x01]);
-    const packetData = Buffer.concat([drwHeader, lumiFrame]);
-    const encrypted = ppcsEncrypt(this.ppcsKeyBuf, packetData);
-    const ppppPacket = buildPPPP(MSG_DRW, encrypted);
-
-    this.socket.send(ppppPacket, this.cameraPort, this.cameraIp);
-  }
-
-  private handleLumiFrame(channel: number, data: Buffer): void {
-    if (data.subarray(0, 4).toString('ascii') !== 'lumi') return;
-
-    const frameType = data.readUInt32BE(4);
-    const seq = data.readUInt32BE(8);
-    const len = data.readUInt32BE(12);
-    const payload = data.subarray(16, 16 + len);
-
-    if (channel === CHAN_VIDEO) {
-      this.handleVideoPayload(payload);
-    } else {
-      this.emit('command', { frameType, seq, payload });
+        // Step 7: Stream start 0x101C on Channel 3
+        this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START, Buffer.alloc(0), this.cmdSeq++));
+      }
     }
   }
 
-  private handleVideoPayload(payload: Buffer): void {
-    if (payload.length < 24) return;
+  private frameStartSeq: number = 0;
+  private videoFrags: Map<number, Buffer> = new Map();
+  private currentExpectedLen: number = 0;
+  private currentAccumulatedLen: number = 0;
 
-    const header: P2PFrameHeader = {
-      frmNo: payload.readUInt32LE(0),
-      codecId: payload.readUInt32LE(4),
-      flags: payload.readUInt32LE(8),
-      camIndex: payload.readUInt32LE(12),
-      iFrameIndex: payload.readUInt32LE(16),
-      timestamp: Number(payload.readBigUInt64LE ? payload.readBigUInt64LE(16) : payload.readUInt32LE(16)),
-    };
+  private async handleVideoData(idx: number, data: Buffer): Promise<void> {
+    const isAvioHead = data.length >= 32 &&
+      (data.readUInt16LE(0) === 0x004E || data.readUInt16LE(0) === 0x004F) &&
+      (data.readUInt32LE(16) >= 320 && data.readUInt32LE(16) <= 4096) &&
+      (data.readUInt32LE(20) >= 240 && data.readUInt32LE(20) <= 4096) &&
+      (data.readUInt32LE(24) <= 60) &&
+      (data.readUInt32LE(28) > 0 && data.readUInt32LE(28) <= 2000000);
 
-    const encryptedVideo = payload.subarray(24);
-    let decryptedData = encryptedVideo;
+    if (isAvioHead && this.videoFrags.size > 0) {
+      await this.flushCurrentFrame();
+    }
 
-    if (this.videoKey && encryptedVideo.length >= 16) {
+    if (isAvioHead) {
+      this.frameStartSeq = idx;
+      this.currentExpectedLen = 32 + data.readUInt32LE(28);
+      this.currentAccumulatedLen = 0;
+      this.videoFrags.clear();
+    }
+
+    this.videoFrags.set(idx, data);
+    this.currentAccumulatedLen += data.length;
+
+    if (this.currentExpectedLen > 0 && this.currentAccumulatedLen >= this.currentExpectedLen) {
+      await this.flushCurrentFrame();
+    }
+  }
+
+  private async flushCurrentFrame(): Promise<void> {
+    if (this.videoFrags.size === 0) return;
+    const entries = Array.from(this.videoFrags.entries());
+    entries.sort(([a], [b]) => ((a - this.frameStartSeq) & 0xFFFF) - ((b - this.frameStartSeq) & 0xFFFF));
+    const full = Buffer.concat(entries.map(([, buf]) => buf));
+    this.videoFrags.clear();
+    this.currentExpectedLen = 0;
+    this.currentAccumulatedLen = 0;
+
+    if (full.length < 32) return;
+    const codecId = full.readUInt16LE(0);
+    if (codecId !== 0x004E && codecId !== 0x004F) return;
+
+    this.frameCount++;
+    let rawH264: Buffer = full.subarray(32);
+    if (this.decryptor && full.length > 48) {
       try {
-        const iv = encryptedVideo.subarray(0, 16);
-        const ciphertext = encryptedVideo.subarray(16);
-        const decipher = crypto.createDecipheriv('aes-128-cbc', this.videoKey.subarray(0, 16), iv);
-        decipher.setAutoPadding(false);
-        decryptedData = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-      } catch (err: any) {
-        // If AES fails, fallback to raw
+        const payload = full.subarray(32);
+        rawH264 = this.decryptor.decrypt(payload);
+      } catch {
+        rawH264 = full.subarray(48);
       }
     }
 
-    const frame: VideoFrame = {
-      header,
-      data: decryptedData,
-      timestamp: header.timestamp || Date.now(),
-    };
+    const isKeyframe = (full.length >= 8 && full.readUInt32LE(4) === 1) ||
+                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x67])) ||
+                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x40])) ||
+                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x42]));
 
-    this.emit('frame', frame);
-
-    // Broadcast frame to RTSP clients
-    if (this.rtspServer && decryptedData.length > 0) {
-      this.rtspServer.broadcastFrame(decryptedData, frame.timestamp);
+    if (isKeyframe) {
+      this.hasSeenKeyframe = true;
     }
+
+    if (!this.hasSeenKeyframe) return;
+
+    this.emit('raw_frame', full);
+
+    if (this.rtspServer) {
+      this.rtspServer.broadcastFrame(rawH264, Date.now());
+    }
+    this.emit('frame', { data: rawH264, isKeyframe, timestamp: Date.now() });
   }
 
-  /**
-   * Stop the bridge, release UDP sockets and stop RTSP server
-   */
-  public disconnect(): void {
-    if (this.keepaliveTimer) {
-      clearInterval(this.keepaliveTimer);
-      this.keepaliveTimer = null;
+  public stop(): void {
+    this.isConnected = false;
+    if (this.discoveryTimer) clearInterval(this.discoveryTimer);
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+    if (this.rtspServer) this.rtspServer.stop();
+    if (this.decryptor) {
+      this.decryptor.destroy();
+      this.decryptor = null;
     }
     if (this.socket) {
       this.socket.close();
       this.socket = null;
     }
-    if (this.rtspServer) {
-      this.rtspServer.stop();
-      this.rtspServer = null;
-    }
-    this.isConnected = false;
-    this.emit('disconnected');
   }
 }
