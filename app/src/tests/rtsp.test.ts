@@ -108,12 +108,12 @@ test('PLAY enables sending; a small NAL produces one RTP packet (M bit set)', ()
   const s = attach(srv);
   send(s, 'SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1');
   send(s, 'PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2');
-  const smallNal = Buffer.from([0x67, 0x01, 0x02, 0x03]); // type 7 (SPS-size)
+  const smallNal = Buffer.from([0x65, 0x01, 0x02, 0x03]); // type 5 (IDR)
   s.writes = [];
   srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), smallNal]), 1000);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 0);
-  // PLAY already pushed sps+pps (2 packets); our broadcast adds 1 small NAL
-  const last = rtpInfo(frames[frames.length - 1].payload);
+  assert.equal(frames.length, 1);
+  const last = rtpInfo(frames[0].payload);
   assert.equal(last.marker, 1);
   assert.equal(last.payloadType, 96);
   assert.ok(last.payload.equals(smallNal));
@@ -153,7 +153,7 @@ test('HEVC large NAL is packetized into FU and reassembles exactly', () => {
 
   const body = Buffer.alloc(2000);
   for (let i = 0; i < body.length; i++) body[i] = (i * 13) & 0xff;
-  const nal = Buffer.concat([Buffer.from([0x82, 0x01]), body]); // type 1, 2-byte hdr
+  const nal = Buffer.concat([Buffer.from([0x26, 0x01]), body]); // type 19 (IDR), 2-byte hdr
   s.writes = [];
   srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), nal]), 3000);
 

@@ -242,13 +242,28 @@ export class RtspServer extends EventEmitter {
   private audioRtpSeq: number = 0;
   private audioRtpSsrc: number = Math.floor(Math.random() * 0xFFFFFFFF);
   private audioRtpTimestamp: number = 0;
+  private baseWallClock: number = 0;
+
+  // ── Jitter / Pacing buffer ──────────────────────────────────────────────
+  // Video frames arrive in bursts over UDP; we drain them at a smooth rate
+  // so VLC / RTSP clients never see back-to-back frames with near-zero gap.
+  private videoQueue: Buffer[] = [];
+  private videoPacer: NodeJS.Timeout | null = null;
+  // Target drain interval in ms.  30 fps → 33 ms; 20 fps → 50 ms.
+  // We use 33 ms as a safe default; the pacer naturally skips ticks when
+  // no frames are queued.
+  private readonly PACER_INTERVAL_MS = 33;
+  // Maximum queue depth before we start dropping the oldest P-frames to
+  // prevent unbounded latency accumulation.
+  private readonly MAX_QUEUE_DEPTH = 6;
+
   public isHevc: boolean = false;
   public vps: Buffer | null = null;
   public sps: Buffer | null = null;
   public pps: Buffer | null = null;
   public lastKeyframe: Buffer | null = null;
   // DESCRIBE requests that arrived before SPS/PPS were known are held here
-  private pendingDescribes: Array<{ socket: net.Socket; cseq: string }> = [];
+  private pendingDescribes: Array<{ socket: net.Socket; cseq: number | string }> = [];
 
   /** Call after SPS/PPS are set to flush any pending DESCRIBE responses. */
   public flushPendingDescribes(): void {
@@ -258,7 +273,7 @@ export class RtspServer extends EventEmitter {
     }
   }
 
-  private sendDescribeResponse(socket: net.Socket, cseq: string): void {
+  private sendDescribeResponse(socket: net.Socket, cseq: number | string): void {
     let videoSdp = '';
     if (this.isHevc) {
       videoSdp =
@@ -321,10 +336,33 @@ export class RtspServer extends EventEmitter {
 
       this.server.listen(this.port, () => {
         this.emit('listening', this.port);
+        // Start video frame pacer — drains the jitter queue at a steady rate
+        this.startVideoPacer();
         resolve();
       });
     });
   }
+
+  /** Start the video pacing timer (idempotent). */
+  private startVideoPacer(): void {
+    if (this.videoPacer) return;
+    this.videoPacer = setInterval(() => {
+      if (this.videoQueue.length === 0) return;
+      // Adaptive drain: if queue builds up during a UDP burst, drain up to 2 frames per tick
+      const count = this.videoQueue.length > 2 ? 2 : 1;
+      for (let i = 0; i < count && this.videoQueue.length > 0; i++) {
+        const frame = this.videoQueue.shift()!;
+        this.sendFrameNow(frame);
+      }
+    }, 20);
+  }
+
+  /** Stop and clean up the video pacer. */
+  public stopVideoPacer(): void {
+    if (this.videoPacer) { clearInterval(this.videoPacer); this.videoPacer = null; }
+    this.videoQueue.length = 0;
+  }
+
 
   private handleClient(socket: net.Socket): void {
     const client: RtspClient = {
@@ -474,13 +512,7 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: url=${cleanUrl}/track0;seq=${this.rtpSeq};rtptime=${this.videoRtpTimestamp},url=${cleanUrl}/track1;seq=${this.audioRtpSeq};rtptime=${this.audioRtpTimestamp}\r\n\r\n`;
         client.socket.write(response);
 
-        // Immediately send cached keyframe to newly playing client so video starts instantly without gray screen
-        if (this.lastKeyframe) {
-          this.broadcastFrame(this.lastKeyframe, undefined, client);
-          client.receivedKeyframe = true;
-        }
-
-        // Request live IDR from camera
+        // Request live IDR from camera so client starts cleanly on a fresh keyframe
         this.emit('need_keyframe');
         break;
       }
@@ -509,37 +541,81 @@ export class RtspServer extends EventEmitter {
   }
 
   /**
-   * Broadcast audio frame (AAC MPEG4-GENERIC) as RFC 3640 compliant RTP packets
+   * Broadcast audio frame (AAC MPEG4-GENERIC) as RFC 3640 compliant RTP packets.
+   *
+   * AAC LC at 16000 Hz always has exactly 1024 samples per frame.
+   * RFC 3640 §4.1: RTP timestamp MUST increment by the number of audio samples
+   * contained in the AU — NOT by wall-clock elapsed time.
+   * Using wall-clock (Date.now()) causes the "saw wave" jitter because system
+   * timer resolution is coarser than the 64ms AAC frame interval.
    */
   public broadcastAudio(audioData: Buffer, timestampMs?: number): void {
     if (this.clients.size === 0 || !audioData.length) return;
 
-    // Strip ADTS header and slice exact declared ADTS frame length
-    let rawAac = audioData;
-    if (audioData.length >= 7 && audioData[0] === 0xFF && (audioData[1] & 0xF0) === 0xF0) {
-      const hasCrc = (audioData[1] & 0x01) === 0;
-      const hdrLen = hasCrc ? 9 : 7;
-      const adtsLen = ((audioData[3] & 0x03) << 11) | (audioData[4] << 3) | ((audioData[5] & 0xE0) >> 5);
-      const frameEnd = (adtsLen > hdrLen && adtsLen <= audioData.length) ? adtsLen : audioData.length;
-      rawAac = audioData.subarray(hdrLen, frameEnd);
+    // Scan for all ADTS frames in the audio buffer (handles single or multi-frame packets)
+    let offset = 0;
+    let frameCount = 0;
+
+    while (offset < audioData.length) {
+      const remaining = audioData.subarray(offset);
+      if (remaining.length >= 7 && remaining[0] === 0xFF && (remaining[1] & 0xF0) === 0xF0) {
+        const hasCrc = (remaining[1] & 0x01) === 0;
+        const hdrLen = hasCrc ? 9 : 7;
+        const adtsLen = ((remaining[3] & 0x03) << 11) | (remaining[4] << 3) | ((remaining[5] & 0xE0) >> 5);
+        if (adtsLen <= hdrLen || adtsLen > remaining.length) {
+          break;
+        }
+        const rawAac = remaining.subarray(hdrLen, adtsLen);
+        this.sendSingleAacFrame(rawAac, frameCount === 0 ? timestampMs : undefined);
+        offset += adtsLen;
+        frameCount++;
+      } else {
+        // If not ADTS formatted (e.g. raw AAC frame passed directly)
+        if (frameCount === 0) {
+          this.sendSingleAacFrame(audioData, timestampMs);
+        }
+        break;
+      }
+    }
+  }
+
+  private sendSingleAacFrame(rawAac: Buffer, timestampMs?: number): void {
+    if (!rawAac.length) return;
+
+    // AAC LC: always 1024 samples per frame, clock at 16000 Hz.
+    // Increment by 1024 per frame with drift compensation against wall clock.
+    if (typeof timestampMs === 'number' && timestampMs > 0) {
+      this.audioRtpTimestamp = Math.floor((timestampMs * 16) % 0xFFFFFFFF) >>> 0;
+    } else if (this.audioRtpTimestamp === 0) {
+      if (!this.baseWallClock) this.baseWallClock = Date.now();
+      const elapsed = Date.now() - this.baseWallClock;
+      this.audioRtpTimestamp = Math.floor(elapsed * 16) >>> 0;
+    } else {
+      const nextExpected = (this.audioRtpTimestamp + 1024) >>> 0;
+      if (this.baseWallClock) {
+        const wallClockRtp = Math.floor((Date.now() - this.baseWallClock) * 16) >>> 0;
+        const drift = Math.abs(wallClockRtp - nextExpected);
+        // If drift exceeds 200ms (3200 ticks at 16kHz), resync to wall clock
+        if (drift > 3200) {
+          this.audioRtpTimestamp = wallClockRtp;
+        } else {
+          this.audioRtpTimestamp = nextExpected;
+        }
+      } else {
+        this.audioRtpTimestamp = nextExpected;
+      }
     }
 
-    let rtpTimestamp: number;
-    if (typeof timestampMs === 'number' && timestampMs > 0) {
-      rtpTimestamp = Math.floor((timestampMs * 16) % 0xFFFFFFFF) >>> 0;
-    } else {
-      this.audioRtpTimestamp = (this.audioRtpTimestamp + 1024) >>> 0;
-      rtpTimestamp = this.audioRtpTimestamp;
-    }
+    const rtpTimestamp = this.audioRtpTimestamp;
 
     // RFC 3640 AAC-hbr packet format:
-    // [0..1] AU-headers-length = 16 bits (0x0010)
-    // [2..3] AU-header = (auLen << 3)
+    // [0..1] AU-headers-length = 16 bits (number of bits in the AU-header section)
+    // [2..3] AU-header = (auSize << 3) | index (index=0 for single AU)
     // [4..]  Raw AAC frame data
     const auLen = rawAac.length;
     const auHdrBuf = Buffer.alloc(4);
-    auHdrBuf.writeUInt16BE(16, 0);
-    auHdrBuf.writeUInt16BE((auLen << 3) & 0xFFFF, 2);
+    auHdrBuf.writeUInt16BE(16, 0);              // AU-headers-length: 16 bits
+    auHdrBuf.writeUInt16BE((auLen << 3) & 0xFFFF, 2); // AU-header: size+index
 
     const rtpHeader = Buffer.alloc(12);
     rtpHeader[0] = 0x80;
@@ -551,10 +627,64 @@ export class RtspServer extends EventEmitter {
     this.sendInterleavedRtp(2, Buffer.concat([rtpHeader, auHdrBuf, rawAac]));
   }
 
+
   /**
-   * Broadcast video frame as RFC 6184 (H.264) or RFC 7798 (H.265) compliant RTP packets
+   * Enqueue a video frame for smooth, paced delivery to RTSP clients.
+   *
+   * Frames arrive from the camera in UDP bursts.  Without pacing, a burst of
+   * 5 P-frames at once causes VLC's clock to jump (all arrive within ~1 ms),
+   * then freeze for the inter-burst gap.  We place frames in a small queue and
+   * drain them at a steady 33 ms interval via the pacing timer.
+   *
+   * Keyframes bypass the depth-drop limit so they always get through.
+   * Excess P-frames are dropped from the *front* (oldest) to keep latency low.
    */
-  public broadcastFrame(frameData: Buffer, timestampMs?: number, targetClient?: RtspClient): void {
+  public broadcastFrame(frameData: Buffer, _timestampMs?: number, targetClient?: RtspClient): void {
+    if (!frameData.length) return;
+    // Direct send for single-client targeted frames or if pacer is not active
+    if (targetClient || !this.videoPacer) {
+      this.sendFrameNow(frameData, targetClient);
+      return;
+    }
+    // If queue exceeds 60 frames (~2s backlog), flush the whole broken GOP and request IDR
+    if (this.videoQueue.length > 60) {
+      this.videoQueue.length = 0;
+      for (const c of this.clients) {
+        c.receivedKeyframe = false;
+      }
+      this.emit('need_keyframe');
+      return;
+    }
+    this.videoQueue.push(frameData);
+  }
+
+  /** Check whether an Annex-B frame buffer starts with a keyframe NAL. */
+  private frameIsKeyframe(frameData: Buffer): boolean {
+    let i = 0;
+    const len = frameData.length;
+    while (i < len - 4) {
+      let prefixLen = 0;
+      if (frameData[i] === 0 && frameData[i+1] === 0 && frameData[i+2] === 1) prefixLen = 3;
+      else if (frameData[i] === 0 && frameData[i+1] === 0 && frameData[i+2] === 0 && frameData[i+3] === 1) prefixLen = 4;
+      if (prefixLen === 0) { i++; continue; }
+      const nalByte = frameData[i + prefixLen];
+      if (this.isHevc) {
+        const t = (nalByte >> 1) & 0x3F;
+        if (t === 19 || t === 20 || t === 21 || t === 32 || t === 33 || t === 34) return true;
+      } else {
+        const t = nalByte & 0x1F;
+        if (t === 5 || t === 7 || t === 8) return true;
+      }
+      i += prefixLen + 1;
+    }
+    return false;
+  }
+
+  /**
+   * Internal: immediately transmit a video frame as RFC 6184 / RFC 7798 RTP packets.
+   * Called by the pacing timer or directly for targeted single-client sends.
+   */
+  public sendFrameNow(frameData: Buffer, targetClient?: RtspClient): void {
     if (!frameData.length) return;
 
     // Split frame into NAL units (Annex B format)
@@ -615,11 +745,11 @@ export class RtspServer extends EventEmitter {
         if (nalType === 32) this.vps = Buffer.from(nal);
         if (nalType === 33) this.sps = Buffer.from(nal);
         if (nalType === 34) this.pps = Buffer.from(nal);
-        if ((nalType >= 16 && nalType <= 21) || nalType === 32 || nalType === 33 || nalType === 34) isKeyframe = true;
+        if (nalType === 19 || nalType === 20 || nalType === 21) isKeyframe = true;
       } else {
         const nalType = nal[0] & 0x1F;
-        if (nalType === 7) { this.sps = Buffer.from(nal); isKeyframe = true; }
-        if (nalType === 8) { this.pps = Buffer.from(nal); isKeyframe = true; }
+        if (nalType === 7) this.sps = Buffer.from(nal);
+        if (nalType === 8) this.pps = Buffer.from(nal);
         if (nalType === 5) isKeyframe = true;
       }
     }
@@ -628,10 +758,6 @@ export class RtspServer extends EventEmitter {
       this.lastKeyframe = frameData;
       for (const c of this.clients) {
         c.receivedKeyframe = true;
-      }
-    } else {
-      for (const c of this.clients) {
-        if (!c.receivedKeyframe) c.receivedKeyframe = true;
       }
     }
 
@@ -642,15 +768,18 @@ export class RtspServer extends EventEmitter {
       this.flushPendingDescribes();
     }
 
-    if (this.clients.size === 0 && !targetClient) return;
-
     let rtpTimestamp: number;
-    if (typeof timestampMs === 'number' && timestampMs > 0) {
-      rtpTimestamp = Math.floor((timestampMs * 90) % 0xFFFFFFFF) >>> 0;
-    } else {
-      this.videoRtpTimestamp = (this.videoRtpTimestamp + 4500) >>> 0;
-      rtpTimestamp = this.videoRtpTimestamp;
+    if (!this.baseWallClock) this.baseWallClock = Date.now();
+    const elapsed = Date.now() - this.baseWallClock;
+    rtpTimestamp = Math.floor((elapsed * 90) % 0xFFFFFFFF) >>> 0;
+    // Enforce strictly monotonic timestamps with a 1ms (+90 ticks) guard
+    // so downstream players (VLC, FFmpeg) maintain clean jitter-free playback
+    // without runaway clock drift relative to audio.
+    const minNext = (this.videoRtpTimestamp + 90) >>> 0;
+    if (rtpTimestamp < minNext) {
+      rtpTimestamp = minNext;
     }
+    this.videoRtpTimestamp = rtpTimestamp;
     const MAX_PAYLOAD_SIZE = 1380;
 
     for (let n = 0; n < nalUnits.length; n++) {
@@ -775,6 +904,7 @@ export class RtspServer extends EventEmitter {
   }
 
   public stop(): void {
+    this.stopVideoPacer();
     for (const client of this.clients) {
       client.socket.destroy();
     }
@@ -983,6 +1113,9 @@ export class AqaraCameraBridge extends EventEmitter {
     if (!this.rtspServer) {
       try {
         this.rtspServer = new RtspServer(this.rtspPort, this.did);
+        if (this.did.includes('agl004') || this.did.includes('g5')) {
+          this.rtspServer.isHevc = true;
+        }
         this.rtspServer.on('need_keyframe', () => {
           if (this.isConnected) {
             this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
@@ -1111,15 +1244,14 @@ export class AqaraCameraBridge extends EventEmitter {
     this.isConnected = false;
     this.isStreamStarted = false;
     this.hasAudioStarted = false;
+    this.sessionStarted = false;
+    this.liveStreamRequested = false;
     this.pendingAcks.clear();
     this.ch0Seq = 0;
     this.ch3Seq = 0;
-    this.currentExpectedLen = 0;
-    this.currentAccumulatedLen = 0;
-    this.videoFrags.clear();
-    this.audioFrags.clear();
-    this.audioExpectedLen = 0;
-    this.audioAccumulatedLen = 0;
+    this.mediaStreamBuffer = Buffer.alloc(0);
+    this.lastAudioTs = -1;
+    this.lastAudioNonce = null;
     this.emit('disconnected');
 
     try {
@@ -1154,7 +1286,7 @@ export class AqaraCameraBridge extends EventEmitter {
     }
     list.push(idx);
 
-    if (list.length >= 16) {
+    if (list.length >= 8) {
       this.flushAcks(chan);
     }
   }
@@ -1188,15 +1320,14 @@ export class AqaraCameraBridge extends EventEmitter {
   }
 
   private handleUdpPacket(msg: Buffer, rinfo: dgram.RemoteInfo): void {
-    let pkt: Buffer = Buffer.from(msg);
-    if (pkt[0] !== PPCS_MAGIC) {
-      pkt = Buffer.from(ppcsDecrypt(this.ppcsKeyBuf, pkt));
-    }
-    if (pkt[0] !== PPCS_MAGIC) return;
+    if (msg.length < 4) return;
+    const dec = ppcsDecrypt(this.ppcsKeyBuf, msg);
+    const magic = dec[0];
+    const msgType = dec[1];
+    const len = dec.readUInt16BE(2);
+    const payload = dec.subarray(4, 4 + len);
 
-    const msgType = pkt[1];
-    const len = pkt.readUInt16BE(2);
-    const payload = pkt.subarray(4, 4 + len);
+    if (magic !== PPCS_MAGIC) return;
 
     // TUTK Master Server response: type 0x40 returns dynamic camera endpoint
     if (msgType === 0x40 && payload.length >= 8) {
@@ -1217,7 +1348,10 @@ export class AqaraCameraBridge extends EventEmitter {
       this.socket?.send(punchPkt, this.cameraPort, this.cameraIp);
       const rdyPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_P2P_RDY, this.punchBuf));
       this.socket?.send(rdyPkt, this.cameraPort, this.cameraIp);
-    } else if (msgType === MSG_P2P_RDY) {
+      return;
+    }
+
+    if (msgType === MSG_P2P_RDY) {
       this.cameraIp = rinfo.address;
       this.cameraPort = rinfo.port;
       const rdyAck = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_P2P_RDY_ACK));
@@ -1277,20 +1411,20 @@ export class AqaraCameraBridge extends EventEmitter {
     };
     setTimeout(sendLogin, 200);
 
-    // 3. Start recurring 25ms ACK batch timer
+    // 3. Fast 10ms ACK batch timer
     if (this.ackTimer) clearInterval(this.ackTimer);
     this.ackTimer = setInterval(() => {
       for (const ch of Array.from(this.pendingAcks.keys())) {
         this.flushAcks(ch);
       }
-    }, 25);
+    }, 10);
 
-    // 4. PPCS Keepalive timer (every 5s send MSG_ALIVE to maintain UDP NAT hole)
+    // 4. PPCS Keepalive timer (every 2.5s send MSG_ALIVE to maintain UDP NAT hole)
     this.keepaliveTimer = setInterval(() => {
       if (this.socket && this.cameraIp && this.cameraPort) {
         this.socket.send(ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_ALIVE)), this.cameraPort, this.cameraIp);
       }
-    }, 5000);
+    }, 2500);
   }
 
   private async handleChannel0Data(data: Buffer): Promise<void> {
@@ -1298,21 +1432,27 @@ export class AqaraCameraBridge extends EventEmitter {
       const frameType = data.readUInt32LE(4);
       if (process.env.DEBUG) console.log('📨 [Chan 0] frameType: 0x' + frameType.toString(16), 'len:', data.length);
       if (frameType === LUMI_TYPE_LOGIN_RESP) {
-        this.isStreamStarted = true;
-        if (process.env.DEBUG) console.log(`📨 [${this.did}] Camera Lumi Login Resp:`, data.subarray(16).toString());
+        if (!this.sessionStarted) {
+          this.sessionStarted = true;
+          this.isStreamStarted = true;
+          if (process.env.DEBUG) console.log(`📨 [${this.did}] Camera Lumi Login Resp:`, data.subarray(16).toString());
 
-        // Step 1: Session start 0x1002 on Channel 0
-        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_SESSION_START, Buffer.alloc(0), this.cmdSeq++));
+          // Step 1: Session start 0x1002 on Channel 0
+          this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_SESSION_START, Buffer.alloc(0), this.cmdSeq++));
+        }
       } else if (frameType === LUMI_TYPE_SESSION_START_RESP) {
-        this.isStreamStarted = true;
-        // Step 2: Stream start 0x101C on Channel 3
-        this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START, Buffer.alloc(0), this.cmdSeq++));
+        if (!this.liveStreamRequested) {
+          this.liveStreamRequested = true;
+          this.isStreamStarted = true;
+          // Step 2: Stream start 0x101C on Channel 3
+          this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START, Buffer.alloc(0), this.cmdSeq++));
 
-        // Step 3: Stream keyframe 0x1018 on Channel 0
-        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
+          // Step 3: Stream keyframe 0x1018 on Channel 0
+          this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
+        }
       } else if (frameType === LUMI_TYPE_AUDIO_START_RESP) {
         this.hasAudioStarted = true;
-        if (process.env.DEBUG) console.log('🔊 [Audio] Start response received; live mic streaming active');
+        if (process.env.DEBUG) console.log('🔊 [Audio] Start response received');
         this.emit('audio_started');
       } else if (frameType === LUMI_TYPE_AUDIO_SEND_RESP) {
         if (process.env.DEBUG) console.log('🔊 [Talkback] Camera accepted speaker channel');
@@ -1325,65 +1465,73 @@ export class AqaraCameraBridge extends EventEmitter {
   private videoFrags: Map<number, Buffer> = new Map();
   private currentExpectedLen: number = 0;
   private currentAccumulatedLen: number = 0;
-
-  // Audio reassembly state (separate from video to avoid corruption)
-  private audioStartSeq: number = 0;
-  private audioFrags: Map<number, Buffer> = new Map();
-  private audioExpectedLen: number = 0;
-  private audioAccumulatedLen: number = 0;
+  private sessionStarted: boolean = false;
+  private liveStreamRequested: boolean = false;
   private talkbackActive: boolean = false;
   private talkbackTimer: NodeJS.Timeout | null = null;
-
+  private mediaStreamBuffer: Buffer = Buffer.alloc(0);
+  private _firstVideoPkt: boolean = true;
   private _vidPktCount = 0;
+
+  private lastAudioTs: number = -1;
+  private lastAudioNonce: Buffer | null = null;
+
   private async handleVideoData(idx: number, data: Buffer): Promise<void> {
     this._vidPktCount++;
-    if (process.env.DEBUG && (this._vidPktCount <= 5 || this._vidPktCount % 20 === 0)) {
-      console.log(`📦 [Chan 1] Pkt #${this._vidPktCount}: idx=${idx} len=${data.length} codec=0x${data.subarray(0, 2).toString('hex')}`);
-    }
     this.emit('packet_data_ch1', idx, data);
 
     if (this._firstVideoPkt) {
       this._firstVideoPkt = false;
-      if (process.env.DEBUG) console.log(`🎞️ [${this.did}] First video packet: idx=${idx} len=${data.length} hex=${data.subarray(0, 16).toString('hex')}`);
+      if (process.env.DEBUG) {
+        console.log(`🎞️ [${this.did}] First media packet: idx=${idx} len=${data.length} hex=${data.subarray(0, 16).toString('hex')}`);
+      }
     }
 
-    // Audio AVIO frames (0x0088) are interleaved on the same media channel.
-    if (data.length >= 2 && data.readUInt16LE(0) === AVIO_AUDIO) {
-      await this.handleAudioData(idx, data);
-      return;
+    // 1. Audio AVIO frames (0x0088)
+    if (data.length >= 40 && data.readUInt16LE(0) === AVIO_AUDIO) {
+      const payLen = data.readUInt32LE(28);
+      const frameLen = 40 + payLen;
+      if (payLen > 0 && payLen <= 4096 && frameLen <= data.length) {
+        const nonce = data.subarray(32, 40);
+
+        // Filter duplicate audio packets (PPCS UDP retries/retransmissions)
+        if (this.lastAudioNonce && nonce.equals(this.lastAudioNonce)) {
+          return;
+        }
+        this.lastAudioNonce = Buffer.from(nonce);
+
+        this.processAudioFrame(data.subarray(0, frameLen));
+        return;
+      }
     }
 
-    const isCodecMatch = data.length >= 32 &&
-      (data.readUInt16LE(0) === 0x004E || data.readUInt16LE(0) === 0x004F);
-    const declaredLen = isCodecMatch ? data.readUInt32LE(28) : 0;
-    const isValidLen = declaredLen > 0 && declaredLen <= 2000000;
-
-    // A packet is only a true frame start if we are not in the middle of receiving the previous frame's sequence window
-    const inCurrentFrameWindow = this.currentExpectedLen > 0 &&
-      ((idx - this.frameStartSeq) & 0xFFFF) > 0 &&
-      ((idx - this.frameStartSeq) & 0xFFFF) <= Math.ceil(this.currentExpectedLen / 800) + 4;
-
-    const isAvioHead = isCodecMatch && isValidLen && !inCurrentFrameWindow;
-
-    if (isAvioHead && this.videoFrags.size > 0) {
-      await this.flushCurrentFrame();
-    }
+    // 2. Video AVIO frames (0x004E / 0x004F)
+    const isAvioHead = data.length >= 41 &&
+      (data.readUInt16LE(0) === 0x004E || data.readUInt16LE(0) === 0x004F) &&
+      data.readUInt32LE(28) > 0 && data.readUInt32LE(28) <= 2000000 &&
+      data[40] <= 16; // nalCount is 1..16
 
     if (isAvioHead) {
+      if (this.currentExpectedLen > 0 && this.currentAccumulatedLen >= this.currentExpectedLen) {
+        this.flushCurrentFrame();
+      } else if (this.videoFrags.size > 0) {
+        // Previous frame was incomplete (lost UDP fragments) — discard it cleanly to avoid corruption
+        this.videoFrags.clear();
+        this.currentExpectedLen = 0;
+        this.currentAccumulatedLen = 0;
+      }
+
       this.frameStartSeq = idx;
-      this.currentExpectedLen = 32 + declaredLen;
+      this.currentExpectedLen = 32 + data.readUInt32LE(28);
       this.currentAccumulatedLen = 0;
-      this.videoFrags.clear();
     }
 
-    // Only accumulate if we have an active frame
     if (this.currentExpectedLen === 0) return;
 
-    // Check packet sequence number relative to frameStartSeq (in 16-bit modular space)
     const diff = (idx - this.frameStartSeq) & 0xFFFF;
-    const maxPkts = Math.ceil(this.currentExpectedLen / 800) + 4;
+    const maxPkts = Math.ceil(this.currentExpectedLen / 800) + 16;
     if (diff >= 32768 || diff > maxPkts) {
-      return; // Stale or out-of-bounds packet from another frame
+      return;
     }
 
     if (!this.videoFrags.has(idx)) {
@@ -1392,43 +1540,35 @@ export class AqaraCameraBridge extends EventEmitter {
     }
 
     if (this.currentExpectedLen > 0 && this.currentAccumulatedLen >= this.currentExpectedLen) {
-      await this.flushCurrentFrame();
+      this.flushCurrentFrame();
     }
   }
 
-  private async flushCurrentFrame(): Promise<void> {
+  private flushCurrentFrame(): void {
     if (this.videoFrags.size === 0) return;
     const entries = Array.from(this.videoFrags.entries());
     entries.sort(([a], [b]) => ((a - this.frameStartSeq) & 0xFFFF) - ((b - this.frameStartSeq) & 0xFFFF));
+
     const full = Buffer.concat(entries.map(([, buf]) => buf));
     const expected = this.currentExpectedLen;
     this.videoFrags.clear();
     this.currentExpectedLen = 0;
     this.currentAccumulatedLen = 0;
 
-    if (full.length < 32) {
-      if (process.env.DEBUG) console.log(`🔴 [flush] SKIP: too short ${full.length}`);
-      return;
-    }
-    if (expected > 0 && full.length < expected) {
-      if (process.env.DEBUG) console.warn(`⚠️ Incomplete frame dropped: got ${full.length} / expected ${expected}`);
-      // Request instant keyframe from camera so client reference buffer resets without smudging
-      if (this.isConnected && this.rtspServer?.hasPlayingClients()) {
-        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
-      }
-      return;
-    }
+    if (full.length < 32) return;
+    if (expected > 0 && full.length < expected) return;
+
     const codecId = full.readUInt16LE(0);
-    if (codecId !== 0x004E && codecId !== 0x004F) {
-      if (process.env.DEBUG) console.log(`🔴 [flush] SKIP: bad codecId 0x${codecId.toString(16)} len=${full.length}`);
-      return;
-    }
+    if (codecId !== 0x004E && codecId !== 0x004F) return;
 
+    this.processVideoFrame(full);
+  }
 
+  private processVideoFrame(full: Buffer): void {
+    const codecId = full.readUInt16LE(0);
     this.frameCount++;
 
     // Update isHevc from the actual codec so the SDP is accurate.
-    // Only safe when no RTSP client is yet playing (pre-negotiation).
     if (this.rtspServer) {
       const isHevcFrame = codecId === 0x004F;
       if (this.rtspServer.isHevc !== isHevcFrame && !this.rtspServer.hasPlayingClients()) {
@@ -1453,18 +1593,12 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     }
 
-    const isKeyframe = (full.length >= 4 && (full.readUInt16LE(2) === 1 || full.readUInt32LE(4) === 1)) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x67])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x67])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x65])) ||
+    const isKeyframe = rawH264.includes(Buffer.from([0, 0, 0, 1, 0x65])) ||
                        rawH264.includes(Buffer.from([0, 0, 1, 0x65])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x40])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x40])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x42])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x42])) ||
                        rawH264.includes(Buffer.from([0, 0, 0, 1, 0x26])) ||
+                       rawH264.includes(Buffer.from([0, 0, 1, 0x26])) ||
                        rawH264.includes(Buffer.from([0, 0, 0, 1, 0x28])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x2a]));
+                       rawH264.includes(Buffer.from([0, 0, 1, 0x28]));
 
     if (isKeyframe) {
       this.hasSeenKeyframe = true;
@@ -1473,47 +1607,47 @@ export class AqaraCameraBridge extends EventEmitter {
     if (!this.hasSeenKeyframe) return;
 
     this.emit('raw_frame', full);
-
     this.lastVideoFrameAt = Date.now();
 
     if (this.rtspServer) {
-      const hasPlaying = this.rtspServer.hasPlayingClients();
-      if (process.env.DEBUG && (hasPlaying || this.frameCount % 100 === 0)) {
-        console.log(`🎬 [frame] count=${this.frameCount} keyframe=${isKeyframe} rawLen=${rawH264.length} hasPlaying=${hasPlaying} hasSeenKF=${this.hasSeenKeyframe}`);
-      }
       let outFrame = rawH264;
+      const sc = Buffer.from([0, 0, 0, 1]);
+      const hasStartCode = (rawH264.length >= 3 && rawH264[0] === 0 && rawH264[1] === 0 && rawH264[2] === 1) ||
+                           (rawH264.length >= 4 && rawH264[0] === 0 && rawH264[1] === 0 && rawH264[2] === 0 && rawH264[3] === 1);
+
       // For keyframes, prepend SPS+PPS in-band so the decoder can initialize
-      // without relying solely on out-of-band sprop-parameter-sets.
       if (isKeyframe && !this.rtspServer.isHevc) {
         const sps = this.rtspServer.sps;
         const pps = this.rtspServer.pps;
-        const sc = Buffer.from([0, 0, 0, 1]);
         const parts: Buffer[] = [];
         if (sps) { parts.push(sc); parts.push(sps); }
         if (pps) { parts.push(sc); parts.push(pps); }
+        if (!hasStartCode) parts.push(sc);
         parts.push(rawH264);
-        // Only prepend if rawH264 doesn't already START with SPS (0x67)
-        const alreadyHasSps = rawH264.length >= 5 && rawH264[0] === 0 && rawH264[1] === 0 &&
-          rawH264[2] === 0 && rawH264[3] === 1 && (rawH264[4] & 0x1F) === 7;
+        const alreadyHasSps = rawH264.includes(Buffer.from([0, 0, 0, 1, 0x67])) || rawH264.includes(Buffer.from([0, 0, 1, 0x67]));
         if (!alreadyHasSps && (sps || pps)) {
           outFrame = Buffer.concat(parts);
+        } else if (!hasStartCode) {
+          outFrame = Buffer.concat([sc, rawH264]);
         }
       } else if (isKeyframe && this.rtspServer.isHevc) {
         const vps = this.rtspServer.vps;
         const sps = this.rtspServer.sps;
         const pps = this.rtspServer.pps;
-        const sc = Buffer.from([0, 0, 0, 1]);
         const parts: Buffer[] = [];
         if (vps) { parts.push(sc); parts.push(vps); }
         if (sps) { parts.push(sc); parts.push(sps); }
         if (pps) { parts.push(sc); parts.push(pps); }
+        if (!hasStartCode) parts.push(sc);
         parts.push(rawH264);
-        // Only prepend if rawH264 doesn't already START with VPS (NAL type 32)
-        const alreadyHasVps = rawH264.length >= 5 && rawH264[0] === 0 && rawH264[1] === 0 &&
-          rawH264[2] === 0 && rawH264[3] === 1 && ((rawH264[4] >> 1) & 0x3F) === 32;
+        const alreadyHasVps = rawH264.includes(Buffer.from([0, 0, 0, 1, 0x40])) || rawH264.includes(Buffer.from([0, 0, 1, 0x40]));
         if (!alreadyHasVps && (vps || sps || pps)) {
           outFrame = Buffer.concat(parts);
+        } else if (!hasStartCode) {
+          outFrame = Buffer.concat([sc, rawH264]);
         }
+      } else if (!hasStartCode) {
+        outFrame = Buffer.concat([sc, rawH264]);
       }
       if (isKeyframe) {
         this.rtspServer.lastKeyframe = outFrame;
@@ -1523,64 +1657,7 @@ export class AqaraCameraBridge extends EventEmitter {
     this.emit('frame', { data: rawH264, isKeyframe, timestamp: Date.now() });
   }
 
-  public stop(): void {
-    this.isConnected = false;
-    // User turned the stream off: stop trying to keep it alive.
-    this.desiredStreamActive = false;
-    this.resurrecting = false;
-    this.p2pEstablishing = false;
-    if (this.watchdogTimer) { clearInterval(this.watchdogTimer); this.watchdogTimer = null; }
-    if (this.discoveryTimer) clearInterval(this.discoveryTimer);
-    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
-    if (this.ackTimer) clearInterval(this.ackTimer);
-    if (this.talkbackTimer) clearInterval(this.talkbackTimer);
-    if (this.rtspServer) this.rtspServer.stop();
-    if (this.decryptor) {
-      this.decryptor.destroy();
-      this.decryptor = null;
-    }
-    if (this.socket) {
-      this.socket.close();
-      this.socket = null;
-    }
-  }
-
-  // ============= Live Audio Reception =============
-
-  private async handleAudioData(idx: number, data: Buffer): Promise<void> {
-    // The media datagram usually contains exactly one complete audio AVIO frame
-    // (header 32B + 8B nonce + payload), zero-padded to the UDP MTU. Audio frames
-    // are tiny (<200B) so they never span datagrams in practice — process the
-    // exact declared length and ignore the padding.
-    if (data.length >= 32 && data.readUInt16LE(0) === AVIO_AUDIO) {
-      const payLen = data.readUInt32LE(28);
-      const frameLen = 40 + payLen; // header(32) + nonce(8) + payload
-      if (payLen > 0 && payLen <= 4096 && frameLen <= data.length) {
-        this.decryptAndBroadcastAudio(data.subarray(0, frameLen));
-        return;
-      }
-      // Head present but frame extends beyond this datagram -> fragmented path.
-      if (payLen > 0 && payLen <= 4096) {
-        if (this.audioFrags.size > 0) await this.flushAudioFrame();
-        this.audioStartSeq = idx;
-        this.audioExpectedLen = frameLen;
-        this.audioAccumulatedLen = 0;
-        this.audioFrags.clear();
-        this.audioFrags.set(idx, data);
-        this.audioAccumulatedLen += data.length;
-        if (this.audioAccumulatedLen >= this.audioExpectedLen) await this.flushAudioFrame();
-        return;
-      }
-    }
-    // Continuation fragment (no head at start) — accumulate for reassembly.
-    this.audioFrags.set(idx, data);
-    this.audioAccumulatedLen += data.length;
-    if (this.audioExpectedLen > 0 && this.audioAccumulatedLen >= this.audioExpectedLen) {
-      await this.flushAudioFrame();
-    }
-  }
-
-  private decryptAndBroadcastAudio(frame: Buffer): void {
+  private processAudioFrame(frame: Buffer): void {
     let pcm: Buffer = frame.subarray(40);
     if (this.decryptor) {
       try {
@@ -1593,24 +1670,6 @@ export class AqaraCameraBridge extends EventEmitter {
     if (this.rtspServer) {
       this.rtspServer.broadcastAudio(pcm);
     }
-  }
-
-  private async flushAudioFrame(): Promise<void> {
-    if (this.audioFrags.size === 0) return;
-    const entries = Array.from(this.audioFrags.entries());
-    entries.sort(([a], [b]) => ((a - this.audioStartSeq) & 0xFFFF) - ((b - this.audioStartSeq) & 0xFFFF));
-    let full = Buffer.concat(entries.map(([, buf]) => buf));
-    this.audioFrags.clear();
-    // Keep only the declared frame length; drop trailing fragments / padding.
-    if (this.audioExpectedLen > 0 && full.length > this.audioExpectedLen) {
-      full = full.subarray(0, this.audioExpectedLen);
-    }
-    this.audioExpectedLen = 0;
-    this.audioAccumulatedLen = 0;
-
-    if (full.length < 40) return;
-    if (full.readUInt16LE(0) !== AVIO_AUDIO) return;
-    this.decryptAndBroadcastAudio(full);
   }
 
   public isAudioEnabled(): boolean {
@@ -1777,5 +1836,29 @@ export class AqaraCameraBridge extends EventEmitter {
       this.emit('warn', `Cached session invalid: ${err.message}`);
       return false;
     }
+  }
+
+  public stop(): void {
+    this.isConnected = false;
+    this.desiredStreamActive = false;
+    this.resurrecting = false;
+    this.p2pEstablishing = false;
+    if (this.watchdogTimer) { clearInterval(this.watchdogTimer); this.watchdogTimer = null; }
+    if (this.discoveryTimer) { clearInterval(this.discoveryTimer); this.discoveryTimer = null; }
+    if (this.keepaliveTimer) { clearInterval(this.keepaliveTimer); this.keepaliveTimer = null; }
+    if (this.ackTimer) { clearInterval(this.ackTimer); this.ackTimer = null; }
+    if (this.talkbackTimer) { clearInterval(this.talkbackTimer); this.talkbackTimer = null; }
+    if (this.rtspServer) this.rtspServer.stop();
+    if (this.decryptor) {
+      this.decryptor.destroy();
+      this.decryptor = null;
+    }
+    if (this.socket) {
+      try { this.socket.close(); } catch {}
+      this.socket = null;
+    }
+    this.mediaStreamBuffer = Buffer.alloc(0);
+    this.sessionStarted = false;
+    this.liveStreamRequested = false;
   }
 }
