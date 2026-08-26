@@ -112,4 +112,18 @@ export const ENTITIES: EntityConfig[] = [
     attr: "P2P_capture_status",
     icon: "mdi:camera",
   },
+  {
+    domain: "switch",
+    name: "Human Tracking",
+    attr: "humans_track",
+    icon: "mdi:target-account",
+    command: true,
+  },
+  {
+    domain: "switch",
+    name: "PTZ Cruise",
+    attr: "ptz_cruise",
+    icon: "mdi:radar",
+    command: true,
+  },
 ];

@@ -17,6 +17,14 @@ const APP_KEY = "uOJy0qmKwXj6aHUB2KQEIJuXHMDVTAJi";
 let TOKEN: string = process.env.TOKEN || "";
 let USER_ID: string = "";
 
+export function getToken(): string {
+  return TOKEN;
+}
+
+export function getUserId(): string {
+  return USER_ID;
+}
+
 function md5(s: string): string {
   return crypto.createHash("md5").update(s).digest("hex");
 }
@@ -35,7 +43,7 @@ function aqaraSign(opts: {
 }
 
 export const api = axios.create({
-  baseURL: process.env.AQUARA_URL,
+  baseURL: process.env.AQUARA_URL || "https://aiot-rpc-usa.aqara.com",
   headers: {
     "Content-Type": "application/json; charset=utf-8",
     lang: "en",

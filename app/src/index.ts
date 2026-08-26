@@ -5,7 +5,9 @@ import {
   publishLightDiscovery,
   publishSdCardDiscovery,
   publishRtspDiscovery,
+  publishCameraDiscovery,
 } from "./discovery.js";
+import { AqaraCameraBridge } from "./bridge.js";
 import { ENTITIES } from "./entities.js";
 import {
   aqaraDeviceToMQTT,
@@ -49,15 +51,45 @@ const cameraData: Array<{
   device: Device;
   mqttDevice: MQTTDevice;
   hasSpotlight: boolean;
+  bridge?: AqaraCameraBridge;
 }> = [];
 
-for (const camera of cameras) {
+const rtspBasePort = parseInt(process.env.RTSP_PORT || "8554", 10);
+
+for (let i = 0; i < cameras.length; i++) {
+  const camera = cameras[i];
   const mqttDevice = aqaraDeviceToMQTT(camera);
   const capabilities = await checkDeviceCapabilities(camera.did);
+
+  let bridge: AqaraCameraBridge | undefined;
+  if (process.env.ENABLE_P2P_RTSP === "true" && process.env.TOKEN) {
+    try {
+      const rtspPort = rtspBasePort + i;
+      bridge = new AqaraCameraBridge({
+        did: camera.did,
+        token: process.env.TOKEN,
+        rtspPort,
+        videoKey: process.env.VIDEO_KEY,
+      });
+      bridge.on("rtsp_ready", (url) => {
+        console.log(`📹 [P2P RTSP] ${camera.deviceName} stream ready at ${url}`);
+      });
+      bridge.on("connected", ({ ip, port }) => {
+        console.log(`🔌 [P2P Tunnel] ${camera.deviceName} connected to ${ip}:${port}`);
+      });
+      bridge.connect().catch((err) => {
+        console.warn(`⚠️ [P2P Bridge] Could not start P2P stream for ${camera.deviceName}: ${err.message}`);
+      });
+    } catch (err: any) {
+      console.warn(`⚠️ Failed to initialize P2P bridge for ${camera.deviceName}:`, err.message);
+    }
+  }
+
   cameraData.push({
     device: camera,
     mqttDevice,
     hasSpotlight: capabilities.hasSpotlight,
+    bridge,
   });
   console.log(`📋 ${camera.deviceName}: spotlight=${capabilities.hasSpotlight ? "✅" : "❌"}`);
 }
@@ -70,12 +102,14 @@ client.on("connect", () => {
   console.log("🚀 MQTT connected, publishing discovery...");
 
   // Публикуем discovery для всех камер
-  cameraData.forEach(({ mqttDevice, hasSpotlight }) => {
+  cameraData.forEach(({ mqttDevice, hasSpotlight, device }, idx) => {
     ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
     publishLightDiscovery(client, mqttDevice, hasSpotlight);
     publishSdCardDiscovery(client, mqttDevice);
     publishMotionDiscovery(client, mqttDevice);
     publishRtspDiscovery(client, mqttDevice);
+    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || "localhost"}:${rtspBasePort + idx}/live/${device.did}`;
+    publishCameraDiscovery(client, mqttDevice, rtspStreamUrl);
   });
 
   // Подписываемся на команды для всех камер

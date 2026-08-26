@@ -1,0 +1,30 @@
+[17:42:35] === run_e1_capture start (dur=90s) ===
+root           4581      1    6256   3496 do_sys_poll         0 S tcpdump
+[17:42:51] >>> NOW OPEN THE GUINEA PIGS CAMERA LIVE VIEW IN THE APP (90s window) <<<
+/data/local/tmp/e1emu.pcap: 1 file pulled, 0 skipped. 6.5 MB/s (8780130 bytes in 1.285s)
+[17:44:29] pcap saved: /Users/resonaura/aqara-g5pro-mqtt/captures/e1_emu_20260825_174235.pcap (8780130 bytes)
+
+########## ANALYSIS 20260825_174235 ##########
+===== CAPTURE ANALYSIS /Users/resonaura/aqara-g5pro-mqtt/captures/e1_emu_20260825_174235.pcap =====
+total frames: 14303, udp: 0
+
+-- UDP flows (top 15) --
+no big p2p flow found
+########## END ANALYSIS ##########
+[17:44:37] analysis appended to app.log
+[17:44:37] === done ===
+[17:45:07] === run_e1_capture start (dur=90s) ===
+root           4932      1    6256   3416 do_sys_poll         0 S tcpdump
+[17:45:11] >>> NOW OPEN THE GUINEA PIGS CAMERA LIVE VIEW IN THE APP (90s window) <<<
+/data/local/tmp/e1emu.pcap: 1 file pulled, 0 skipped. 101.2 MB/s (1671533 bytes in 0.016s)
+[17:46:43] pcap saved: /Users/resonaura/aqara-g5pro-mqtt/captures/e1_emu_20260825_174507.pcap (1671533 bytes)
+
+########## ANALYSIS 20260825_174507 ##########
+===== CAPTURE ANALYSIS /Users/resonaura/aqara-g5pro-mqtt/captures/e1_emu_20260825_174507.pcap =====
+total frames: 2254, udp: 0
+
+-- UDP flows (top 15) --
+no big p2p flow found
+########## END ANALYSIS ##########
+[17:46:49] analysis appended to app.log
+[17:46:49] === done ===

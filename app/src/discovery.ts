@@ -104,3 +104,27 @@ export function publishRtspDiscovery(
   );
   console.log(`📹 Published discovery for RTSP Stream on ${mqttDevice.name}`);
 }
+
+export function publishCameraDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice,
+  rtspUrl?: string
+) {
+  const baseTopic = `homeassistant/camera/${mqttDevice.id}/camera`;
+  const payload = {
+    name: `${mqttDevice.name} Camera`,
+    unique_id: `${mqttDevice.id}_camera`,
+    topic: `${baseTopic}/image`,
+    ...(rtspUrl ? { stream_source: rtspUrl } : {}),
+    icon: "mdi:camera",
+    device: {
+      identifiers: mqttDevice.identifiers,
+      manufacturer: mqttDevice.manufacturer,
+      model: mqttDevice.model,
+      name: mqttDevice.name,
+    },
+  };
+  client.publish(`${baseTopic}/config`, JSON.stringify(payload), { retain: true });
+  console.log(`🎥 Published discovery for Camera entity on ${mqttDevice.name}`);
+}
+
