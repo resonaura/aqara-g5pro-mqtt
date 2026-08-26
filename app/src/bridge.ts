@@ -219,6 +219,10 @@ export class RtspServer extends EventEmitter {
   private clients: Set<RtspClient> = new Set();
   private rtpSeq: number = 0;
   private rtpSsrc: number = Math.floor(Math.random() * 0xFFFFFFFF);
+  private audioRtpSeq: number = 0;
+  private audioRtpSsrc: number = Math.floor(Math.random() * 0xFFFFFFFF);
+  public isHevc: boolean = false;
+  public vps: Buffer | null = null;
   public sps: Buffer | null = null;
   public pps: Buffer | null = null;
 
@@ -289,26 +293,53 @@ export class RtspServer extends EventEmitter {
         const response =
           `RTSP/1.0 200 OK\r\n` +
           `CSeq: ${cseq}\r\n` +
-          `Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n\r\n`;
+          `Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER\r\n\r\n`;
+        client.socket.write(response);
+        break;
+      }
+
+      case 'GET_PARAMETER':
+      case 'SET_PARAMETER': {
+        const response =
+          `RTSP/1.0 200 OK\r\n` +
+          `CSeq: ${cseq}\r\n` +
+          `Session: ${client.session}\r\n\r\n`;
         client.socket.write(response);
         break;
       }
 
       case 'DESCRIBE': {
-        let fmtpLine = 'a=fmtp:96 packetization-mode=1';
-        if (this.sps && this.pps) {
-          fmtpLine += `;sprop-parameter-sets=${this.sps.toString('base64')},${this.pps.toString('base64')}`;
+        let videoSdp = '';
+        if (this.isHevc) {
+          videoSdp =
+            `m=video 0 RTP/AVP 96\r\n` +
+            `a=rtpmap:96 H265/90000\r\n` +
+            `a=control:track0\r\n`;
+        } else {
+          let fmtpLine = 'a=fmtp:96 packetization-mode=1';
+          if (this.sps && this.pps) {
+            fmtpLine += `;sprop-parameter-sets=${this.sps.toString('base64')},${this.pps.toString('base64')}`;
+          }
+          videoSdp =
+            `m=video 0 RTP/AVP 96\r\n` +
+            `a=rtpmap:96 H264/90000\r\n` +
+            `${fmtpLine}\r\n` +
+            `a=control:track0\r\n`;
         }
+
+        const audioSdp =
+          `m=audio 0 RTP/AVP 8\r\n` +
+          `a=rtpmap:8 PCMA/8000/1\r\n` +
+          `a=control:track1\r\n`;
+
         const sdp =
           `v=0\r\n` +
           `o=- ${Date.now()} 1 IN IP4 127.0.0.1\r\n` +
           `s=Aqara Camera (${this.did})\r\n` +
           `c=IN IP4 127.0.0.1\r\n` +
           `t=0 0\r\n` +
-          `m=video 0 RTP/AVP 96\r\n` +
-          `a=rtpmap:96 H264/90000\r\n` +
-          `${fmtpLine}\r\n` +
-          `a=control:track0\r\n`;
+          videoSdp +
+          audioSdp;
 
         const response =
           `RTSP/1.0 200 OK\r\n` +
@@ -321,16 +352,19 @@ export class RtspServer extends EventEmitter {
       }
 
       case 'SETUP': {
+        const isAudioTrack = (url || '').includes('track1');
+        const defaultInterleaved = isAudioTrack ? '2-3' : '0-1';
+
         const transportLine = lines.find((l) => l.toLowerCase().startsWith('transport:')) || '';
         const transportVal = transportLine.split(':')[1]?.trim() || '';
 
-        let transportHeader = 'RTP/AVP/TCP;unicast;interleaved=0-1';
+        let transportHeader = `RTP/AVP/TCP;unicast;interleaved=${defaultInterleaved}`;
         if (transportVal.includes('interleaved=')) {
           const match = transportVal.match(/interleaved=([0-9]+-[0-9]+)/);
-          transportHeader = `RTP/AVP/TCP;unicast;interleaved=${match ? match[1] : '0-1'}`;
+          transportHeader = `RTP/AVP/TCP;unicast;interleaved=${match ? match[1] : defaultInterleaved}`;
         } else if (transportVal.toLowerCase().includes('client_port=')) {
           const match = transportVal.match(/client_port=([0-9]+-[0-9]+)/);
-          transportHeader = `RTP/AVP;unicast;client_port=${match ? match[1] : '5000-5001'};server_port=6000-6001`;
+          transportHeader = `RTP/AVP;unicast;client_port=${match ? match[1] : (isAudioTrack ? '5002-5003' : '5000-5001')};server_port=${isAudioTrack ? '6002-6003' : '6000-6001'}`;
         }
 
         const response =
@@ -351,13 +385,23 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: url=${url}/track0;seq=${this.rtpSeq}\r\n\r\n`;
         client.socket.write(response);
 
-        // Send cached SPS / PPS immediately to initialize decoder
+        // Send cached parameter sets immediately
         if (this.sps && this.pps) {
           const now = Date.now();
           this.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), this.sps, Buffer.from([0, 0, 0, 1]), this.pps]), now);
         }
         // Request instant keyframe from camera
         this.emit('need_keyframe');
+        break;
+      }
+
+      case 'PAUSE': {
+        client.isPlaying = false;
+        const response =
+          `RTSP/1.0 200 OK\r\n` +
+          `CSeq: ${cseq}\r\n` +
+          `Session: ${client.session}\r\n\r\n`;
+        client.socket.write(response);
         break;
       }
 
@@ -375,7 +419,24 @@ export class RtspServer extends EventEmitter {
   }
 
   /**
-   * Broadcast H.264 video frame as RFC 6184 compliant RTP packets to active RTSP clients
+   * Broadcast audio frame (PCMA/G.711) as RFC 3551 compliant RTP packets
+   */
+  public broadcastAudio(audioData: Buffer, timestampMs: number): void {
+    if (this.clients.size === 0 || !audioData.length) return;
+
+    const rtpTimestamp = Math.floor((timestampMs * 8) % 0xFFFFFFFF);
+    const rtpHeader = Buffer.alloc(12);
+    rtpHeader[0] = 0x80;
+    rtpHeader[1] = 8; // PCMA payload type 8
+    rtpHeader.writeUInt16BE(this.audioRtpSeq++ & 0xFFFF, 2);
+    rtpHeader.writeUInt32BE(rtpTimestamp, 4);
+    rtpHeader.writeUInt32BE(this.audioRtpSsrc, 8);
+
+    this.sendInterleavedRtp(2, Buffer.concat([rtpHeader, audioData]));
+  }
+
+  /**
+   * Broadcast video frame as RFC 6184 (H.264) or RFC 7798 (H.265) compliant RTP packets
    */
   public broadcastFrame(frameData: Buffer, timestampMs: number): void {
     if (this.clients.size === 0 || !frameData.length) return;
@@ -417,9 +478,16 @@ export class RtspServer extends EventEmitter {
 
     for (const nal of nalUnits) {
       if (!nal || !nal.length) continue;
-      const nalType = nal[0] & 0x1F;
-      if (nalType === 7) this.sps = Buffer.from(nal);
-      if (nalType === 8) this.pps = Buffer.from(nal);
+      if (this.isHevc) {
+        const nalType = (nal[0] >> 1) & 0x3F;
+        if (nalType === 32) this.vps = Buffer.from(nal);
+        if (nalType === 33) this.sps = Buffer.from(nal);
+        if (nalType === 34) this.pps = Buffer.from(nal);
+      } else {
+        const nalType = nal[0] & 0x1F;
+        if (nalType === 7) this.sps = Buffer.from(nal);
+        if (nalType === 8) this.pps = Buffer.from(nal);
+      }
     }
 
     const rtpTimestamp = Math.floor((timestampMs * 90) % 0xFFFFFFFF);
@@ -439,8 +507,37 @@ export class RtspServer extends EventEmitter {
         rtpHeader.writeUInt32BE(this.rtpSsrc, 8);
 
         this.sendInterleavedRtp(0, Buffer.concat([rtpHeader, nal]));
+      } else if (this.isHevc) {
+        // RFC 7798 H.265 Fragmentation Unit (FU)
+        const nalType = (nal[0] >> 1) & 0x3F;
+        const payloadHdr1 = (nal[0] & 0x81) | (49 << 1); // FU type 49
+        const payloadHdr2 = nal[1];
+        let offset = 2;
+
+        while (offset < nal.length) {
+          const chunkLen = Math.min(MAX_PAYLOAD_SIZE, nal.length - offset);
+          const isStart = offset === 2;
+          const isEnd = offset + chunkLen >= nal.length;
+
+          const rtpHeader = Buffer.alloc(12);
+          rtpHeader[0] = 0x80;
+          rtpHeader[1] = (isLastNal && isEnd ? 0x80 : 0x00) | 96;
+          rtpHeader.writeUInt16BE(this.rtpSeq++ & 0xFFFF, 2);
+          rtpHeader.writeUInt32BE(rtpTimestamp, 4);
+          rtpHeader.writeUInt32BE(this.rtpSsrc, 8);
+
+          let fuHeader = nalType;
+          if (isStart) fuHeader |= 0x80;
+          if (isEnd) fuHeader |= 0x40;
+
+          const fuPayloadHdr = Buffer.from([payloadHdr1, payloadHdr2, fuHeader]);
+          const payloadChunk = nal.subarray(offset, offset + chunkLen);
+
+          this.sendInterleavedRtp(0, Buffer.concat([rtpHeader, fuPayloadHdr, payloadChunk]));
+          offset += chunkLen;
+        }
       } else {
-        // FU-A Fragmentation
+        // RFC 6184 H.264 FU-A Fragmentation
         const nalHeader = nal[0];
         const nalType = nalHeader & 0x1F;
         const nalNri = nalHeader & 0x60;
@@ -532,6 +629,7 @@ export class AqaraCameraBridge extends EventEmitter {
   // Frame reassembly state
   private frames: Record<string, { buf: Buffer; parts: number[] }> = {};
   public frameCount: number = 0;
+  private hasSeenKeyframe: boolean = false;
   private decryptor: AqaraStreamDecryptor | null = null;
 
   constructor(options: BridgeOptions) {
@@ -802,6 +900,8 @@ export class AqaraCameraBridge extends EventEmitter {
         this.handleChannel0Data(data);
       } else if (chan === 1) {
         this.handleVideoData(idx, data);
+      } else {
+        console.log(`[DRW OTHER CHAN] chan=${chan}, idx=${idx}, len=${data.length}, hex=${data.subarray(0, 20).toString('hex')}`);
       }
     }
   }
@@ -832,6 +932,7 @@ export class AqaraCameraBridge extends EventEmitter {
   private async handleChannel0Data(data: Buffer): Promise<void> {
     if (data.length >= 16 && data.toString('ascii', 0, 4) === 'lumi') {
       const frameType = data.readUInt32LE(4);
+      console.log('📨 [Chan 0] frameType: 0x' + frameType.toString(16), 'len:', data.length);
       if (frameType === LUMI_TYPE_LOGIN_RESP && !this.isStreamStarted) {
         this.isStreamStarted = true;
         console.log('📨 Camera Lumi Login Resp:', data.subarray(16).toString());
@@ -860,6 +961,10 @@ export class AqaraCameraBridge extends EventEmitter {
 
         // Step 7: Stream start 0x101C on Channel 3
         this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START, Buffer.alloc(0), this.cmdSeq++));
+        await new Promise(r => setTimeout(r, 100));
+
+        // Step 8: Audio start 0x1004 on Channel 0
+        this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x1004, Buffer.alloc(0), this.cmdSeq++));
       }
     }
   }
@@ -870,6 +975,7 @@ export class AqaraCameraBridge extends EventEmitter {
   private currentAccumulatedLen: number = 0;
 
   private async handleVideoData(idx: number, data: Buffer): Promise<void> {
+    this.emit('packet_data_ch1', idx, data);
     const isAvioHead = data.length >= 32 &&
       (data.readUInt16LE(0) === 0x004E || data.readUInt16LE(0) === 0x004F) &&
       (data.readUInt32LE(16) >= 320 && data.readUInt32LE(16) <= 4096) &&
@@ -908,6 +1014,10 @@ export class AqaraCameraBridge extends EventEmitter {
     if (full.length < 32) return;
     const codecId = full.readUInt16LE(0);
     if (codecId !== 0x004E && codecId !== 0x004F) return;
+
+    if (this.rtspServer) {
+      this.rtspServer.isHevc = (codecId === 0x004F);
+    }
 
     this.frameCount++;
     let rawH264: Buffer = full.subarray(32);
