@@ -139,6 +139,73 @@ export class AqaraStreamDecryptor extends EventEmitter {
     return hsalsa20(sharedSecret);
   }
 
+  /**
+   * Raw ChaCha20 (djb variant) XOR. Symmetric: encryption and decryption are
+   * the same operation. Used for live G.711 audio which is encrypted with
+   * ChaCha20(key=shareKey, nonce=frame[0:8], counter=0) — recovered from
+   * -[MHFrameEncryptManager decryptAudioG711:shareKey:] at 0x10331231c.
+   */
+  public chacha20Xor(nonce8: Buffer, data: Buffer, counter: number = 0): Buffer {
+    if (data.length === 0) return data;
+    const n = nonce8.subarray(0, 8);
+    const ks = chacha20Block(this.keyBuf, n, counter);
+    const out = Buffer.from(data);
+    const blockLen = ks.length;
+    for (let off = 0; off < out.length; off += blockLen) {
+      const block = chacha20Block(this.keyBuf, n, counter + (off / blockLen));
+      for (let i = 0; i < block.length && off + i < out.length; i++) {
+        out[off + i] ^= block[i];
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Decrypt a received audio AVIO frame.
+   * Wire layout (verified against a live E1 capture, /tmp/e1_audio_frame0.bin):
+   *   [0..2)   0x0088 (audio AVIO codec id)
+   *   [2..4)   0x000e
+   *   [4..8)   flags (1)
+   *   [8..16)  8-byte timestamp (same layout as video AVIO header)
+   *   [16..20) sample-rate marker (8 == 8 kHz)
+   *   [20..28) reserved (0)
+   *   [28..32) ENCRYPTED payload length (excludes the 8-byte nonce)
+   *   [32..40) 8-byte nonce
+   *   [40..40+len) encrypted G.711 A-law payload
+   * The media datagram is padded to its MTU (e.g. 1024) with zeros, so we MUST
+   * slice to the declared payload length and never decrypt the padding.
+   */
+  public decryptAudioFrame(frame: Buffer): Buffer {
+    if (frame.length < 40) return frame;
+    if (frame.readUInt16LE(0) !== 0x0088) return frame;
+    const payLen = frame.readUInt32LE(28);
+    if (payLen > 0 && payLen <= frame.length - 40 && payLen <= 4096) {
+      const nonce = frame.subarray(32, 40);
+      const enc = frame.subarray(40, 40 + payLen);
+      return this.chacha20Xor(nonce, enc, 0);
+    }
+    // Fallback: best-effort decrypt everything after the nonce.
+    const nonce = frame.subarray(32, 40);
+    return this.chacha20Xor(nonce, frame.subarray(40), 0);
+  }
+
+  /**
+   * Build a talkback audio AVIO frame ready to be sent to the camera.
+   * Returns the full 32-byte AVIO header + 8-byte nonce + encrypted G.711.
+   */
+  public encryptAudioFrame(g711: Buffer, seq: number = 0): Buffer {
+    const header = Buffer.alloc(32);
+    header.writeUInt16LE(0x0088, 0); // audio AVIO codec id
+    header.writeUInt16LE(0x0001, 2); // flags (data)
+    header.writeUInt32LE(Date.now() & 0xffffffff, 8); // timestamp
+    header.writeUInt32LE(8000, 16); // sample rate
+    header.writeUInt32LE(seq & 0xffffffff, 24); // seq
+    header.writeUInt32LE(g711.length, 28); // payload length
+    const nonce = crypto.randomBytes(8);
+    const enc = this.chacha20Xor(nonce, g711, 0);
+    return Buffer.concat([header, nonce, enc]);
+  }
+
   public decrypt(frame: Buffer): Buffer {
     return this.decryptFrame(frame);
   }
@@ -148,10 +215,12 @@ export class AqaraStreamDecryptor extends EventEmitter {
     const nonce = frame.subarray(0, 8);
     const nalCount = frame[8];
     const tableEnd = 9 + nalCount * 8;
+
     if (nalCount === 0 || tableEnd >= frame.length) {
       // unencrypted / no NAL table: payload starts after 9-byte prefix
       return frame.subarray(9);
     }
+
     const table = frame.subarray(9, tableEnd);
     const tail = Buffer.from(frame.subarray(tableEnd)); // mutable copy
     // keystream: first 16 bytes of chacha20 block with counter=0 (same for all blocks)
@@ -160,7 +229,7 @@ export class AqaraStreamDecryptor extends EventEmitter {
     for (let i = 0; i < nalCount; i++) {
       const off = table.readUInt32LE(i * 8);
       const nalLen = table.readUInt32LE(i * 8 + 4);
-      if (off <= 0) continue;
+      if (off < 0) continue;
       // skip first 32 bytes of NAL (slice header), decrypt 16 bytes every 160
       for (let pos = 32; pos + 16 <= nalLen; pos += 160) {
         const abs = off + pos;
@@ -168,6 +237,7 @@ export class AqaraStreamDecryptor extends EventEmitter {
         for (let k = 0; k < 16; k++) tail[abs + k] ^= ks[k];
       }
     }
+
     return tail;
   }
 

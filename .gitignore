@@ -49,3 +49,6 @@ Thumbs.db
 # Storage
 storage/
 app.log
+
+# Offline session cache (contains X25519 private keys — DO NOT COMMIT)
+data/

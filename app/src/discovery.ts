@@ -163,4 +163,63 @@ export function publishCameraDiscovery(
   console.log(`🎥 Published discovery for Camera entity on ${mqttDevice.name}`);
 }
 
+export function publishPtzDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice
+) {
+  const directions: Array<{ attr: string; name: string; icon: string; dir: string }> = [
+    { attr: "ptz_left", name: "PTZ Left", icon: "mdi:arrow-left", dir: "left" },
+    { attr: "ptz_right", name: "PTZ Right", icon: "mdi:arrow-right", dir: "right" },
+    { attr: "ptz_up", name: "PTZ Up", icon: "mdi:arrow-up", dir: "up" },
+    { attr: "ptz_down", name: "PTZ Down", icon: "mdi:arrow-down", dir: "down" },
+    { attr: "ptz_stop", name: "PTZ Stop", icon: "mdi:stop", dir: "stop" },
+  ];
+
+  directions.forEach((d) => {
+    const base = `homeassistant/button/${mqttDevice.id}/${d.attr}`;
+    client.publish(
+      `${base}/config`,
+      JSON.stringify({
+        name: d.name,
+        unique_id: d.attr,
+        command_topic: `${base}/set`,
+        icon: d.icon,
+        device: {
+          identifiers: mqttDevice.identifiers,
+          manufacturer: mqttDevice.manufacturer,
+          model: mqttDevice.model,
+          name: mqttDevice.name,
+        },
+      }),
+      { retain: true }
+    );
+  });
+  console.log(`🕹️ Published PTZ button discovery on ${mqttDevice.name}`);
+}
+
+export function publishTalkbackDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice
+) {
+  const base = `homeassistant/switch/${mqttDevice.id}/talkback`;
+  client.publish(
+    `${base}/config`,
+    JSON.stringify({
+      name: "Two-Way Audio (Talkback)",
+      unique_id: "talkback",
+      state_topic: `${base}/state`,
+      command_topic: `${base}/set`,
+      icon: "mdi:microphone-message",
+      device: {
+        identifiers: mqttDevice.identifiers,
+        manufacturer: mqttDevice.manufacturer,
+        model: mqttDevice.model,
+        name: mqttDevice.name,
+      },
+    }),
+    { retain: true }
+  );
+  console.log(`🎙️ Published Talkback switch discovery on ${mqttDevice.name}`);
+}
+
 

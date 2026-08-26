@@ -8,6 +8,8 @@ import {
   publishCameraDiscovery,
   publishP2pStreamSwitchDiscovery,
   publishP2pRtspDiscovery,
+  publishPtzDiscovery,
+  publishTalkbackDiscovery,
 } from "./discovery.js";
 import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
 import { ENTITIES } from "./entities.js";
@@ -68,6 +70,12 @@ const cameraData: Array<{
 
 const rtspBasePort = parseInt(process.env.RTSP_PORT || "8554", 10);
 
+// PTZ-capable Aqara models (pan/tilt cameras). G5 Pro (agl004) is fixed.
+function supportsPtz(model: string): boolean {
+  const m = (model || "").toLowerCase();
+  return m.includes("acn") || m.includes("e1") || m.includes("g3") || m.includes("ptz");
+}
+
 for (let i = 0; i < cameras.length; i++) {
   const camera = cameras[i];
   const mqttDevice = aqaraDeviceToMQTT(camera);
@@ -98,6 +106,11 @@ client.on("connect", () => {
     publishRtspDiscovery(client, mqttDevice);
     publishP2pStreamSwitchDiscovery(client, mqttDevice);
     publishP2pRtspDiscovery(client, mqttDevice);
+
+    if (supportsPtz(device.model)) {
+      publishPtzDiscovery(client, mqttDevice);
+    }
+    publishTalkbackDiscovery(client, mqttDevice);
 
     // Initial state: P2P Stream OFF by default
     client.publish(`homeassistant/switch/${mqttDevice.id}/p2p_stream/state`, "OFF", { retain: true });
@@ -219,7 +232,17 @@ client.on("message", async (topic, msg) => {
           console.log(`🔌 [P2P Tunnel] ${cameraInfo.device.deviceName} connected to ${ip}:${port}`);
         });
 
-        bridge.connect().catch((err) => {
+        bridge.on("info", (m: string) => {
+          console.log(`ℹ️ [${cameraInfo.device.deviceName}] ${m}`);
+        });
+        bridge.on("warn", (m: string) => {
+          console.warn(`⚠️ [${cameraInfo.device.deviceName}] ${m}`);
+        });
+        bridge.on("error", (e: any) => {
+          console.error(`❌ [${cameraInfo.device.deviceName}] ${e?.message || e}`);
+        });
+
+        bridge.start().catch((err) => {
           console.warn(`⚠️ [P2P Bridge] Could not start P2P stream for ${cameraInfo.device.deviceName}: ${err.message}`);
           client.publish(p2pSwitchTopic, "OFF", { retain: true });
           client.publish(p2pRtspTopic, "OFF", { retain: true });
@@ -236,6 +259,33 @@ client.on("message", async (topic, msg) => {
       }
       client.publish(p2pSwitchTopic, "OFF", { retain: true });
       client.publish(p2pRtspTopic, "OFF", { retain: true });
+    }
+    return;
+  }
+
+  // === TWO-WAY AUDIO (TALKBACK) SWITCH ===
+  if (attr === "talkback") {
+    const talkbackStateTopic = `homeassistant/switch/${deviceId}/talkback/state`;
+    if (value === "ON") {
+      console.log(`🎙️ [Talkback] Enabling speaker channel for ${cameraInfo.device.deviceName}...`);
+      client.publish(talkbackStateTopic, "ON", { retain: true });
+      cameraInfo.bridge?.startTalkback();
+    } else {
+      console.log(`🎙️ [Talkback] Disabling speaker channel for ${cameraInfo.device.deviceName}...`);
+      client.publish(talkbackStateTopic, "OFF", { retain: true });
+      cameraInfo.bridge?.stopTalkback();
+    }
+    return;
+  }
+
+  // === PTZ BUTTONS ===
+  if (domain === "button" && attr.startsWith("ptz_")) {
+    const dir = attr.replace(/^ptz_/, "");
+    console.log(`🕹️ [PTZ] ${cameraInfo.device.deviceName} → ${dir}`);
+    if (!cameraInfo.bridge) {
+      console.warn(`⚠️ [PTZ] P2P stream not active for ${cameraInfo.device.deviceName}; start it first`);
+    } else {
+      cameraInfo.bridge.ptz(dir);
     }
     return;
   }

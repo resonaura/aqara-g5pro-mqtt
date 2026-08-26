@@ -10,6 +10,8 @@
     "rtsp": "npm --prefix app run rtsp",
     "capture": "npm --prefix app run capture",
     "login": "npm --prefix app run login",
-    "setup": "npm --prefix app run setup"
+    "setup": "npm --prefix app run setup",
+    "test": "npm --prefix app test",
+    "go2rtc": "npm --prefix app run go2rtc"
   }
 }
