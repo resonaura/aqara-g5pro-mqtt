@@ -57,7 +57,7 @@ function send(s: MockSocket, req: string) {
 const SPS = Buffer.from('674d0028e900a00b7e5c0043000057a00000fa40003a980', 'hex');
 const PPS = Buffer.from('68ee3c80', 'hex');
 
-test('DESCRIBE returns SDP with H264 video and PCMA audio', () => {
+test('DESCRIBE returns SDP with H264 video and AAC audio', () => {
   const srv = new RtspServer(0, 'testdid');
   srv.isHevc = false;
   srv.sps = SPS;
@@ -69,7 +69,7 @@ test('DESCRIBE returns SDP with H264 video and PCMA audio', () => {
   assert.match(res, /Content-Type: application\/sdp/);
   const sdp = res.split('\r\n\r\n')[1];
   assert.match(sdp, /a=rtpmap:96 H264\/90000/);
-  assert.match(sdp, /a=rtpmap:8 PCMA\/8000\/1/);
+  assert.match(sdp, /a=rtpmap:97 MPEG4-GENERIC\/16000\/1/);
   assert.match(sdp, /a=control:track0/);
   assert.match(sdp, /a=control:track1/);
   assert.match(sdp, /sprop-parameter-sets=/);
@@ -98,7 +98,7 @@ test('SETUP uses interleaved 0-1 for video and 2-3 for audio by default', () => 
 test('SETUP honors client-requested interleaved channels', () => {
   const srv = new RtspServer(0, 'd');
   const s = attach(srv);
-  send(s, 'SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/TCP;unicast;interleaved=4-5');
+  send(s, 'SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1\r\nTransport: RTP/AVP/TCP;unicast;interleaved=4-5');
   assert.match(s.all.toString('utf8'), /interleaved=4-5/);
 });
 
@@ -171,21 +171,21 @@ test('HEVC large NAL is packetized into FU and reassembles exactly', () => {
   assert.ok(Buffer.concat(chunks).equals(nal));
 });
 
-test('broadcastAudio emits a single PCMA RTP packet on channel 2', () => {
+test('broadcastAudio emits a single AAC RTP packet on channel 2', () => {
   const srv = new RtspServer(0, 'd');
   const s = attach(srv);
   send(s, 'SETUP rtsp://x/d/track1 RTSP/1.0\r\nCSeq: 1');
   send(s, 'PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2');
 
-  const pcm = Buffer.alloc(160, 0xab);
+  const aac = Buffer.alloc(160, 0xab);
   s.writes = [];
-  srv.broadcastAudio(pcm, 1000);
+  srv.broadcastAudio(aac, 1000);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 2);
   assert.equal(frames.length, 1);
   const info = rtpInfo(frames[0].payload);
-  assert.equal(info.payloadType, 8);
-  assert.equal(info.timestamp, 1000 * 8);
-  assert.ok(info.payload.equals(pcm));
+  assert.equal(info.payloadType, 97);
+  assert.equal(info.timestamp, 1000 * 16);
+  assert.ok(info.payload.subarray(4).equals(aac));
 });
 
 test('broadcastFrame ignores clients that are not playing', () => {
