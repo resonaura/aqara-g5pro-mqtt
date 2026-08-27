@@ -133,6 +133,14 @@ export function getLocalIpv4(): string {
   return '192.168.5.191';
 }
 
+export function slugifyStreamName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\b(camera|hub|ip)\b/gi, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 export function ppcsEncrypt(key: Buffer, data: Buffer): Buffer {
   if (!key || !data || !key.length || !data.length) return data;
   const key20 = key.subarray(0, 20);
