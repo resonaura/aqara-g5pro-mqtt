@@ -3,24 +3,27 @@ FROM node:22.16.0-slim AS build
 
 WORKDIR /app
 
-COPY ./app/package*.json ./
-RUN npm install
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
 
-COPY ./app .
+# Install dependencies first (leverages layer caching)
+COPY ./app/pnpm-lock.yaml ./app/pnpm-workspace.yaml ./app/package.json ./
+RUN pnpm install --frozen-lockfile
 
-RUN rm -rf ./app
-
-RUN npm run build
+# Build the app
+COPY ./app ./
+RUN pnpm run build
 
 # Stage 2: Run
 FROM node:22.16.0-slim
 
 WORKDIR /app
 
-COPY ./app/package*.json ./
-RUN npm install --production
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
+
+COPY ./app/pnpm-lock.yaml ./app/pnpm-workspace.yaml ./app/package.json ./
+RUN pnpm install --frozen-lockfile --prod
 
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/package*.json ./
+COPY --from=build /app/package.json ./
 
 CMD ["node", "dist/index.js"]

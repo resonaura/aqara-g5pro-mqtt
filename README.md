@@ -36,7 +36,7 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
   - SD Card Status
 - Automatic state synchronization after any command.
 - Per-camera logging for easy identification.
-- Guided setup with `npm run setup` (generates your `.env`).
+- Guided setup with `pnpm run setup` (generates your `.env`).
 
 ---
 
@@ -54,13 +54,13 @@ It exposes all major camera features (detectors, spotlight control, volume, SD c
 ```bash
 git clone https://github.com/resonaura/aqara-g5pro-mqtt.git
 cd aqara-g5pro-mqtt/app
-npm install
+pnpm install
 
 # Run setup wizard to generate .env
-npm run setup
+pnpm run setup
 
-npm run build
-npm start
+pnpm run build
+pnpm start
 ```
 
 ### Run with Docker
@@ -68,10 +68,10 @@ npm start
 ```bash
 git clone https://github.com/resonaura/aqara-g5pro-mqtt.git
 cd aqara-g5pro-mqtt/app
-npm install
+pnpm install
 
 # Run setup wizard once on the host to generate .env
-npm run setup
+pnpm run setup
 
 cd ../
 
@@ -79,14 +79,14 @@ docker compose up --build -d
 ```
 
 ⚠️ **Note:** The container requires a valid `.env` file.
-You can generate it automatically via `npm run setup` before starting Docker.
+You can generate it automatically via `pnpm run setup` before starting Docker.
 
 ---
 
 ## ⚙️ Configuration
 
 All settings are provided via `.env`.
-The setup wizard (`npm run setup`) asks for:
+The setup wizard (`pnpm run setup`) asks for:
 
 - Aqara account (username, password, region)
 - MQTT broker URL, username, password
@@ -121,7 +121,7 @@ If both `TOKEN` and credentials are provided, `TOKEN` takes precedence.
 You can also verify credentials and list devices manually:
 
 ```bash
-AQARA_USER=... AQARA_PASS=... npm run login
+AQARA_USER=... AQARA_PASS=... pnpm run login
 ```
 
 ---
