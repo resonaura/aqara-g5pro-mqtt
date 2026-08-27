@@ -102,14 +102,17 @@ test('SETUP honors client-requested interleaved channels', () => {
   assert.match(s.all.toString('utf8'), /interleaved=4-5/);
 });
 
-test('PLAY enables sending; a small NAL produces one RTP packet (M bit set)', () => {
+test('PLAY enables sending; a non-keyframe NAL produces one RTP packet (M bit set)', () => {
   const srv = new RtspServer(0, 'd');
   srv.sps = SPS; srv.pps = PPS;
   const s = attach(srv);
   send(s, 'SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1');
   send(s, 'PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2');
-  const smallNal = Buffer.from([0x65, 0x01, 0x02, 0x03]); // type 5 (IDR)
+  // Deliver a keyframe first so the client clears the receivedKeyframe gate.
+  const idr = Buffer.from([0x65, 0x09, 0x08, 0x07, 0x06]);
+  srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), SPS, Buffer.from([0, 0, 0, 1]), PPS, Buffer.from([0, 0, 0, 1]), idr]), 900);
   s.writes = [];
+  const smallNal = Buffer.from([0x61, 0x01, 0x02, 0x03]); // type 1 (non-IDR)
   srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), smallNal]), 1000);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 0);
   assert.equal(frames.length, 1);
@@ -173,9 +176,13 @@ test('HEVC large NAL is packetized into FU and reassembles exactly', () => {
 
 test('broadcastAudio emits a single AAC RTP packet on channel 2', () => {
   const srv = new RtspServer(0, 'd');
+  srv.sps = SPS; srv.pps = PPS;
   const s = attach(srv);
   send(s, 'SETUP rtsp://x/d/track1 RTSP/1.0\r\nCSeq: 1');
   send(s, 'PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2');
+  // Deliver a keyframe first so the client clears the receivedKeyframe gate.
+  const idr = Buffer.from([0x65, 0x09, 0x08, 0x07, 0x06]);
+  srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), SPS, Buffer.from([0, 0, 0, 1]), PPS, Buffer.from([0, 0, 0, 1]), idr]), 900);
 
   const aac = Buffer.alloc(160, 0xab);
   s.writes = [];
