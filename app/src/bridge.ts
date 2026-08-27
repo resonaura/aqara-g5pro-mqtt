@@ -10,6 +10,7 @@ import * as os from 'os';
 import { EventEmitter } from 'events';
 import axios from 'axios';
 import { AqaraStreamDecryptor } from './decryptor.js';
+import { isPortAllowed } from './ports.js';
 
 // ============= Type Definitions =============
 
@@ -357,23 +358,43 @@ export class RtspServer extends EventEmitter {
     this.isHevc = did.includes('agl004') || did.includes('g5');
   }
 
+  /** The port the server actually bound to (may differ if the desired port was taken). */
+  public get listenPort(): number {
+    return this.port;
+  }
+
   public start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = net.createServer((socket) => {
         this.handleClient(socket);
       });
 
-      this.server.on('error', (err) => {
+      let attempt = 0;
+      const tryListen = () => {
+        this.server!.listen(this.port, () => {
+          this.emit('listening', this.port);
+          this.startVideoPacer();
+          resolve();
+        });
+      };
+
+      this.server.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE' && attempt < 64) {
+          // Preferred port is taken — step to the next allowed port and retry,
+          // so the server still comes up on a free sequential port.
+          attempt++;
+          do {
+            this.port = this.port + 1;
+          } while (!isPortAllowed(this.port));
+          this.emit('warn', `RTSP port ${this.port - 1} in use, retrying on ${this.port}`);
+          tryListen();
+          return;
+        }
         this.emit('error', err);
         reject(err);
       });
 
-      this.server.listen(this.port, () => {
-        this.emit('listening', this.port);
-        // Start video frame pacer — drains the jitter queue at a steady rate
-        this.startVideoPacer();
-        resolve();
-      });
+      tryListen();
     });
   }
 
@@ -1178,7 +1199,7 @@ export class AqaraCameraBridge extends EventEmitter {
           }
         });
         await this.rtspServer.start();
-        this.emit('rtsp_ready', `rtsp://0.0.0.0:${this.rtspPort}/live/${this.did}`);
+        this.emit('rtsp_ready', `rtsp://0.0.0.0:${this.rtspServer.listenPort}/live/${this.did}`);
       } catch (err: any) {
         this.emit('warn', `RTSP server failed to start on port ${this.rtspPort}: ${err.message}`);
       }

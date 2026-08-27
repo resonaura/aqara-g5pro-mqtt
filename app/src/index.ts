@@ -11,7 +11,8 @@ import {
   publishPtzDiscovery,
   publishTalkbackDiscovery,
 } from "./discovery.js";
-import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
+import { AqaraCameraBridge, getLocalIpv4, slugifyStreamName } from "./bridge.js";
+import { findFreePortRange, writeRtspPortMap, type RtspPortEntry } from "./ports.js";
 import { ENTITIES } from "./entities.js";
 import {
   aqaraDeviceToMQTT,
@@ -68,7 +69,7 @@ const cameraData: Array<{
   bridge?: AqaraCameraBridge;
 }> = [];
 
-const rtspBasePort = parseInt(process.env.RTSP_PORT || "8554", 10);
+const rtspBasePort = parseInt(process.env.RTSP_PORT || "8555", 10);
 
 // PTZ-capable Aqara models (pan/tilt cameras). G5 Pro (agl004) is fixed.
 function supportsPtz(model: string): boolean {
@@ -89,6 +90,22 @@ for (let i = 0; i < cameras.length; i++) {
   });
   console.log(`📋 ${camera.deviceName}: spotlight=${capabilities.hasSpotlight ? "✅" : "❌"}`);
 }
+
+// Allocate a contiguous block of free RTSP ports (default 8555, walking up if
+// the preferred port (or any port in the block) is already taken by e.g. go2rtc).
+// Keeps camera ports sequential and avoids well-known / 3xxx / 5xxx ranges.
+const rtspPorts = await findFreePortRange(cameraData.length || 1, rtspBasePort);
+const rtspPortEntries = new Map<string, RtspPortEntry>();
+for (let i = 0; i < cameraData.length; i++) {
+  const did = cameraData[i].device.did;
+  rtspPortEntries.set(did, {
+    port: rtspPorts[i],
+    did,
+    slug: slugifyStreamName(cameraData[i].device.deviceName),
+  });
+}
+writeRtspPortMap(rtspBasePort, [...rtspPortEntries.values()]);
+console.log(`🎚️  RTSP ports: ${rtspPorts.join(", ")} (base ${rtspBasePort})`);
 
 const client = createMqttClient();
 const interval = Number(process.env.POLL_INTERVAL || 1) * 1000;
@@ -208,7 +225,7 @@ client.on("message", async (topic, msg) => {
     const p2pSwitchTopic = `homeassistant/switch/${deviceId}/p2p_stream/state`;
     const p2pRtspTopic = `homeassistant/sensor/${deviceId}/p2p_rtsp_stream/state`;
     const idx = cameraData.indexOf(cameraInfo);
-    const rtspPort = rtspBasePort + idx;
+    const rtspPort = rtspPorts[idx];
 
     if (value === "ON") {
       console.log(`🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`);
@@ -224,7 +241,14 @@ client.on("message", async (topic, msg) => {
 
         bridge.on("rtsp_ready", (url) => {
           console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
-          const streamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspPort}/live/${cameraInfo.device.did}`;
+          const actualPort = Number(url.match(/:(\d+)\//)?.[1] || rtspPort);
+          // Keep the port map accurate if the server had to shift off the preferred port.
+          const entry = rtspPortEntries.get(cameraInfo.device.did);
+          if (entry && entry.port !== actualPort) {
+            entry.port = actualPort;
+            writeRtspPortMap(rtspBasePort, [...rtspPortEntries.values()]);
+          }
+          const streamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${actualPort}/live/${cameraInfo.device.did}`;
           client.publish(p2pRtspTopic, streamUrl, { retain: true });
         });
 
