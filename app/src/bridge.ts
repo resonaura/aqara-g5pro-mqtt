@@ -134,13 +134,7 @@ export function getLocalIpv4(): string {
   return '192.168.5.191';
 }
 
-export function slugifyStreamName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\b(camera|hub|ip)\b/gi, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
+export { slugifyStreamName } from './slug.js';
 
 export function isAnnexBKeyframe(data: Buffer, isHevc: boolean): boolean {
   if (!data || data.length < 5) return false;

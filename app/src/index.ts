@@ -11,8 +11,9 @@ import {
   publishPtzDiscovery,
   publishTalkbackDiscovery,
 } from "./discovery.js";
-import { AqaraCameraBridge, getLocalIpv4, slugifyStreamName } from "./bridge.js";
+import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
 import { findFreePortRange, writeRtspPortMap, type RtspPortEntry } from "./ports.js";
+import { assignUniqueSlugs } from "./slug.js";
 import { ENTITIES } from "./entities.js";
 import {
   aqaraDeviceToMQTT,
@@ -95,13 +96,16 @@ for (let i = 0; i < cameras.length; i++) {
 // the preferred port (or any port in the block) is already taken by e.g. go2rtc).
 // Keeps camera ports sequential and avoids well-known / 3xxx / 5xxx ranges.
 const rtspPorts = await findFreePortRange(cameraData.length || 1, rtspBasePort);
+const slugMap = assignUniqueSlugs(
+  cameraData.map((c) => ({ did: c.device.did, name: c.device.deviceName })),
+);
 const rtspPortEntries = new Map<string, RtspPortEntry>();
 for (let i = 0; i < cameraData.length; i++) {
   const did = cameraData[i].device.did;
   rtspPortEntries.set(did, {
     port: rtspPorts[i],
     did,
-    slug: slugifyStreamName(cameraData[i].device.deviceName),
+    slug: slugMap[did],
   });
 }
 writeRtspPortMap(rtspBasePort, [...rtspPortEntries.values()]);
@@ -133,7 +137,7 @@ client.on("connect", () => {
     client.publish(`homeassistant/switch/${mqttDevice.id}/p2p_stream/state`, "OFF", { retain: true });
     client.publish(`homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`, "OFF", { retain: true });
 
-    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspBasePort + idx}/live/${device.did}`;
+    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspPorts[idx]}/live/${slugMap[device.did]}`;
     publishCameraDiscovery(client, mqttDevice, rtspStreamUrl);
   });
 
@@ -248,7 +252,7 @@ client.on("message", async (topic, msg) => {
             entry.port = actualPort;
             writeRtspPortMap(rtspBasePort, [...rtspPortEntries.values()]);
           }
-          const streamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${actualPort}/live/${cameraInfo.device.did}`;
+          const streamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${actualPort}/live/${slugMap[cameraInfo.device.did]}`;
           client.publish(p2pRtspTopic, streamUrl, { retain: true });
         });
 
