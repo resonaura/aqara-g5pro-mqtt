@@ -219,9 +219,9 @@ export class AqaraStreamDecryptor extends EventEmitter {
       return frame.subarray(9);
     }
 
+    const ks = chacha20Block(this.keyBuf, nonce, 0).subarray(0, 16);
     const table = frame.subarray(9, tableEnd);
     const tail = Buffer.from(frame.subarray(tableEnd));
-    const ks = chacha20Block(this.keyBuf, nonce, 0).subarray(0, 16);
 
     for (let i = 0; i < nalCount; i++) {
       const off = table.readUInt32LE(i * 8);

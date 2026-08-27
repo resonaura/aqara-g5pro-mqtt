@@ -227,7 +227,16 @@ export function slugifyStreamName(name: string): string {
 }
 
 export function isAnnexBKeyframe(buf: Buffer, isHevc: boolean = false): boolean {
-  if (!buf || buf.length < 5) return false;
+  if (!buf || buf.length < 1) return false;
+  if (buf.length >= 1 && (buf[0] !== 0 || buf[1] !== 0)) {
+    if (isHevc) {
+      const t = (buf[0] >> 1) & 0x3F;
+      if (t === 19 || t === 20 || t === 21 || t === 32 || t === 33) return true;
+    } else {
+      const t = buf[0] & 0x1F;
+      if (t === 5 || t === 7) return true;
+    }
+  }
   let i = 0;
   const len = buf.length;
   while (i < len - 4) {
@@ -300,6 +309,7 @@ export class RtspServer extends EventEmitter {
   public sps: Buffer | null = null;
   public pps: Buffer | null = null;
   public lastKeyframe: Buffer | null = null;
+  private gopBuffer: Buffer[] = [];
   // DESCRIBE requests that arrived before SPS/PPS were known are held here
   private pendingDescribes: Array<{ socket: net.Socket; cseq: number | string }> = [];
 
@@ -366,7 +376,7 @@ export class RtspServer extends EventEmitter {
     this.port = port;
     this.did = did;
     this.expectedSlug = expectedSlug || did;
-    this.isHevc = did.includes('agl004') || did.includes('g5') || this.expectedSlug.includes('outdoor') || this.expectedSlug.includes('g5');
+    this.isHevc = false;
   }
 
   public start(): Promise<void> {
@@ -522,8 +532,12 @@ export class RtspServer extends EventEmitter {
       }
 
       case 'DESCRIBE': {
-        this.sendDescribeResponse(client.socket, cseq);
-        if (!this.isHevc && !(this.sps && this.pps)) {
+        const hasParams = this.isHevc ? (this.vps && this.sps && this.pps) : (this.sps && this.pps);
+        if (hasParams) {
+          this.sendDescribeResponse(client.socket, cseq);
+        } else {
+          // SPS/PPS not available yet — hold response and trigger a keyframe from the camera
+          this.pendingDescribes.push({ socket: client.socket, cseq });
           this.emit('need_keyframe');
         }
         break;
@@ -566,7 +580,7 @@ export class RtspServer extends EventEmitter {
 
       case 'PLAY': {
         client.isPlaying = true;
-        client.receivedKeyframe = true;
+        client.receivedKeyframe = false;
         const cleanUrl = (url || '').replace(/\/+$/, '');
         const response =
           `RTSP/1.0 200 OK\r\n` +
@@ -576,9 +590,7 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: url=${cleanUrl}/track0;seq=${this.rtpSeq};rtptime=${this.videoRtpTimestamp},url=${cleanUrl}/track1;seq=${this.audioRtpSeq};rtptime=${this.audioRtpTimestamp}\r\n\r\n`;
         client.socket.write(response);
 
-        if (this.lastKeyframe) {
-          this.sendFrameNow(this.lastKeyframe, client);
-        }
+        this.emit('need_keyframe');
         break;
       }
 
@@ -796,12 +808,12 @@ export class RtspServer extends EventEmitter {
         if (nalType === 32) this.vps = Buffer.from(nal);
         if (nalType === 33) this.sps = Buffer.from(nal);
         if (nalType === 34) this.pps = Buffer.from(nal);
-        if (nalType === 19 || nalType === 20 || nalType === 21) isKeyframe = true;
+        if (nalType === 19 || nalType === 20 || nalType === 21 || nalType === 32 || nalType === 33) isKeyframe = true;
       } else {
         const nalType = nal[0] & 0x1F;
         if (nalType === 7) this.sps = Buffer.from(nal);
         if (nalType === 8) this.pps = Buffer.from(nal);
-        if (nalType === 5) isKeyframe = true;
+        if (nalType === 5 || nalType === 7) isKeyframe = true;
       }
     }
 
@@ -826,6 +838,14 @@ export class RtspServer extends EventEmitter {
 
       for (const c of this.clients) {
         c.receivedKeyframe = true;
+      }
+    }
+
+    if (!targetClient) {
+      if (isKeyframe) {
+        this.gopBuffer = [this.lastKeyframe || frameData];
+      } else if (this.gopBuffer.length > 0 && this.gopBuffer.length < 60) {
+        this.gopBuffer.push(frameData);
       }
     }
 
@@ -1669,7 +1689,7 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     }
 
-    const isHevc = !!(this.rtspServer?.isHevc || this.did.includes('agl004') || this.did.includes('g5'));
+    const isHevc = !!(this.rtspServer?.isHevc);
     const isKeyframe = isAnnexBKeyframe(rawH264, isHevc);
 
     if (isKeyframe) {
