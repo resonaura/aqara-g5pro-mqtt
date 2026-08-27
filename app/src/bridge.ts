@@ -141,6 +141,31 @@ export function slugifyStreamName(name: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
+export function isAnnexBKeyframe(data: Buffer, isHevc: boolean): boolean {
+  if (!data || data.length < 5) return false;
+  const len = data.length;
+  let i = 0;
+  while (i < len - 4) {
+    let prefixLen = 0;
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) prefixLen = 3;
+    else if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1) prefixLen = 4;
+    if (prefixLen === 0) {
+      i++;
+      continue;
+    }
+    const nalByte = data[i + prefixLen];
+    if (isHevc) {
+      const t = (nalByte >> 1) & 0x3f;
+      if (t === 19 || t === 20 || t === 21) return true;
+    } else {
+      const t = nalByte & 0x1f;
+      if (t === 5) return true;
+    }
+    i += prefixLen + 1;
+  }
+  return false;
+}
+
 export function ppcsEncrypt(key: Buffer, data: Buffer): Buffer {
   if (!key || !data || !key.length || !data.length) return data;
   const key20 = key.subarray(0, 20);
@@ -511,6 +536,7 @@ export class RtspServer extends EventEmitter {
 
       case 'PLAY': {
         client.isPlaying = true;
+        client.receivedKeyframe = false; // Strictly wait for fresh IDR so client never sees missing reference frames / gray screen
         const cleanUrl = (url || '').replace(/\/+$/, '');
         const response =
           `RTSP/1.0 200 OK\r\n` +
@@ -520,15 +546,7 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: url=${cleanUrl}/track0;seq=${this.rtpSeq};rtptime=${this.videoRtpTimestamp},url=${cleanUrl}/track1;seq=${this.audioRtpSeq};rtptime=${this.audioRtpTimestamp}\r\n\r\n`;
         client.socket.write(response);
 
-        // Instant startup: immediately flush cached IDR keyframe with SPS/PPS to eliminate gray screen / delay
-        if (this.lastKeyframe) {
-          client.receivedKeyframe = true;
-          this.sendFrameNow(this.lastKeyframe, client);
-        } else {
-          client.receivedKeyframe = false;
-        }
-
-        // Request live fresh IDR from camera to smoothly transition to real-time feed
+        // Immediately trigger keyframe generation from camera so fresh IDR arrives in <150ms
         this.emit('need_keyframe');
         break;
       }
@@ -915,8 +933,8 @@ export class RtspServer extends EventEmitter {
 
     for (const client of this.clients) {
       if (client.isPlaying && !client.socket.destroyed) {
-        // Drop video packets for clients that have not received their initial keyframe yet
-        if (!isAudio && !client.receivedKeyframe) {
+        // Drop packets for clients that have not received their initial keyframe yet
+        if (!client.receivedKeyframe) {
           continue;
         }
         const chan = isAudio ? (client.audioChannel ?? defaultChannel) : (client.videoChannel ?? defaultChannel);
@@ -1154,6 +1172,7 @@ export class AqaraCameraBridge extends EventEmitter {
         this.rtspServer.on('need_keyframe', () => {
           if (this.isConnected) {
             this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
+            this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
           }
         });
         await this.rtspServer.start();
@@ -1632,12 +1651,8 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     }
 
-    const isKeyframe = rawH264.includes(Buffer.from([0, 0, 0, 1, 0x65])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x65])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x26])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x26])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x28])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x28]));
+    const isHevcFrame = codecId === 0x004F || (this.rtspServer?.isHevc ?? false);
+    const isKeyframe = isAnnexBKeyframe(rawH264, isHevcFrame);
 
     if (isKeyframe) {
       this.hasSeenKeyframe = true;
