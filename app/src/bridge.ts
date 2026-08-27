@@ -270,6 +270,7 @@ export class RtspServer extends EventEmitter {
   public sps: Buffer | null = null;
   public pps: Buffer | null = null;
   public lastKeyframe: Buffer | null = null;
+  private gopCache: Buffer[] = [];
   // DESCRIBE requests that arrived before SPS/PPS were known are held here
   private pendingDescribes: Array<{ socket: net.Socket; cseq: number | string }> = [];
 
@@ -787,9 +788,12 @@ export class RtspServer extends EventEmitter {
         if (missing.length > 0) nalUnits.unshift(...missing);
       }
       this.lastKeyframe = frameData;
+      this.gopCache = [frameData];
       for (const c of this.clients) {
         c.receivedKeyframe = true;
       }
+    } else if (this.gopCache.length > 0 && this.gopCache.length < 30) {
+      this.gopCache.push(frameData);
     }
 
     // Once we have codec parameters, flush any DESCRIBE responses that were
