@@ -566,6 +566,7 @@ export class RtspServer extends EventEmitter {
 
       case 'PLAY': {
         client.isPlaying = true;
+        client.receivedKeyframe = true;
         const cleanUrl = (url || '').replace(/\/+$/, '');
         const response =
           `RTSP/1.0 200 OK\r\n` +
@@ -575,14 +576,8 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: url=${cleanUrl}/track0;seq=${this.rtpSeq};rtptime=${this.videoRtpTimestamp},url=${cleanUrl}/track1;seq=${this.audioRtpSeq};rtptime=${this.audioRtpTimestamp}\r\n\r\n`;
         client.socket.write(response);
 
-        // Pre-warmed Instant Start: If we have a cached keyframe, burst send it immediately
-        // so the player renders a crystal clear frame in <1ms without any grey screen or delay!
         if (this.lastKeyframe) {
-          client.receivedKeyframe = true;
           this.sendFrameNow(this.lastKeyframe, client);
-        } else {
-          client.receivedKeyframe = false;
-          this.emit('need_keyframe');
         }
         break;
       }
@@ -828,6 +823,7 @@ export class RtspServer extends EventEmitter {
         parts.push(sc, n);
       }
       this.lastKeyframe = Buffer.concat(parts);
+
       for (const c of this.clients) {
         c.receivedKeyframe = true;
       }
@@ -844,9 +840,6 @@ export class RtspServer extends EventEmitter {
     if (!this.baseWallClock) this.baseWallClock = Date.now();
     const elapsed = Date.now() - this.baseWallClock;
     rtpTimestamp = Math.floor((elapsed * 90) % 0xFFFFFFFF) >>> 0;
-    // Enforce strictly monotonic timestamps with a 1ms (+90 ticks) guard
-    // so downstream players (VLC, FFmpeg) maintain clean jitter-free playback
-    // without runaway clock drift relative to audio.
     const minNext = (this.videoRtpTimestamp + 90) >>> 0;
     if (rtpTimestamp < minNext) {
       rtpTimestamp = minNext;
@@ -1190,12 +1183,10 @@ export class AqaraCameraBridge extends EventEmitter {
     if (!this.rtspServer) {
       try {
         this.rtspServer = new RtspServer(this.rtspPort, this.did, this.streamSlug);
-        if (this.did.includes('agl004') || this.did.includes('g5') || this.streamSlug.includes('outdoor')) {
-          this.rtspServer.isHevc = true;
-        }
         this.rtspServer.on('need_keyframe', () => {
           if (this.isConnected) {
-            this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
+            this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x1018, Buffer.alloc(0), this.cmdSeq++));
+            this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x1008, Buffer.alloc(0), this.cmdSeq++));
           }
         });
         await this.rtspServer.start();

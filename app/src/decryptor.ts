@@ -220,15 +220,13 @@ export class AqaraStreamDecryptor extends EventEmitter {
     }
 
     const table = frame.subarray(9, tableEnd);
-    const tail = Buffer.from(frame.subarray(tableEnd)); // mutable copy
-    // keystream: first 16 bytes of chacha20 block with counter=0 (same for all blocks)
+    const tail = Buffer.from(frame.subarray(tableEnd));
     const ks = chacha20Block(this.keyBuf, nonce, 0).subarray(0, 16);
 
     for (let i = 0; i < nalCount; i++) {
       const off = table.readUInt32LE(i * 8);
       const nalLen = table.readUInt32LE(i * 8 + 4);
       if (off < 0) continue;
-      // skip first 32 bytes of NAL (slice header), decrypt 16 bytes every 160
       for (let pos = 32; pos + 16 <= nalLen; pos += 160) {
         const abs = off + pos;
         if (abs + 16 > tail.length) break;
