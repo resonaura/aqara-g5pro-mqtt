@@ -502,7 +502,6 @@ export class RtspServer extends EventEmitter {
 
       case 'PLAY': {
         client.isPlaying = true;
-        client.receivedKeyframe = false;
         const cleanUrl = (url || '').replace(/\/+$/, '');
         const response =
           `RTSP/1.0 200 OK\r\n` +
@@ -512,7 +511,15 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: url=${cleanUrl}/track0;seq=${this.rtpSeq};rtptime=${this.videoRtpTimestamp},url=${cleanUrl}/track1;seq=${this.audioRtpSeq};rtptime=${this.audioRtpTimestamp}\r\n\r\n`;
         client.socket.write(response);
 
-        // Request live IDR from camera so client starts cleanly on a fresh keyframe
+        // Instant startup: immediately flush cached IDR keyframe with SPS/PPS to eliminate gray screen / delay
+        if (this.lastKeyframe) {
+          client.receivedKeyframe = true;
+          this.sendFrameNow(this.lastKeyframe, client);
+        } else {
+          client.receivedKeyframe = false;
+        }
+
+        // Request live fresh IDR from camera to smoothly transition to real-time feed
         this.emit('need_keyframe');
         break;
       }
@@ -738,23 +745,39 @@ export class RtspServer extends EventEmitter {
     }
 
     let isKeyframe = false;
+    let hasSps = false;
+    let hasPps = false;
+    let hasVps = false;
     for (const nal of nalUnits) {
       if (!nal || !nal.length) continue;
       if (this.isHevc) {
         const nalType = (nal[0] >> 1) & 0x3F;
-        if (nalType === 32) this.vps = Buffer.from(nal);
-        if (nalType === 33) this.sps = Buffer.from(nal);
-        if (nalType === 34) this.pps = Buffer.from(nal);
+        if (nalType === 32) { this.vps = Buffer.from(nal); hasVps = true; }
+        if (nalType === 33) { this.sps = Buffer.from(nal); hasSps = true; }
+        if (nalType === 34) { this.pps = Buffer.from(nal); hasPps = true; }
         if (nalType === 19 || nalType === 20 || nalType === 21) isKeyframe = true;
       } else {
         const nalType = nal[0] & 0x1F;
-        if (nalType === 7) this.sps = Buffer.from(nal);
-        if (nalType === 8) this.pps = Buffer.from(nal);
+        if (nalType === 7) { this.sps = Buffer.from(nal); hasSps = true; }
+        if (nalType === 8) { this.pps = Buffer.from(nal); hasPps = true; }
         if (nalType === 5) isKeyframe = true;
       }
     }
 
+    // In-band parameter set injection: ensure SPS/PPS (and VPS for HEVC) always precede every IDR keyframe
     if (isKeyframe) {
+      if (this.isHevc) {
+        const missing: Buffer[] = [];
+        if (!hasVps && this.vps) missing.push(this.vps);
+        if (!hasSps && this.sps) missing.push(this.sps);
+        if (!hasPps && this.pps) missing.push(this.pps);
+        if (missing.length > 0) nalUnits.unshift(...missing);
+      } else {
+        const missing: Buffer[] = [];
+        if (!hasSps && this.sps) missing.push(this.sps);
+        if (!hasPps && this.pps) missing.push(this.pps);
+        if (missing.length > 0) nalUnits.unshift(...missing);
+      }
       this.lastKeyframe = frameData;
       for (const c of this.clients) {
         c.receivedKeyframe = true;
@@ -1142,6 +1165,10 @@ export class AqaraCameraBridge extends EventEmitter {
     await new Promise<void>((resolve) => {
       this.socket?.bind(0, () => {
         this.socket?.setBroadcast(true);
+        try {
+          // Maximize UDP receive buffer (8MB) to prevent kernel packet drops during bursts and 4K I-frames
+          this.socket?.setRecvBufferSize(8 * 1024 * 1024);
+        } catch { /* ignore if OS restricts */ }
         resolve();
       });
     });
