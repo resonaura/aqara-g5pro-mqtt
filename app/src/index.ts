@@ -11,7 +11,7 @@ import {
   publishPtzDiscovery,
   publishTalkbackDiscovery,
 } from "./discovery.js";
-import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
+import { AqaraCameraBridge, getLocalIpv4, slugifyStreamName } from "./bridge.js";
 import { ENTITIES } from "./entities.js";
 import {
   aqaraDeviceToMQTT,
@@ -215,8 +215,10 @@ client.on("message", async (topic, msg) => {
       client.publish(p2pSwitchTopic, "ON", { retain: true });
 
       if (!cameraInfo.bridge) {
+        const streamSlug = slugifyStreamName(cameraInfo.device.deviceName);
         const bridge = new AqaraCameraBridge({
           did: cameraInfo.device.did,
+          deviceName: cameraInfo.device.deviceName,
           token: process.env.TOKEN || "",
           rtspPort,
           videoKey: process.env.VIDEO_KEY,
@@ -224,7 +226,7 @@ client.on("message", async (topic, msg) => {
 
         bridge.on("rtsp_ready", (url) => {
           console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
-          const streamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspPort}/live/${cameraInfo.device.did}`;
+          const streamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspPort}/live/${streamSlug}`;
           client.publish(p2pRtspTopic, streamUrl, { retain: true });
         });
 

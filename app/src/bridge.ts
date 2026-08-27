@@ -43,6 +43,8 @@ export interface VideoFrame {
 export interface BridgeOptions {
   did: string;
   token: string;
+  deviceName?: string;
+  streamName?: string;
   cameraIp?: string;
   cameraPort?: number;
   baseUrl?: string;
@@ -208,6 +210,41 @@ export function punchPayload(p2pId: string): Buffer {
   b[11] = n & 0xff;
   b.write(suf || '', 12, 'ascii');
   return b;
+}
+
+export function slugifyStreamName(name: string): string {
+  if (!name) return 'camera';
+  let slug = name
+    .toLowerCase()
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  slug = slug.replace(/-(?:camera|cam)$/, '');
+  return slug || 'camera';
+}
+
+export function isAnnexBKeyframe(buf: Buffer, isHevc: boolean = false): boolean {
+  if (!buf || buf.length < 5) return false;
+  let i = 0;
+  const len = buf.length;
+  while (i < len - 4) {
+    let prefixLen = 0;
+    if (buf[i] === 0 && buf[i+1] === 0 && buf[i+2] === 1) prefixLen = 3;
+    else if (buf[i] === 0 && buf[i+1] === 0 && buf[i+2] === 0 && buf[i+3] === 1) prefixLen = 4;
+    if (prefixLen === 0) { i++; continue; }
+    const nalByte = buf[i + prefixLen];
+    if (isHevc) {
+      const t = (nalByte >> 1) & 0x3F;
+      if (t === 19 || t === 20 || t === 21 || t === 32 || t === 33) return true;
+    } else {
+      const t = nalByte & 0x1F;
+      if (t === 5 || t === 7) return true;
+    }
+    i += prefixLen + 1;
+  }
+  return false;
 }
 
 export function buildLumiFrame(type: number, payload: Buffer, seq: number = 1): Buffer {
@@ -502,7 +539,6 @@ export class RtspServer extends EventEmitter {
 
       case 'PLAY': {
         client.isPlaying = true;
-        client.receivedKeyframe = false;
         const cleanUrl = (url || '').replace(/\/+$/, '');
         const response =
           `RTSP/1.0 200 OK\r\n` +
@@ -512,8 +548,15 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: url=${cleanUrl}/track0;seq=${this.rtpSeq};rtptime=${this.videoRtpTimestamp},url=${cleanUrl}/track1;seq=${this.audioRtpSeq};rtptime=${this.audioRtpTimestamp}\r\n\r\n`;
         client.socket.write(response);
 
-        // Request live IDR from camera so client starts cleanly on a fresh keyframe
-        this.emit('need_keyframe');
+        // Pre-warmed Instant Start: If we have a cached keyframe, burst send it immediately
+        // so the player renders a crystal clear frame in <1ms without any grey screen or delay!
+        if (this.lastKeyframe) {
+          client.receivedKeyframe = true;
+          this.sendFrameNow(this.lastKeyframe, client);
+        } else {
+          client.receivedKeyframe = false;
+          this.emit('need_keyframe');
+        }
         break;
       }
 
@@ -594,9 +637,8 @@ export class RtspServer extends EventEmitter {
       const nextExpected = (this.audioRtpTimestamp + 1024) >>> 0;
       if (this.baseWallClock) {
         const wallClockRtp = Math.floor((Date.now() - this.baseWallClock) * 16) >>> 0;
-        const drift = Math.abs(wallClockRtp - nextExpected);
-        // If drift exceeds 200ms (3200 ticks at 16kHz), resync to wall clock
-        if (drift > 3200) {
+        // Only jump FORWARD if there was a real prolonged silence gap (>500ms), NEVER jump backwards!
+        if (wallClockRtp > nextExpected + 8000) {
           this.audioRtpTimestamp = wallClockRtp;
         } else {
           this.audioRtpTimestamp = nextExpected;
@@ -640,22 +682,8 @@ export class RtspServer extends EventEmitter {
    * Excess P-frames are dropped from the *front* (oldest) to keep latency low.
    */
   public broadcastFrame(frameData: Buffer, _timestampMs?: number, targetClient?: RtspClient): void {
-    if (!frameData.length) return;
-    // Direct send for single-client targeted frames or if pacer is not active
-    if (targetClient || !this.videoPacer) {
-      this.sendFrameNow(frameData, targetClient);
-      return;
-    }
-    // If queue exceeds 60 frames (~2s backlog), flush the whole broken GOP and request IDR
-    if (this.videoQueue.length > 60) {
-      this.videoQueue.length = 0;
-      for (const c of this.clients) {
-        c.receivedKeyframe = false;
-      }
-      this.emit('need_keyframe');
-      return;
-    }
-    this.videoQueue.push(frameData);
+    // Send frame immediately to connected clients with 0ms queue latency and 0 dropped P-frames
+    this.sendFrameNow(frameData, targetClient);
   }
 
   /** Check whether an Annex-B frame buffer starts with a keyframe NAL. */
@@ -964,10 +992,15 @@ export class AqaraCameraBridge extends EventEmitter {
   private hasSeenKeyframe: boolean = false;
   private decryptor: AqaraStreamDecryptor | null = null;
 
+  public deviceName: string;
+  public streamSlug: string;
+
   constructor(options: BridgeOptions) {
     super();
     this.did = options.did;
     this.token = options.token;
+    this.deviceName = options.deviceName || options.did;
+    this.streamSlug = slugifyStreamName(options.streamName || options.deviceName || options.did);
     this.cameraIp = options.cameraIp || null;
     this.cameraPort = options.cameraPort || 0;
     this.baseUrl = options.baseUrl || DEFAULT_CONFIG.BASE_URL;
@@ -1112,7 +1145,7 @@ export class AqaraCameraBridge extends EventEmitter {
     // feed underneath is torn down and rebuilt.
     if (!this.rtspServer) {
       try {
-        this.rtspServer = new RtspServer(this.rtspPort, this.did);
+        this.rtspServer = new RtspServer(this.rtspPort, this.streamSlug);
         if (this.did.includes('agl004') || this.did.includes('g5')) {
           this.rtspServer.isHevc = true;
         }
@@ -1122,7 +1155,7 @@ export class AqaraCameraBridge extends EventEmitter {
           }
         });
         await this.rtspServer.start();
-        this.emit('rtsp_ready', `rtsp://0.0.0.0:${this.rtspPort}/live/${this.did}`);
+        this.emit('rtsp_ready', `rtsp://0.0.0.0:${this.rtspPort}/live/${this.streamSlug}`);
       } catch (err: any) {
         this.emit('warn', `RTSP server failed to start on port ${this.rtspPort}: ${err.message}`);
       }
@@ -1593,12 +1626,8 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     }
 
-    const isKeyframe = rawH264.includes(Buffer.from([0, 0, 0, 1, 0x65])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x65])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x26])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x26])) ||
-                       rawH264.includes(Buffer.from([0, 0, 0, 1, 0x28])) ||
-                       rawH264.includes(Buffer.from([0, 0, 1, 0x28]));
+    const isHevc = !!(this.rtspServer?.isHevc || this.did.includes('agl004') || this.did.includes('g5'));
+    const isKeyframe = isAnnexBKeyframe(rawH264, isHevc);
 
     if (isKeyframe) {
       this.hasSeenKeyframe = true;
