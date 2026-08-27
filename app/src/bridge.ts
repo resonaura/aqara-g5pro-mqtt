@@ -10,6 +10,7 @@ import * as os from 'os';
 import { EventEmitter } from 'events';
 import axios from 'axios';
 import { AqaraStreamDecryptor } from './decryptor.js';
+export { AqaraNativeBridge } from './native_bridge.js';
 
 // ============= Type Definitions =============
 
@@ -313,9 +314,14 @@ export class RtspServer extends EventEmitter {
   private sendDescribeResponse(socket: net.Socket, cseq: number | string): void {
     let videoSdp = '';
     if (this.isHevc) {
+      let fmtpLine = 'a=fmtp:96';
+      if (this.vps && this.sps && this.pps) {
+        fmtpLine += ` sprop-vps=${this.vps.toString('base64')};sprop-sps=${this.sps.toString('base64')};sprop-pps=${this.pps.toString('base64')}`;
+      }
       videoSdp =
         `m=video 0 RTP/AVP 96\r\n` +
         `a=rtpmap:96 H265/90000\r\n` +
+        `${fmtpLine}\r\n` +
         `a=control:track0\r\n`;
     } else {
       let fmtpLine = 'a=fmtp:96 packetization-mode=1';
@@ -353,11 +359,14 @@ export class RtspServer extends EventEmitter {
     try { socket.write(response); } catch {}
   }
 
-  constructor(port: number, did: string) {
+  public expectedSlug: string = '';
+
+  constructor(port: number, did: string, expectedSlug: string = '') {
     super();
     this.port = port;
     this.did = did;
-    this.isHevc = did.includes('agl004') || did.includes('g5');
+    this.expectedSlug = expectedSlug || did;
+    this.isHevc = did.includes('agl004') || did.includes('g5') || this.expectedSlug.includes('outdoor') || this.expectedSlug.includes('g5');
   }
 
   public start(): Promise<void> {
@@ -401,7 +410,7 @@ export class RtspServer extends EventEmitter {
   }
 
 
-  private handleClient(socket: net.Socket): void {
+  public handleClient(socket: net.Socket, initialChunk?: Buffer): void {
     const client: RtspClient = {
       socket,
       session: crypto.randomBytes(4).toString('hex'),
@@ -411,11 +420,9 @@ export class RtspServer extends EventEmitter {
     };
     this.clients.add(client);
 
-    let buf = Buffer.alloc(0);
+    let buf = initialChunk ? Buffer.from(initialChunk) : Buffer.alloc(0);
 
-    socket.on('data', (data) => {
-      buf = Buffer.concat([buf, data]);
-
+    const processBuffer = () => {
       while (buf.length > 0) {
         // Handle interleaved binary data (e.g. client RTCP packets starting with '$')
         if (buf[0] === 0x24) {
@@ -443,6 +450,15 @@ export class RtspServer extends EventEmitter {
           this.handleRtspRequest(client, reqStr);
         }
       }
+    };
+
+    if (buf.length > 0) {
+      processBuffer();
+    }
+
+    socket.on('data', (data) => {
+      buf = Buffer.concat([buf, data]);
+      processBuffer();
     });
 
     socket.on('close', () => {
@@ -462,6 +478,28 @@ export class RtspServer extends EventEmitter {
 
     const cseqLine = lines.find((l) => l.toLowerCase().startsWith('cseq:'));
     const cseq = cseqLine ? parseInt(cseqLine.split(':')[1].trim(), 10) : client.cseq;
+
+    // Strict URL path validation: prevent cross-camera stream bleed on misconfigured client ports
+    if (this.expectedSlug && url && (method === 'DESCRIBE' || method === 'SETUP' || method === 'PLAY')) {
+      try {
+        const urlStr = url.startsWith('rtsp://') ? url : `rtsp://127.0.0.1${url}`;
+        const urlObj = new URL(urlStr);
+        const pathPart = urlObj.pathname.toLowerCase();
+        if (!pathPart.endsWith('/track0') && !pathPart.endsWith('/track1')) {
+          const slugFromUrl = pathPart.replace(/^\/live\//, '').replace(/^\//, '');
+          if (slugFromUrl && slugFromUrl !== 'live') {
+            const expC = this.expectedSlug.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const didC = this.did.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const reqC = slugFromUrl.replace(/[^a-z0-9]/g, '');
+            if (!reqC.includes(expC) && !expC.includes(reqC) && !reqC.includes(didC)) {
+              if (process.env.DEBUG) console.warn(`⚠️ [RTSP ${this.port}] Rejecting mismatched stream request: "${slugFromUrl}" (this server only serves "${this.expectedSlug}")`);
+              client.socket.write(`RTSP/1.0 404 Stream Not Found\r\nCSeq: ${cseq}\r\n\r\n`);
+              return;
+            }
+          }
+        }
+      } catch {}
+    }
 
     switch (method) {
       case 'OPTIONS': {
@@ -484,20 +522,9 @@ export class RtspServer extends EventEmitter {
       }
 
       case 'DESCRIBE': {
-        const h264NeedsWait = !this.isHevc && !(this.sps && this.pps);
-        if (h264NeedsWait) {
-          const entry = { socket: client.socket, cseq };
-          this.pendingDescribes.push(entry);
+        this.sendDescribeResponse(client.socket, cseq);
+        if (!this.isHevc && !(this.sps && this.pps)) {
           this.emit('need_keyframe');
-          setTimeout(() => {
-            const idx = this.pendingDescribes.indexOf(entry);
-            if (idx !== -1) {
-              this.pendingDescribes.splice(idx, 1);
-              this.sendDescribeResponse(client.socket, cseq);
-            }
-          }, 600);
-        } else {
-          this.sendDescribeResponse(client.socket, cseq);
         }
         break;
       }
@@ -622,29 +649,30 @@ export class RtspServer extends EventEmitter {
     }
   }
 
-  private sendSingleAacFrame(rawAac: Buffer, timestampMs?: number): void {
+  private audioFrameCount: number = 0;
+  private audioBaseTimestamp: number = 0;
+
+  private sendSingleAacFrame(rawAac: Buffer, _timestampMs?: number): void {
     if (!rawAac.length) return;
 
-    // AAC LC: always 1024 samples per frame, clock at 16000 Hz.
-    // Increment by 1024 per frame with drift compensation against wall clock.
-    if (typeof timestampMs === 'number' && timestampMs > 0) {
-      this.audioRtpTimestamp = Math.floor((timestampMs * 16) % 0xFFFFFFFF) >>> 0;
-    } else if (this.audioRtpTimestamp === 0) {
-      if (!this.baseWallClock) this.baseWallClock = Date.now();
-      const elapsed = Date.now() - this.baseWallClock;
-      this.audioRtpTimestamp = Math.floor(elapsed * 16) >>> 0;
+    if (!this.baseWallClock) this.baseWallClock = Date.now();
+    const elapsedWallMs = Date.now() - this.baseWallClock;
+    const wallClockTicks = Math.floor(elapsedWallMs * 16) >>> 0;
+
+    if (this.audioBaseTimestamp === 0) {
+      this.audioBaseTimestamp = wallClockTicks;
+      this.audioFrameCount = 0;
+      this.audioRtpTimestamp = this.audioBaseTimestamp;
     } else {
-      const nextExpected = (this.audioRtpTimestamp + 1024) >>> 0;
-      if (this.baseWallClock) {
-        const wallClockRtp = Math.floor((Date.now() - this.baseWallClock) * 16) >>> 0;
-        // Only jump FORWARD if there was a real prolonged silence gap (>500ms), NEVER jump backwards!
-        if (wallClockRtp > nextExpected + 8000) {
-          this.audioRtpTimestamp = wallClockRtp;
-        } else {
-          this.audioRtpTimestamp = nextExpected;
-        }
+      const expectedTicks = (this.audioBaseTimestamp + this.audioFrameCount * 1024) >>> 0;
+      // Resync only if a major gap occurred (>300ms = 4800 ticks)
+      if (wallClockTicks > expectedTicks + 4800) {
+        this.audioBaseTimestamp = wallClockTicks;
+        this.audioFrameCount = 0;
+        this.audioRtpTimestamp = wallClockTicks;
       } else {
-        this.audioRtpTimestamp = nextExpected;
+        this.audioFrameCount++;
+        this.audioRtpTimestamp = (this.audioBaseTimestamp + this.audioFrameCount * 1024) >>> 0;
       }
     }
 
@@ -783,7 +811,23 @@ export class RtspServer extends EventEmitter {
     }
 
     if (isKeyframe) {
-      this.lastKeyframe = frameData;
+      const parts: Buffer[] = [];
+      const sc = Buffer.from([0, 0, 0, 1]);
+      if (this.isHevc) {
+        if (this.vps) parts.push(sc, this.vps);
+        if (this.sps) parts.push(sc, this.sps);
+        if (this.pps) parts.push(sc, this.pps);
+      } else {
+        if (this.sps) parts.push(sc, this.sps);
+        if (this.pps) parts.push(sc, this.pps);
+      }
+      for (const n of nalUnits) {
+        const nType = this.isHevc ? ((n[0] >> 1) & 0x3F) : (n[0] & 0x1F);
+        if (this.isHevc && (nType === 32 || nType === 33 || nType === 34)) continue;
+        if (!this.isHevc && (nType === 7 || nType === 8)) continue;
+        parts.push(sc, n);
+      }
+      this.lastKeyframe = Buffer.concat(parts);
       for (const c of this.clients) {
         c.receivedKeyframe = true;
       }
@@ -1145,8 +1189,8 @@ export class AqaraCameraBridge extends EventEmitter {
     // feed underneath is torn down and rebuilt.
     if (!this.rtspServer) {
       try {
-        this.rtspServer = new RtspServer(this.rtspPort, this.streamSlug);
-        if (this.did.includes('agl004') || this.did.includes('g5')) {
+        this.rtspServer = new RtspServer(this.rtspPort, this.did, this.streamSlug);
+        if (this.did.includes('agl004') || this.did.includes('g5') || this.streamSlug.includes('outdoor')) {
           this.rtspServer.isHevc = true;
         }
         this.rtspServer.on('need_keyframe', () => {
@@ -1375,6 +1419,9 @@ export class AqaraCameraBridge extends EventEmitter {
     }
 
     if (msgType === MSG_PUNCH_PKT) {
+      if (this.punchBuf.length >= 20 && payload.length >= 20 && !payload.subarray(0, 20).equals(this.punchBuf.subarray(0, 20))) {
+        return; // Ignore punch packets intended for another camera
+      }
       this.cameraIp = rinfo.address;
       this.cameraPort = rinfo.port;
       const punchPkt = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_PUNCH_PKT, this.punchBuf));
@@ -1385,6 +1432,9 @@ export class AqaraCameraBridge extends EventEmitter {
     }
 
     if (msgType === MSG_P2P_RDY) {
+      if (this.punchBuf.length >= 20 && payload.length >= 20 && !payload.subarray(0, 20).equals(this.punchBuf.subarray(0, 20))) {
+        return; // Ignore ready packets intended for another camera
+      }
       this.cameraIp = rinfo.address;
       this.cameraPort = rinfo.port;
       const rdyAck = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_P2P_RDY_ACK));
@@ -1400,9 +1450,11 @@ export class AqaraCameraBridge extends EventEmitter {
         this.startSessionFlow();
       }
     } else if (msgType === MSG_ALIVE) {
+      if (this.cameraIp && rinfo.address !== this.cameraIp) return;
       const ack = ppcsEncrypt(this.ppcsKeyBuf, buildPPPP(MSG_ALIVE_ACK));
       this.socket?.send(ack, rinfo.port, rinfo.address);
     } else if ((msgType === MSG_DRW || msgType === 0xD8) && payload.length >= 4 && payload[0] === DRW_MARKER) {
+      if (this.cameraIp && rinfo.address !== this.cameraIp) return;
       const chan = payload[1];
       const idx = payload.readUInt16BE(2);
       const data = payload.subarray(4);
@@ -1710,35 +1762,37 @@ export class AqaraCameraBridge extends EventEmitter {
   // ============= Two-Way Audio (Talkback) =============
 
   /**
-   * Begin talkback: ask the camera to open its speaker channel (0x1006).
-   * After this, call sendAudioFrame() with G.711 A-law PCM to speak.
+   * Begin talkback: ask the camera to open its speaker channel (0x100a).
+   * After this, call sendAudioFrame() with G.711 A-law / AAC PCM to speak.
    */
   public startTalkback(): void {
     if (!this.isConnected) return;
     this.talkbackActive = true;
     this.hasAudioStarted = true;
-    this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_AUDIO_SEND, Buffer.alloc(0), this.cmdSeq++));
+    this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x100a, Buffer.alloc(0), this.cmdSeq++));
     this.emit('talkback', 'started');
   }
 
   public stopTalkback(): void {
     if (!this.isConnected) return;
     this.talkbackActive = false;
-    this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_AUDIO_STOP, Buffer.alloc(0), this.cmdSeq++));
+    this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(0x100c, Buffer.alloc(0), this.cmdSeq++));
     this.emit('talkback', 'stopped');
   }
 
   private talkSeq: number = 0;
 
   /**
-   * Send a single G.711 A-law frame (typically 160 bytes / 20ms) to the camera speaker.
-   * Encrypted with ChaCha20(key=shareKey, nonce=8B, ctr=0) exactly like incoming audio.
+   * Send an audio frame (G.711 A-law / AAC, 160 bytes @ 8kHz) to the camera speaker.
+   * Transmitted on Channel 2 with format: [8-byte random nonce] + [ChaCha20 encrypted payload].
    */
-  public sendAudioFrame(g711: Buffer): boolean {
+  public sendAudioFrame(pcm: Buffer): boolean {
     if (!this.isConnected || !this.talkbackActive || !this.socket || !this.decryptor) return false;
     if (!this.cameraIp || !this.cameraPort) return false;
-    const frame = this.decryptor.encryptAudioFrame(g711, this.talkSeq);
-    this.sendEncDrw(1, this.talkSeq, frame);
+    const nonce = crypto.randomBytes(8);
+    const enc = this.decryptor.chacha20Xor(nonce, pcm, 0);
+    const frame = Buffer.concat([nonce, enc]);
+    this.sendEncDrw(2, this.talkSeq, frame);
     this.talkSeq = (this.talkSeq + 1) & 0xFFFF;
     return true;
   }

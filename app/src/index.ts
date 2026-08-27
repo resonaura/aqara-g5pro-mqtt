@@ -12,7 +12,7 @@ import {
   publishTalkbackDiscovery,
 } from "./discovery.js";
 import { AqaraCameraBridge, getLocalIpv4, slugifyStreamName } from "./bridge.js";
-import { ENTITIES } from "./entities.js";
+import { ENTITIES, isEntitySupported } from "./entities.js";
 import {
   aqaraDeviceToMQTT,
   getCameras,
@@ -99,7 +99,9 @@ client.on("connect", () => {
 
   // Публикуем discovery для всех камер
   cameraData.forEach(({ mqttDevice, hasSpotlight, device }, idx) => {
-    ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
+    ENTITIES.filter((e) => isEntitySupported(device.model, e.attr)).forEach((e) =>
+      publishDiscovery(client, mqttDevice, e)
+    );
     publishLightDiscovery(client, mqttDevice, hasSpotlight);
     publishSdCardDiscovery(client, mqttDevice);
     publishMotionDiscovery(client, mqttDevice);
@@ -116,7 +118,8 @@ client.on("connect", () => {
     client.publish(`homeassistant/switch/${mqttDevice.id}/p2p_stream/state`, "OFF", { retain: true });
     client.publish(`homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`, "OFF", { retain: true });
 
-    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspBasePort + idx}/live/${device.did}`;
+    const streamSlug = slugifyStreamName(device.deviceName || device.did);
+    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspBasePort + idx + 1}/live/${streamSlug}`;
     publishCameraDiscovery(client, mqttDevice, rtspStreamUrl);
   });
 
@@ -327,13 +330,16 @@ async function publishRtspState(subjectId: string, cameraInfo: typeof cameraData
 
 // === POLLING ===
 async function poll() {
-  const attrs = ENTITIES.map((e) => e.attr).concat([
-    "white_light_enable",
-    "white_light_level",
-  ]);
-
   for (const cameraInfo of cameraData) {
     try {
+      const attrs = ENTITIES.filter((e) =>
+        isEntitySupported(cameraInfo.device.model, e.attr)
+      )
+        .map((e) => e.attr)
+        .concat(
+          cameraInfo.hasSpotlight ? ["white_light_enable", "white_light_level"] : []
+        );
+
       const res = await queryAttrs(attrs, cameraInfo.device.did);
       for (const r of res.result || []) {
         await publishAttr(r.attr, r.value, cameraInfo);

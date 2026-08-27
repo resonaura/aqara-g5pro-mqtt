@@ -16,8 +16,27 @@
 #include "p2p/udp_receiver.hpp"
 #include "sync/jitter_buffer.hpp"
 #include "rtsp/rtsp_server.hpp"
+#include "audio/talkback_sender.hpp"
 
 using namespace aqara;
+
+static const std::string b64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static std::vector<uint8_t> base64_decode(const std::string &in) {
+    std::vector<uint8_t> out;
+    std::vector<int> T(256, -1);
+    for (int i = 0; i < 64; i++) T[(uint8_t)b64_chars[i]] = i;
+    int val = 0, valb = -8;
+    for (uint8_t c : in) {
+        if (T[c] == -1) continue;
+        val = (val << 6) + T[c];
+        valb += 6;
+        if (valb >= 0) {
+            out.push_back(uint8_t((val >> valb) & 0xFF));
+            valb -= 8;
+        }
+    }
+    return out;
+}
 
 std::array<uint8_t, 32> parse_hex_key(const std::string &hex) {
     std::array<uint8_t, 32> key{};
@@ -167,11 +186,47 @@ int main(int argc, char **argv) {
         }
     });
 
-    // Read stdin for exit command
+    // Read stdin for IPC commands
+    TalkbackSender talkback(std::vector<uint8_t>(session_key.begin(), session_key.end()));
+    uint16_t ch0_seq = 10;
+    uint32_t cmd_seq = 100;
+
     std::string line;
     while (std::getline(std::cin, line)) {
+        if (line.empty()) continue;
         if (line == "exit" || line == "quit" || line.find("\"cmd\":\"stop\"") != std::string::npos) {
             break;
+        }
+
+        if (line.find("\"cmd\":\"start_talkback\"") != std::string::npos) {
+            talkback.set_active(true);
+            auto start_pkt = talkback.build_start_command(ch0_seq++, cmd_seq++);
+            udp.send_packet(start_pkt.data(), start_pkt.size());
+            std::cout << "{\"type\":\"talkback\",\"status\":\"started\"}" << std::endl;
+        } else if (line.find("\"cmd\":\"stop_talkback\"") != std::string::npos) {
+            auto stop_pkt = talkback.build_stop_command(ch0_seq++, cmd_seq++);
+            udp.send_packet(stop_pkt.data(), stop_pkt.size());
+            talkback.set_active(false);
+            std::cout << "{\"type\":\"talkback\",\"status\":\"stopped\"}" << std::endl;
+        } else if (line.find("\"cmd\":\"send_talkback_audio\"") != std::string::npos) {
+            auto b64_pos = line.find("\"audio_b64\":\"");
+            if (b64_pos != std::string::npos) {
+                b64_pos += 13;
+                auto end_pos = line.find("\"", b64_pos);
+                std::string b64_str = line.substr(b64_pos, end_pos - b64_pos);
+                auto raw_audio = base64_decode(b64_str);
+
+                // Send 160-byte frames (20ms) on Channel 2
+                size_t offset = 0;
+                while (offset < raw_audio.size()) {
+                    size_t chunk_len = std::min((size_t)160, raw_audio.size() - offset);
+                    auto pkt = talkback.build_channel2_drw_packet(raw_audio.data() + offset, chunk_len);
+                    udp.send_packet(pkt.data(), pkt.size());
+                    offset += chunk_len;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                std::cout << "{\"type\":\"talkback\",\"status\":\"sent\",\"bytes\":" << raw_audio.size() << "}" << std::endl;
+            }
         }
     }
 

@@ -10,7 +10,7 @@ function publishDiscoveryEntity(
   const objectId = entity.attr;
   const baseTopic = `homeassistant/${entity.domain}/${mqttDevice.id}/${objectId}`;
 
-  const payload = {
+  const payload: Record<string, any> = {
     name: entity.name,
     unique_id: objectId,
     state_topic: `${baseTopic}/state`,
@@ -24,6 +24,13 @@ function publishDiscoveryEntity(
     },
     ...overrides,
   };
+
+  if (entity.domain === "number") {
+    payload.min = overrides.min ?? 0;
+    payload.max = overrides.max ?? 100;
+    payload.step = overrides.step ?? 1;
+    payload.mode = overrides.mode ?? "slider";
+  }
 
   client.publish(`${baseTopic}/config`, JSON.stringify(payload), {
     retain: true,

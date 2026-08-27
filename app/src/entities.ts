@@ -127,3 +127,25 @@ export const ENTITIES: EntityConfig[] = [
     command: true,
   },
 ];
+
+export function isEntitySupported(model: string, attr: string): boolean {
+  const m = (model || "").toLowerCase();
+  const isE1 = m.includes("acn") || m.includes("e1");
+  const isG5Pro = m.includes("agl004") || m.includes("g5");
+
+  // PTZ-only attributes
+  if (attr === "ptz_cruise" || attr === "humans_track" || attr.startsWith("ptz_")) {
+    return isE1 || m.includes("g3") || m.includes("ptz");
+  }
+
+  // Outdoor G5 Pro / Advanced AI & PIR specific attributes
+  if (attr === "pir_enable" || attr === "lens_hide_enable" || attr === "white_light_enable" || attr === "white_light_level") {
+    return isG5Pro;
+  }
+  if (attr === "face_detect_enable" || attr === "pets_detect_enable" || attr === "vehicle_detect_enable" || attr === "package_detect_enable") {
+    return isG5Pro || m.includes("g3");
+  }
+
+  // Common attributes supported across all Aqara cameras (system_volume, alarm_bell_volume, etc.)
+  return true;
+}

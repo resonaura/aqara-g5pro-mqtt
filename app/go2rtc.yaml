@@ -2,16 +2,16 @@
 # Point Home Assistant / Frigate / Scrypted at these WebRTC streams.
 go2rtc:
   streams:
-    lumi1_54ef4477da68:
-      - rtsp://127.0.0.1:8554/live/lumi1.54ef4477da68
-    lumi1_54ef4477da68_webrtc:
-      - rtsp://127.0.0.1:8554/live/lumi1.54ef4477da68
-      - ffmpeg:lumi1_54ef4477da68#audio=opus
-    lumi3_a5e395b63ce5e6de:
-      - rtsp://127.0.0.1:8555/live/lumi3.a5e395b63ce5e6de
-    lumi3_a5e395b63ce5e6de_webrtc:
-      - rtsp://127.0.0.1:8555/live/lumi3.a5e395b63ce5e6de
-      - ffmpeg:lumi3_a5e395b63ce5e6de#audio=opus
+    lumi1-54ef4477da68:
+      - rtsp://127.0.0.1:8555/live/lumi1-54ef4477da68
+    lumi1-54ef4477da68_webrtc:
+      - rtsp://127.0.0.1:8555/live/lumi1-54ef4477da68
+      - ffmpeg:lumi1-54ef4477da68#audio=opus
+    lumi3-a5e395b63ce5e6de:
+      - rtsp://127.0.0.1:8556/live/lumi3-a5e395b63ce5e6de
+    lumi3-a5e395b63ce5e6de_webrtc:
+      - rtsp://127.0.0.1:8556/live/lumi3-a5e395b63ce5e6de
+      - ffmpeg:lumi3-a5e395b63ce5e6de#audio=opus
 
 webrtc:
   listen: ":1984"

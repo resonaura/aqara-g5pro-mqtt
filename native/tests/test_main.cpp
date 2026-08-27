@@ -58,6 +58,8 @@ void test_rtp_packetizer() {
     std::cout << "✔ RTP Packetizer Annex B splitting and H.264 NAL packing passed\n";
 }
 
+#include "../src/audio/talkback_sender.hpp"
+
 void test_jitter_buffer() {
     JitterBuffer jb;
     jb.init();
@@ -74,12 +76,47 @@ void test_jitter_buffer() {
     std::cout << "✔ JitterBuffer timestamp monotonicity and audio spacing passed\n";
 }
 
+void test_talkback_sender() {
+    std::vector<uint8_t> share_key(32, 0x5A);
+    std::vector<uint8_t> ppcs_key(20, 0x33);
+    TalkbackSender sender(share_key, ppcs_key);
+    sender.set_active(true);
+
+    uint8_t sample_pcm[160] = {0};
+    for (int i = 0; i < 160; i++) sample_pcm[i] = (uint8_t)i;
+
+    auto start_cmd = sender.build_start_command(0, 100);
+    assert(start_cmd.size() == 16);
+    assert(start_cmd[0] == 0); // Channel 0
+    assert(start_cmd[4] == 0x0a && start_cmd[5] == 0x10); // 0x100a
+
+    auto drw_pkt = sender.build_channel2_drw_packet(sample_pcm, 160);
+    assert(drw_pkt.size() == 4 + 8 + 160);
+    assert(drw_pkt[0] == 2); // Channel 2
+    assert(drw_pkt[1] == 0); // Flags
+
+    // Verify round-trip ChaCha20 decryption of Channel 2 audio payload
+    uint8_t nonce[8];
+    std::memcpy(nonce, drw_pkt.data() + 4, 8);
+    uint8_t decrypted[160];
+    std::memcpy(decrypted, drw_pkt.data() + 12, 160);
+    chacha20_xor(share_key.data(), nonce, 0, decrypted, 160);
+    assert(std::memcmp(decrypted, sample_pcm, 160) == 0);
+
+    auto stop_cmd = sender.build_stop_command(1, 101);
+    assert(stop_cmd.size() == 16);
+    assert(stop_cmd[4] == 0x0c && stop_cmd[5] == 0x10); // 0x100c
+
+    std::cout << "✔ TalkbackSender Channel 0 commands & Channel 2 ChaCha20 encryption passed\n";
+}
+
 int main() {
     std::cout << "Running C++ Native Engine Unit Tests...\n";
     test_chacha20();
     test_hsalsa20();
     test_rtp_packetizer();
     test_jitter_buffer();
+    test_talkback_sender();
     std::cout << "All C++ Unit Tests Passed Successfully!\n";
     return 0;
 }
