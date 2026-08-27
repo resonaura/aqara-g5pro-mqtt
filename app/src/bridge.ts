@@ -537,13 +537,15 @@ export class RtspServer extends EventEmitter {
       case 'PLAY': {
         client.isPlaying = true;
         client.receivedKeyframe = false; // Strictly wait for fresh IDR so client never sees missing reference frames / gray screen
-        const cleanUrl = (url || '').replace(/\/+$/, '');
+        // NOTE: We send the PLAY OK without RTP-Info seq/rtptime because the actual
+        // values are only known when the first IDR arrives. Omitting them is valid
+        // per RFC 2326 §12.33 and prevents players from seeing a false reorder gap
+        // between the advertised seq and the real first packet seq.
         const response =
           `RTSP/1.0 200 OK\r\n` +
           `CSeq: ${cseq}\r\n` +
           `Session: ${client.session}\r\n` +
-          `Range: npt=0.000-\r\n` +
-          `RTP-Info: url=${cleanUrl}/track0;seq=${this.rtpSeq};rtptime=${this.videoRtpTimestamp},url=${cleanUrl}/track1;seq=${this.audioRtpSeq};rtptime=${this.audioRtpTimestamp}\r\n\r\n`;
+          `Range: npt=now-\r\n\r\n`;
         client.socket.write(response);
 
         // Immediately trigger keyframe generation from camera so fresh IDR arrives in <150ms
@@ -1669,38 +1671,7 @@ export class AqaraCameraBridge extends EventEmitter {
       const hasStartCode = (rawH264.length >= 3 && rawH264[0] === 0 && rawH264[1] === 0 && rawH264[2] === 1) ||
                            (rawH264.length >= 4 && rawH264[0] === 0 && rawH264[1] === 0 && rawH264[2] === 0 && rawH264[3] === 1);
 
-      // For keyframes, prepend SPS+PPS in-band so the decoder can initialize
-      if (isKeyframe && !this.rtspServer.isHevc) {
-        const sps = this.rtspServer.sps;
-        const pps = this.rtspServer.pps;
-        const parts: Buffer[] = [];
-        if (sps) { parts.push(sc); parts.push(sps); }
-        if (pps) { parts.push(sc); parts.push(pps); }
-        if (!hasStartCode) parts.push(sc);
-        parts.push(rawH264);
-        const alreadyHasSps = rawH264.includes(Buffer.from([0, 0, 0, 1, 0x67])) || rawH264.includes(Buffer.from([0, 0, 1, 0x67]));
-        if (!alreadyHasSps && (sps || pps)) {
-          outFrame = Buffer.concat(parts);
-        } else if (!hasStartCode) {
-          outFrame = Buffer.concat([sc, rawH264]);
-        }
-      } else if (isKeyframe && this.rtspServer.isHevc) {
-        const vps = this.rtspServer.vps;
-        const sps = this.rtspServer.sps;
-        const pps = this.rtspServer.pps;
-        const parts: Buffer[] = [];
-        if (vps) { parts.push(sc); parts.push(vps); }
-        if (sps) { parts.push(sc); parts.push(sps); }
-        if (pps) { parts.push(sc); parts.push(pps); }
-        if (!hasStartCode) parts.push(sc);
-        parts.push(rawH264);
-        const alreadyHasVps = rawH264.includes(Buffer.from([0, 0, 0, 1, 0x40])) || rawH264.includes(Buffer.from([0, 0, 1, 0x40]));
-        if (!alreadyHasVps && (vps || sps || pps)) {
-          outFrame = Buffer.concat(parts);
-        } else if (!hasStartCode) {
-          outFrame = Buffer.concat([sc, rawH264]);
-        }
-      } else if (!hasStartCode) {
+      if (!hasStartCode) {
         outFrame = Buffer.concat([sc, rawH264]);
       }
       if (isKeyframe) {
