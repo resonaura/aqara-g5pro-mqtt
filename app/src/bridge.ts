@@ -1520,7 +1520,9 @@ export class AqaraCameraBridge extends EventEmitter {
           this.liveStreamRequested = true;
           this.isStreamStarted = true;
           // Step 2: Stream start 0x101C on Channel 3
-          this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START, Buffer.alloc(0), this.cmdSeq++));
+          // StartVideoCmdContent (16 bytes): [channel:4, videoStream:4, resolution:4, streamType:4]
+          // videoStream: 0 = 1520p (max), 1 = 1080p, 2 = SD. Default to max quality.
+          this.sendEncDrw(3, this.ch3Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START, this.buildStreamStartPayload(), this.cmdSeq++));
 
           // Step 3: Stream keyframe 0x1018 on Channel 0
           this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_KEYFRAME_REQ, Buffer.alloc(0), this.cmdSeq++));
@@ -1534,6 +1536,22 @@ export class AqaraCameraBridge extends EventEmitter {
         this.emit('talkback', 'accepted');
       }
     }
+  }
+
+  /**
+   * Build the 16-byte StartVideoCmdContent for the 0x101C stream-start command.
+   * Layout (4x uint32 LE): [channel, videoStream, resolution, streamType].
+   * videoStream: 0 = 1520p (max quality), 1 = 1080p, 2 = SD.
+   * Override via env STREAM_QUALITY (0/1/2), default to max quality (0).
+   */
+  private buildStreamStartPayload(): Buffer {
+    const payload = Buffer.alloc(16);
+    const videoStream = parseInt(process.env.STREAM_QUALITY ?? '0', 10) || 0;
+    payload.writeUInt32LE(4, 0);            // channel
+    payload.writeUInt32LE(videoStream, 4);  // videoStream (0 = max)
+    payload.writeUInt32LE(0, 8);            // resolution (highest)
+    payload.writeUInt32LE(0, 12);           // streamType
+    return payload;
   }
 
   private frameStartSeq: number = 0;

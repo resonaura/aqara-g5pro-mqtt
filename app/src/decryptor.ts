@@ -171,7 +171,7 @@ export class AqaraStreamDecryptor extends EventEmitter {
    *   [20..28) reserved (0)
    *   [28..32) ENCRYPTED payload length (excludes the 8-byte nonce)
    *   [32..40) 8-byte nonce
-   *   [40..40+len) encrypted G.711 A-law payload
+   *   [40..40+len) encrypted AAC (ADTS) payload
    * The media datagram is padded to its MTU (e.g. 1024) with zeros, so we MUST
    * slice to the declared payload length and never decrypt the padding.
    */
@@ -189,18 +189,33 @@ export class AqaraStreamDecryptor extends EventEmitter {
 
   /**
    * Build a talkback audio AVIO frame ready to be sent to the camera.
-   * Returns the full 32-byte AVIO header + 8-byte nonce + encrypted G.711.
+   *
+   * Recovered from LMCAMHLumiCameraAudioTalk + LMCAMHLumiAACEncoder: the app
+   * captures mic audio, encodes it to AAC (16 kHz, mono, ADTS) and ships it as
+   * a 0x0088 AVIO media frame — the exact mirror of the audio frames the camera
+   * streams *to* us (which we decrypt in decryptAudioFrame). Payload is
+   * ChaCha20(key=shareKey, nonce=8B, ctr=0), same cipher as incoming audio.
+   *
+   * Returns the full 32-byte AVIO header + 8-byte nonce + encrypted AAC.
    */
-  public encryptAudioFrame(g711: Buffer, seq: number = 0): Buffer {
+  public encryptAudioFrame(audioData: Buffer, seq: number = 0, sampleRate = 16000): Buffer {
+    // Mirror the exact layout decryptAudioFrame parses (verified against a real
+    // E1 capture). The outgoing talkback frame is the byte-for-byte mirror of an
+    // incoming audio frame, just with our encrypted AAC payload + fresh nonce.
     const header = Buffer.alloc(32);
-    header.writeUInt16LE(0x0088, 0); // audio AVIO codec id
-    header.writeUInt16LE(0x0001, 2); // flags (data)
-    header.writeUInt32LE(Date.now() & 0xffffffff, 8); // timestamp
-    header.writeUInt32LE(8000, 16); // sample rate
-    header.writeUInt32LE(seq & 0xffffffff, 24); // seq
-    header.writeUInt32LE(g711.length, 28); // payload length
+    header.writeUInt16LE(0x0088, 0);          // audio AVIO codec id (AAC)
+    header.writeUInt16LE(0x000e, 2);          // frame-type / flags (data)
+    header.writeUInt32LE(0, 4);              // flags (reserved)
+    const ts = BigInt(Date.now());            // 8-byte timestamp (ms)
+    header.writeUInt32LE(Number(ts & 0xffffffffn), 8);
+    header.writeUInt32LE(Number((ts >> 32n) & 0xffffffffn), 12);
+    const sampleRateKHz = Math.round(sampleRate / 1000); // marker in kHz (8 = 8 kHz)
+    header.writeUInt32LE(sampleRateKHz, 16);
+    header.writeUInt32LE(0, 20);             // reserved
+    header.writeUInt32LE(seq & 0xffffffff, 24); // seq / frameno
+    header.writeUInt32LE(audioData.length, 28);  // encrypted payload length
     const nonce = crypto.randomBytes(8);
-    const enc = this.chacha20Xor(nonce, g711, 0);
+    const enc = this.chacha20Xor(nonce, audioData, 0);
     return Buffer.concat([header, nonce, enc]);
   }
 
