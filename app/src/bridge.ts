@@ -86,31 +86,23 @@ export const LUMI_TYPE_AUDIO_START_RESP = 0x1005;
 export const LUMI_TYPE_AUDIO_SEND = 0x1006;        // talkback (app -> camera)
 export const LUMI_TYPE_AUDIO_SEND_RESP = 0x1007;
 export const LUMI_TYPE_AUDIO_STOP = 0x1008;
-// Two-way talkback (app -> camera speaker). Per the reversed Aqara Home iOS app
-// (backtraces: startTalkWithCompletion -> 0x100A, stopTalkWithCompletion -> 0x1002,
-// startLiveVideo -> 0x100C, startGetFrameRequest -> 0x1018):
-//   0x100A (body null)  -> 0x100B "prepare for talk 成功"   (START / open talk)
-//   0x1002 (body null)  -> stop / reset (also sent by stopTalk)
-//   0x1018 (body null)  -> request frames (video + audio)   (getFrameRequest)
-//   0x100C (body null)  -> start LIVE VIDEO (acked by 0x100D) — NOT a talk stop!
-// Talk audio (and the 11-byte lead frame) ride on the MEDIA channel (1 on E1) as
-// an AVIO 0x0088 frame with a ChaCha20-encrypted AAC-LC payload — the exact mirror
-// of the audio the camera streams TO us (decryptor.decryptAudioFrame, verified vs a
-// live E1 capture). It is NOT plaintext on channel 2 (that was the wrong earlier guess).
-// NOTE: 0x100A is talk-prepare, NOT PTZ (the old LUMI_TYPE_PTZ=0x100A guess is wrong).
+// Two-way talkback (app -> camera speaker), captured at the Objective-C P2P API:
+//   p2pSendCMD(0x100A, channel 0)                         startTalk
+//   p2pSendFrame(ADTS AAC-LC 16 kHz mono, channel 2)       audio
+//   p2pSendCMD(0x100C, channel 0)                         stopTalk
+// These frames are already below Aqara's P2P-session encryption layer.  They are
+// not AVIO frames and are not separately ChaCha20-encrypted.
 export const LUMI_TYPE_TALKBACK_START = 0x100A;
 export const LUMI_TYPE_TALKBACK_START_RESP = 0x100B;
-export const LUMI_TYPE_TALKBACK_STOP = 0x1002;        // confirmed via stopTalk bt
+export const LUMI_TYPE_TALKBACK_STOP = 0x100C;        // confirmed via stopTalk bt
 export const LUMI_TYPE_TALKBACK_GETFRAME = 0x1018;    // confirmed via startGetFrameRequest bt
-export const LUMI_TYPE_STREAM_START_ALT = 0x100C;     // start live video (acked 0x100D)
 
 // The real Aqara Home app opens talkback by first sending a fixed 11-byte
 // AAC-LC ADTS "lead" frame (captured via Frida):
 //   ff f9 60 40 01 7f fc 00 d0 00 07
 // Decoded it is AAC LC, 16000 Hz, mono, no CRC (7-byte ADTS header) with a
 // 4-byte payload. The camera needs this frame to initialise its talk decoder;
-// without it, audio is silently dropped. It is shipped the same AVIO-wrapped,
-// ChaCha20-encrypted way as the rest of the talk audio (see sendLeadFrames).
+// without it, audio is silently dropped. It is sent unchanged on P2P channel 2.
 export const TALKBACK_LEAD_FRAME = Buffer.from([0xff, 0xf9, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x00, 0xd0, 0x00, 0x07]);
 // Pan / Tilt / Zoom
 export const LUMI_TYPE_PTZ = 0x100A;
@@ -1127,6 +1119,7 @@ export class AqaraCameraBridge extends EventEmitter {
     const initStringApp = this.p2pInfo?.initStringApp || '';
     const keyPart = initStringApp.includes(':') ? initStringApp.split(':')[1] : initStringApp || 'aqaraus19kn';
     this.ppcsKeyBuf = Buffer.from(keyPart, 'ascii');
+    if (process.env.DEBUG) console.log('🔑 [PPCS] session key:', this.ppcsKeyBuf.toString('hex'));
     this.punchBuf = punchPayload(this.p2pInfo?.p2pId || 'AQARAUS-207160-BRSYM');
 
     // Generate ephemeral X25519 keypair
@@ -1486,7 +1479,12 @@ export class AqaraCameraBridge extends EventEmitter {
       } else if (chan === 1 || (chan === 4 && (this.did.includes('agl004') || this.did.includes('g5')))) {
         this.handleVideoData(idx, data);
       } else {
-        // Channel 3 sync / keepalives or non-active sub-stream
+        // Channel 3 sync / keepalives or non-active sub-stream. Log anything we
+        // don't handle (e.g. channel 2 audio ACKs) so talkback issues are visible.
+        if (process.env.DEBUG) {
+          const tag = data.length >= 4 && data[0] === 0x6c ? `Lumi type=0x${data.readUInt32BE(2).toString(16)}` : 'binary';
+          console.log(`📨 [Chan ${chan}] unhandled DRW len=${data.length} ${tag} hex=${data.subarray(0, 16).toString('hex')}`);
+        }
       }
     }
   }
@@ -1592,11 +1590,9 @@ export class AqaraCameraBridge extends EventEmitter {
       console.log('🔊 [Talkback] Camera prepared talk channel (0x100B)');
       console.log('   🔍 0x100B body(hex):', data.toString('hex'));
       try { console.log('   🔍 0x100B body(json):', JSON.stringify(JSON.parse(data.toString('utf8')))); } catch { /* binary */ }
-      // The app sends audio only AFTER this ack. First warm the camera's talk
-      // decoder by sending the fixed 11-byte AAC-LC lead frame (the app repeats
-      // it 1-2x); without it the camera can silently drop audio. Then start the
-      // real audio stream.
-      this.sendLeadFrames(2);
+      // The caller sends the one captured ADTS lead frame immediately before its
+      // audio source begins. Keep the control response free of media writes: the
+      // official app's encoder owns that timing.
       this.emit('talkback', 'accepted');
     } else if (frameType === 0x1003) {
       // 0x1003 (len 0) arrives after 0x100C / startTalk — possibly the audio
@@ -1604,7 +1600,8 @@ export class AqaraCameraBridge extends EventEmitter {
       if (process.env.DEBUG) console.log('🔍 [Talkback] Camera sent 0x1003 (len ' + data.length + ')');
     } else if (frameType === 0x100D) {
       // 0x100D is the ack to 0x100C (start live video) — NOT a talk stop.
-      // It only appears if we (re)send 0x100C; treat as benign info.
+      // It only appears if we (re)send 0x100C; signal startTalkback to proceed.
+      this.emit('livestart');
       if (process.env.DEBUG) console.log('🔊 [Talkback] Camera acked 0x100C live-start (0x100D)');
     }
   }
@@ -1818,44 +1815,15 @@ export class AqaraCameraBridge extends EventEmitter {
 
   // ============= Two-Way Audio (Talkback) =============
 
-   /**
-   * Begin talkback. The real app's E1 flow (captured via Frida) is:
-    *   0x1000 (re-auth: app_sign/app_public_key/timestamp, NO device_id)
-    *   0x100C (reset any prior talk) -> 0x1002 (re-open session) -> 0x100A (prepare)
-    *   0x1018 (keyframe)  ... then AAC audio on transport CHANNEL 2 (lead frame first)
-    * The camera rejects 0x100A (answers 0x100D) unless the 0x1000 re-auth precedes it.
-    */
-   public async startTalkback(): Promise<void> {
-     if (!this.isConnected) return;
-     this.talkbackActive = true;
-     this.hasAudioStarted = true;
-
-     // NOTE: a 0x1000 re-auth here was found to trigger a full camera re-login
-     // (duplicate login/session responses) that churns the session and makes the
-     // camera immediately close talk (0x100D). The app only needs 0x100A to be
-     // preceded by the normal session, which is already established. Batched
-     // frame parsing now surfaces the 0x100B prepare-ack correctly.
-     if (process.env.TALKBACK_REAUTH) {
-       await this.refreshTalkSign();
-       const authJson = JSON.stringify({
-         timestamp: String(this.signTime || Date.now()),
-         app_sign: this.appSign,
-         app_public_key: this.appPub,
-       });
-       if (process.env.DEBUG) console.log('🔊 [Talkback] sending 0x1000 auth:', authJson);
-       this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_LOGIN, Buffer.from(authJson), this.cmdSeq++));
-     }
-
-      // Mirror the app's talk-open sequence (verified via Frida capture):
-      //   startLiveVideo -> 0x100C (open talk media path) -> 0x1002 (reset)
-      //   -> startTalk -> 0x100A (camera answers 0x100B "prepared") -> audio on ch2
-      // NOTE: 0x1018 (getFrameRequest) is NOT sent before talk (it only requests
-      // incoming frames); sending it here previously made the camera ignore talk.
-      this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START_ALT, Buffer.alloc(0), this.cmdSeq++));
-      this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_TALKBACK_STOP, Buffer.alloc(0), this.cmdSeq++));
+   /** Begin talkback exactly as the official client does: one empty 0x100A on CH0. */
+    public async startTalkback(): Promise<void> {
+      if (!this.isConnected) return;
+      this.talkbackActive = true;
+      this.hasAudioStarted = true;
       this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_TALKBACK_START, Buffer.alloc(0), this.cmdSeq++));
+      this.talkFramesSent = 0;
       this.emit('talkback', 'started');
-   }
+    }
 
    /**
     * Re-fetch a fresh talk signature from the Aqara cloud for the existing app
@@ -1881,68 +1849,30 @@ export class AqaraCameraBridge extends EventEmitter {
     public stopTalkback(): void {
       if (!this.isConnected) return;
       this.talkbackActive = false;
-      // Mirror app stop sequence: 0x100C -> 0x1002
-      this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_STREAM_START_ALT, Buffer.alloc(0), this.cmdSeq++));
+      // stopTalkWithCompletion: emits one empty 0x100C on CH0.
       this.sendEncDrw(0, this.ch0Seq++, buildLumiFrame(LUMI_TYPE_TALKBACK_STOP, Buffer.alloc(0), this.cmdSeq++));
       this.emit('talkback', 'stopped');
     }
 
-    /**
-     * The app warms the camera's talk decoder by sending the fixed 11-byte AAC-LC
-     * ADTS lead frame several times before the real audio. Mirror that — and wrap
-     * it the same way as real talk audio (AVIO 0x0088 when fmt=avio).
-     */
-     private sendLeadFrames(count = 2): void {
-    const fmt = (process.env.TALKBACK_FORMAT || 'raw').toLowerCase();
-      const chan = parseInt(process.env.TALKBACK_CHAN || '1', 10) || 1;
-      const base =
-        fmt === 'avio' && this.decryptor
-          ? this.decryptor.encryptAudioFrame(TALKBACK_LEAD_FRAME, this.talkSeq, 16000)
-          : TALKBACK_LEAD_FRAME;
-      for (let i = 0; i < count; i += 1) {
-        this.sendEncDrw(chan, this.talkSeq, base);
-        this.talkSeq = (this.talkSeq + 1) & 0xFFFF;
-      }
-    }
-
-   private talkSeq: number = 0;
+    private talkSeq: number = 0;
+    private talkFramesSent?: number;
 
    /**
-    * Send a single AAC (ADTS) frame to the camera speaker.
-    *
-    * CONFIRMED format: talk audio is the exact mirror of the audio the camera
-    * streams TO us — an AVIO 0x0088 media frame, payload ChaCha20-encrypted with
-    * the share key (see decryptor.encryptAudioFrame / decryptAudioFrame, verified
-    * against a live E1 capture). It rides on the MEDIA channel (1 for E1; the same
-    * channel video uses) — NOT plaintext on channel 2.
-    *
-    * Select the wire variant with TALKBACK_FORMAT:
-    *   - "avio" (default): 0x0088 AVIO header + 8B nonce + ChaCha20(AAC)
-    *   - "raw":  raw ADTS AAC on the media channel (legacy A/B baseline)
-    *   - "crypt": [8B nonce][ChaCha20(AAC)] no AVIO header (legacy A/B baseline)
-    * Channel is TALKBACK_CHAN (default 1).
+    * Send one complete, plaintext ADTS AAC-LC frame on the application's logical
+    * P2P channel 2. The frame includes its 7-byte ADTS header.
     */
-   public sendAudioFrame(aac: Buffer, sampleRate = 16000): boolean {
-     if (!this.isConnected || !this.talkbackActive || !this.socket) return false;
-     if (!this.cameraIp || !this.cameraPort) return false;
-     const fmt = (process.env.TALKBACK_FORMAT || 'avio').toLowerCase();
-     const chan = parseInt(process.env.TALKBACK_CHAN || '1', 10) || 1;
-     let frame: Buffer;
-     if (fmt === 'raw') {
-       frame = aac;
-     } else if (fmt === 'avio') {
-       if (!this.decryptor) return false;
-       frame = this.decryptor.encryptAudioFrame(aac, this.talkSeq, sampleRate);
-     } else {
-       if (!this.decryptor) return false;
-       const nonce = crypto.randomBytes(8);
-       const enc = this.decryptor.chacha20Xor(nonce, aac, 0);
-       frame = Buffer.concat([nonce, enc]);
-     }
-     this.sendEncDrw(chan, this.talkSeq, frame);
-     this.talkSeq = (this.talkSeq + 1) & 0xFFFF;
-     return true;
-   }
+    public sendAudioFrame(aac: Buffer): boolean {
+      if (!this.isConnected || !this.talkbackActive || !this.socket) return false;
+      if (!this.cameraIp || !this.cameraPort) return false;
+      if (aac.length < 7 || aac[0] !== 0xff || (aac[1] & 0xf0) !== 0xf0) return false;
+      this.sendEncDrw(2, this.talkSeq, aac);
+      this.talkSeq = (this.talkSeq + 1) & 0xFFFF;
+      this.talkFramesSent = (this.talkFramesSent ?? 0) + 1;
+      if (process.env.DEBUG) {
+        console.log(`🔊 [Talkback] sent frame #${this.talkFramesSent} ch=2 raw-adts len=${aac.length} adts=${aac.subarray(0, 4).toString('hex')}`);
+      }
+      return true;
+    }
 
   // ============= PTZ (Pan / Tilt / Zoom) =============
 
