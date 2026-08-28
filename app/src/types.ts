@@ -53,6 +53,7 @@ export interface Device {
   positionId: string;
   createTime: string;
   did: string;
+  ip?: string;
   type?: number;
 }
 
