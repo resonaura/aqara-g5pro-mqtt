@@ -1,1 +1,4 @@
 scripts
+!scripts/
+!scripts/audio/
+!scripts/audio/talkback-sample.ts
