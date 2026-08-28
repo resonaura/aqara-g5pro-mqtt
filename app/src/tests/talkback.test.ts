@@ -1,6 +1,13 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { splitAdts, aacFrameDurationMs } from '../audio.js';
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  aacFrameDurationMs,
+  forceMpeg2Adts,
+  isTalkbackNativeAac,
+  parseAudioSpecificConfig,
+  splitAdts,
+  wrapRawAacToAdts,
+} from "../audio.js";
 
 // Build a minimal ADTS AAC frame of `len` bytes with a valid syncword + length field.
 function adtsFrame(len: number, profile = 2, srIndex = 4, chan = 1): Buffer {
@@ -15,7 +22,7 @@ function adtsFrame(len: number, profile = 2, srIndex = 4, chan = 1): Buffer {
   return buf;
 }
 
-test('splitAdts separates concatenated ADTS frames', () => {
+test("splitAdts separates concatenated ADTS frames", () => {
   const f1 = adtsFrame(20);
   const f2 = adtsFrame(40);
   const f3 = adtsFrame(13);
@@ -28,7 +35,7 @@ test('splitAdts separates concatenated ADTS frames', () => {
   assert.ok(out[0][0] === 0xff && (out[0][1] & 0xf0) === 0xf0);
 });
 
-test('splitAdts ignores garbage between syncwords', () => {
+test("splitAdts ignores garbage between syncwords", () => {
   const f = adtsFrame(16);
   const garbage = Buffer.concat([Buffer.from([0x00, 0x01, 0x02]), f]);
   const out = splitAdts(garbage);
@@ -36,6 +43,37 @@ test('splitAdts ignores garbage between syncwords', () => {
   assert.equal(out[0].length, 16);
 });
 
-test('aacFrameDurationMs at 16kHz is ~64ms', () => {
+test("aacFrameDurationMs at 16kHz is ~64ms", () => {
   assert.ok(Math.abs(aacFrameDurationMs(16000) - 64) < 0.001);
+});
+
+test("wrapRawAacToAdts emits MPEG-2 AAC-LC 16 kHz mono matching the camera", () => {
+  const raw = Buffer.from([0x01, 0x0c, 0x13, 0x10]);
+  const adts = wrapRawAacToAdts(raw, {
+    objectType: 2,
+    sampleRate: 16000,
+    channels: 1,
+  });
+  assert.equal(adts[0], 0xff);
+  assert.equal(adts[1], 0xf9);
+  assert.equal((adts[2] >> 6) & 0x03, 1);
+  assert.equal((adts[2] >> 2) & 0x0f, 8);
+  const len = ((adts[3] & 3) << 11) | (adts[4] << 3) | (adts[5] >> 5);
+  assert.equal(len, adts.length);
+  assert.deepEqual(adts.subarray(7), raw);
+});
+
+test("parseAudioSpecificConfig reads AAC-LC 16 kHz mono", () => {
+  const cfg = parseAudioSpecificConfig(Buffer.from([0x14, 0x08]));
+  assert.ok(cfg);
+  assert.equal(cfg!.objectType, 2);
+  assert.equal(cfg!.sampleRate, 16000);
+  assert.equal(cfg!.channels, 1);
+  assert.equal(isTalkbackNativeAac(cfg), true);
+});
+
+test("forceMpeg2Adts sets the MPEG-2 ID bit", () => {
+  const mpeg4 = Buffer.from([0xff, 0xf1, 0x60, 0x40, 0x01, 0x7f, 0xfc]);
+  const out = forceMpeg2Adts(mpeg4);
+  assert.equal(out[1] & 0x08, 0x08);
 });

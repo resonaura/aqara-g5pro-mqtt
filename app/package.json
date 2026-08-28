@@ -11,7 +11,6 @@
     "rtsp": "tsx src/scripts/rtsp/server.ts",
     "setup": "tsx src/scripts/setup.ts",
     "login": "tsx src/scripts/login.ts",
-    "go2rtc": "tsx src/scripts/rtsp/go2rtc.ts",
     "cameras:list": "tsx src/scripts/cameras/list-p2p.ts",
     "audio:talkback": "tsx src/scripts/audio/talkback-sample.ts",
     "test": "node --import tsx --test src/tests/*.test.ts"

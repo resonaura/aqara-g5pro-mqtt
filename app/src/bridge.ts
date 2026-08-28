@@ -360,9 +360,16 @@ export class RtspServer extends EventEmitter {
   ): void {
     let videoSdp = "";
     if (this.isHevc) {
+      let fmtp = "a=fmtp:96";
+      const props: string[] = [];
+      if (this.vps) props.push(`sprop-vps=${this.vps.toString("base64")}`);
+      if (this.sps) props.push(`sprop-sps=${this.sps.toString("base64")}`);
+      if (this.pps) props.push(`sprop-pps=${this.pps.toString("base64")}`);
+      if (props.length) fmtp += " " + props.join(";");
       videoSdp =
         `m=video 0 RTP/AVP 96\r\n` +
         `a=rtpmap:96 H265/90000\r\n` +
+        (props.length ? `${fmtp}\r\n` : "") +
         `a=control:track0\r\n`;
     } else {
       let fmtpLine = "a=fmtp:96 packetization-mode=1";
@@ -457,13 +464,13 @@ export class RtspServer extends EventEmitter {
     if (this.videoPacer) return;
     this.videoPacer = setInterval(() => {
       if (this.videoQueue.length === 0) return;
-      // Adaptive drain: if queue builds up during a UDP burst, drain up to 2 frames per tick
-      const count = this.videoQueue.length > 2 ? 2 : 1;
-      for (let i = 0; i < count && this.videoQueue.length > 0; i++) {
-        const frame = this.videoQueue.shift()!;
-        this.sendFrameNow(frame);
+      while (this.videoQueue.length > 10) {
+        if (this.frameIsKeyframe(this.videoQueue[0])) break;
+        this.videoQueue.shift();
       }
-    }, 20);
+      const frame = this.videoQueue.shift();
+      if (frame) this.sendFrameNow(frame);
+    }, this.PACER_INTERVAL_MS);
   }
 
   /** Stop and clean up the video pacer. */
@@ -560,8 +567,10 @@ export class RtspServer extends EventEmitter {
       }
 
       case "DESCRIBE": {
-        const h264NeedsWait = !this.isHevc && !(this.sps && this.pps);
-        if (h264NeedsWait) {
+        const hasParams = this.isHevc
+          ? !!(this.vps && this.sps && this.pps)
+          : !!(this.sps && this.pps);
+        if (!hasParams) {
           const entry = { socket: client.socket, cseq };
           this.pendingDescribes.push(entry);
           this.emit("need_keyframe");
@@ -616,7 +625,6 @@ export class RtspServer extends EventEmitter {
 
       case "PLAY": {
         client.isPlaying = true;
-        client.receivedKeyframe = false; // Strictly wait for fresh IDR so client never sees missing reference frames / gray screen
         // NOTE: We send the PLAY OK without RTP-Info seq/rtptime because the actual
         // values are only known when the first IDR arrives. Omitting them is valid
         // per RFC 2326 §12.33 and prevents players from seeing a false reorder gap
@@ -628,7 +636,13 @@ export class RtspServer extends EventEmitter {
           `Range: npt=now-\r\n\r\n`;
         client.socket.write(response);
 
-        // Immediately trigger keyframe generation from camera so fresh IDR arrives in <150ms
+        // Replay the last IDR immediately so the player is not stuck on a gray
+        // screen for a full GOP while we wait for the next camera keyframe.
+        if (this.lastKeyframe && this.lastKeyframe.length) {
+          this.sendFrameNow(this.lastKeyframe, client);
+        } else {
+          client.receivedKeyframe = false;
+        }
         this.emit("need_keyframe");
         break;
       }
@@ -777,14 +791,13 @@ export class RtspServer extends EventEmitter {
       this.sendFrameNow(frameData, targetClient);
       return;
     }
-    // If queue exceeds 60 frames (~2s backlog), flush the whole broken GOP and request IDR
-    if (this.videoQueue.length > 60) {
-      this.videoQueue.length = 0;
-      for (const c of this.clients) {
-        c.receivedKeyframe = false;
+    if (this.videoQueue.length > 30) {
+      while (
+        this.videoQueue.length > 8 &&
+        !this.frameIsKeyframe(this.videoQueue[0])
+      ) {
+        this.videoQueue.shift();
       }
-      this.emit("need_keyframe");
-      return;
     }
     this.videoQueue.push(frameData);
   }
@@ -958,8 +971,12 @@ export class RtspServer extends EventEmitter {
       }
       this.lastKeyframe = frameData;
       this.gopCache = [frameData];
-      for (const c of this.clients) {
-        c.receivedKeyframe = true;
+      if (targetClient) {
+        targetClient.receivedKeyframe = true;
+      } else {
+        for (const c of this.clients) {
+          if (c.isPlaying) c.receivedKeyframe = true;
+        }
       }
     } else if (this.gopCache.length > 0 && this.gopCache.length < 30) {
       this.gopCache.push(frameData);
@@ -974,17 +991,9 @@ export class RtspServer extends EventEmitter {
       this.flushPendingDescribes();
     }
 
-    let rtpTimestamp: number;
-    if (!this.baseWallClock) this.baseWallClock = Date.now();
-    const elapsed = Date.now() - this.baseWallClock;
-    rtpTimestamp = Math.floor((elapsed * 90) % 0xffffffff) >>> 0;
-    // Enforce strictly monotonic timestamps with a 1ms (+90 ticks) guard
-    // so downstream players (VLC, FFmpeg) maintain clean jitter-free playback
-    // without runaway clock drift relative to audio.
-    const minNext = (this.videoRtpTimestamp + 90) >>> 0;
-    if (rtpTimestamp < minNext) {
-      rtpTimestamp = minNext;
-    }
+    // 90 kHz clock, 30 fps → 3000 ticks per frame. Wall-clock timestamps
+    // clustered when the pacer drained bursts and made players start gray/tear.
+    const rtpTimestamp = (this.videoRtpTimestamp + 3000) >>> 0;
     this.videoRtpTimestamp = rtpTimestamp;
     const MAX_PAYLOAD_SIZE = 1380;
 
@@ -1110,8 +1119,9 @@ export class RtspServer extends EventEmitter {
 
     for (const client of this.clients) {
       if (client.isPlaying && !client.socket.destroyed) {
-        // Drop packets for clients that have not received their initial keyframe yet
-        if (!client.receivedKeyframe) {
+        // Video waits for an IDR so the decoder never starts on a P-frame (gray).
+        // Audio is independent and can start immediately.
+        if (!isAudio && !client.receivedKeyframe) {
           continue;
         }
         const chan = isAudio
@@ -2018,6 +2028,8 @@ export class AqaraCameraBridge extends EventEmitter {
   private p2pSessionReady: boolean = false;
   private liveStreamRequested: boolean = false;
   private talkbackActive: boolean = false;
+  private talkbackReady: boolean = false;
+  private talkbackPrepare: Promise<boolean> | null = null;
   private talkbackTimer: NodeJS.Timeout | null = null;
   /** Retransmits mirror the native PPCS client's reliable media sends. */
   private talkbackRetryTimers: Set<NodeJS.Timeout> = new Set();
@@ -2115,6 +2127,17 @@ export class AqaraCameraBridge extends EventEmitter {
         ((a - this.frameStartSeq) & 0xffff) -
         ((b - this.frameStartSeq) & 0xffff),
     );
+
+    for (let i = 1; i < entries.length; i++) {
+      const prev = entries[i - 1][0];
+      const expect = (prev + 1) & 0xffff;
+      if (entries[i][0] !== expect) {
+        this.videoFrags.clear();
+        this.currentExpectedLen = 0;
+        this.currentAccumulatedLen = 0;
+        return;
+      }
+    }
 
     const full = Buffer.concat(entries.map(([, buf]) => buf));
     const expected = this.currentExpectedLen;
@@ -2326,6 +2349,34 @@ export class AqaraCameraBridge extends EventEmitter {
   }
 
   /**
+   * Open the speaker path the way Aqara Home does, including the 11-byte AAC
+   * lead frame and the hardware-init pauses. Safe to call repeatedly.
+   */
+  public async ensureTalkbackReady(): Promise<boolean> {
+    if (this.talkbackReady && this.talkbackActive && this.isConnected) {
+      return true;
+    }
+    if (this.talkbackPrepare) return this.talkbackPrepare;
+    this.talkbackPrepare = this.prepareTalkbackPath().finally(() => {
+      this.talkbackPrepare = null;
+    });
+    return this.talkbackPrepare;
+  }
+
+  private async prepareTalkbackPath(): Promise<boolean> {
+    if (!this.isConnected) return false;
+    await this.startTalkback();
+    if (!this.talkbackActive) return false;
+    // Official capture: ~1.94s after 0x100A before the lead frame, then 620ms.
+    await new Promise((r) => setTimeout(r, 1940));
+    if (!this.talkbackActive || !this.isConnected) return false;
+    this.sendAudioFrame(TALKBACK_LEAD_FRAME);
+    await new Promise((r) => setTimeout(r, 620));
+    this.talkbackReady = this.talkbackActive && this.isConnected;
+    return this.talkbackReady;
+  }
+
+  /**
    * Wait for Lumi login to complete (sessionStarted = true).
    * Useful for talkback-only mode to ensure authentication before sending 0x100A.
    */
@@ -2415,8 +2466,10 @@ export class AqaraCameraBridge extends EventEmitter {
   public stopTalkback(): void {
     if (!this.isConnected) return;
     this.talkbackActive = false;
+    this.talkbackReady = false;
     this.clearTalkbackRetries();
     this.talkSeq = 0;
+    this.talkFramesSent = 0;
     // stopTalkWithCompletion: emits one empty 0x100C on CH0.
     this.sendEncDrw(
       0,
@@ -2641,6 +2694,15 @@ export class AqaraCameraBridge extends EventEmitter {
   }
 
   public stop(): void {
+    if (this.talkbackActive && this.socket && this.cameraIp) {
+      this.sendEncDrw(
+        0,
+        this.ch0Seq++,
+        buildLumiFrame(LUMI_TYPE_TALKBACK_STOP, Buffer.alloc(0), this.cmdSeq++),
+      );
+    }
+    this.talkbackActive = false;
+    this.talkbackReady = false;
     this.isConnected = false;
     this.desiredStreamActive = false;
     this.resurrecting = false;

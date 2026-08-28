@@ -12,7 +12,6 @@
     "capture": "pnpm -C app run capture",
     "login": "pnpm -C app run login",
     "setup": "pnpm -C app run setup",
-    "test": "pnpm -C app test",
-    "go2rtc": "pnpm -C app run go2rtc"
+    "test": "pnpm -C app test"
   }
 }

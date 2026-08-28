@@ -1,6 +1,6 @@
-import * as net from 'net';
-import fs from 'fs';
-import path from 'path';
+import fs from "fs";
+import * as net from "net";
+import path from "path";
 
 /**
  * RTSP port allocation helpers.
@@ -9,9 +9,9 @@ import path from 'path';
  * another"), and must avoid:
  *   - well-known ports (< 1024)
  *   - the 3000-3999 and 5000-5999 ranges (explicitly excluded by design)
- * If the preferred base (or any port in the chosen block) is already taken by
- * another process (e.g. go2rtc), we scan forward for the next free *contiguous*
- * run of ports so the cameras always end up on a tidy sequential block.
+ * If the preferred base (or any port in the chosen block) is already taken,
+ * we scan forward for the next free *contiguous* run of ports so the cameras
+ * always end up on a tidy sequential block.
  */
 
 export const RTSP_PORT_MIN = 1024;
@@ -40,13 +40,13 @@ export function probePortFree(port: number): Promise<boolean> {
       sock.destroy();
       resolve(free);
     };
-    const sock = net.connect(port, '127.0.0.1');
+    const sock = net.connect(port, "127.0.0.1");
     sock.setTimeout(500);
     // Something accepted the connection → port is occupied.
-    sock.once('connect', () => finish(false));
+    sock.once("connect", () => finish(false));
     // Connection refused → nothing listening → free.
-    sock.once('error', () => finish(true));
-    sock.once('timeout', () => finish(true));
+    sock.once("error", () => finish(true));
+    sock.once("timeout", () => finish(true));
   });
 }
 
@@ -55,7 +55,10 @@ export function probePortFree(port: number): Promise<boolean> {
  * Returns the concrete list of ports, or throws if no such block exists in the
  * allowed range.
  */
-export async function findFreePortRange(count: number, base = 8555): Promise<number[]> {
+export async function findFreePortRange(
+  count: number,
+  base = 8555,
+): Promise<number[]> {
   if (count <= 0) return [];
 
   // Normalize base into the allowed range.
@@ -77,11 +80,12 @@ export async function findFreePortRange(count: number, base = 8555): Promise<num
     const firstBad = free.findIndex((f) => !f);
     start = start + (firstBad === -1 ? 1 : firstBad) + 1;
   }
-  throw new Error(`Could not find a free contiguous RTSP port block of size ${count} starting near ${base}`);
+  throw new Error(
+    `Could not find a free contiguous RTSP port block of size ${count} starting near ${base}`,
+  );
 }
 
-// ---- rtsp_ports.json: records the actual ports chosen per camera so that
-//      external tooling (go2rtc generator) can point at the right ones. ----
+// ---- rtsp_ports.json: records the actual ports chosen per camera. ----
 
 export interface RtspPortEntry {
   port: number;
@@ -96,7 +100,7 @@ export interface RtspPortMap {
 }
 
 function rtspPortMapPath(): string {
-  return path.join(process.cwd(), 'data', 'rtsp_ports.json');
+  return path.join(process.cwd(), "data", "rtsp_ports.json");
 }
 
 export function writeRtspPortMap(base: number, entries: RtspPortEntry[]): void {
@@ -111,7 +115,7 @@ export function writeRtspPortMap(base: number, entries: RtspPortEntry[]): void {
     for (const e of entries) map.cameras[e.did] = e;
     fs.writeFileSync(rtspPortMapPath(), JSON.stringify(map, null, 2));
   } catch {
-    // Non-fatal: the port map is only a convenience for the go2rtc generator.
+    // Non-fatal: the port map is only a convenience for local tooling.
   }
 }
 
@@ -119,7 +123,7 @@ export function readRtspPortMap(): RtspPortMap | null {
   try {
     const p = rtspPortMapPath();
     if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, 'utf-8')) as RtspPortMap;
+    return JSON.parse(fs.readFileSync(p, "utf-8")) as RtspPortMap;
   } catch {
     return null;
   }
