@@ -201,13 +201,44 @@ test("PLAY immediately replays the cached IDR so the client is not gray", () => 
     frames.length >= 1,
     "PLAY must emit the cached keyframe immediately",
   );
-  const audio = parseInterleaved(s.all).filter((f) => f.channel === 2);
-  assert.ok(
-    audio.length >= 1,
-    "PLAY must emit an AAC packet so the audio track starts",
-  );
   const types = frames.map((f) => f.payload[12] & 0x1f);
   assert.ok(types.includes(5) || types.includes(7) || types.includes(28));
+});
+
+test("P-frames after PLAY wait for a live IDR (no mixed GOP)", () => {
+  const srv = new RtspServer(0, "d");
+  srv.sps = SPS;
+  srv.pps = PPS;
+  const idr = Buffer.concat([
+    Buffer.from([0, 0, 0, 1]),
+    SPS,
+    Buffer.from([0, 0, 0, 1]),
+    PPS,
+    Buffer.from([0, 0, 0, 1, 0x65, 0x01]),
+  ]);
+  srv.lastKeyframe = idr;
+  const s = attach(srv);
+  send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
+  send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
+  s.writes = [];
+  srv.broadcastFrame(
+    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0xaa])]),
+    1000,
+  );
+  assert.equal(
+    parseInterleaved(s.all).filter((f) => f.channel === 0).length,
+    0,
+    "stale P-frames after PLAY IDR gray-screen VLC",
+  );
+  srv.broadcastFrame(idr, 1100);
+  s.writes = [];
+  srv.broadcastFrame(
+    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0xbb])]),
+    1200,
+  );
+  const p = parseInterleaved(s.all).filter((f) => f.channel === 0);
+  assert.equal(p.length, 1);
+  assert.equal(p[0].payload[12], 0x61);
 });
 
 test("PLAY enables sending; a non-keyframe NAL produces one RTP packet (M bit set)", () => {
@@ -374,7 +405,7 @@ test("video RTP timestamps only move forward", () => {
   const t2 = rtpInfo(
     parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload,
   ).timestamp;
-  assert.ok(t2 > t1, `timestamps must increase (${t1} then ${t2})`);
+  assert.equal((t2 - t1) >>> 0, 3600);
 });
 
 test("idle pacer does not replay the last IDR", async () => {

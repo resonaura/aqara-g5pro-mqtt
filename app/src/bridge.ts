@@ -494,6 +494,12 @@ interface RtspClient {
   firstRtpLogged?: boolean;
   /** True after PLAY media (IDR/AAC) has been pushed. */
   mediaPumped?: boolean;
+  /**
+   * After PLAY we replay a cached IDR so VLC is not gray, then ignore
+   * P-frames until the next *live* IDR. Mixing GOPs makes VLC show a still,
+   * go gray, then recover — and the clock jumps backward.
+   */
+  waitLiveIdr?: boolean;
 }
 
 export class RtspServer extends EventEmitter {
@@ -830,13 +836,15 @@ export class RtspServer extends EventEmitter {
     );
     const beforePkts = this.videoPktCount;
     this.sendFrameNow(this.lastKeyframe, client);
+    // Hold P-frames until the next live IDR so VLC does not decode GOP N's
+    // IDR followed by GOP N+1's P-frames (gray + time jump). Audio keeps
+    // running — it does not depend on the video GOP.
+    client.waitLiveIdr = true;
     console.log(
       `[RTSP] PLAY sent ${this.videoPktCount - beforePkts} video RTP packets`,
     );
     if (this.lastAudio && this.lastAudio.length) {
       this.broadcastAudio(this.lastAudio, undefined, client);
-    } else {
-      this.sendSingleAacFrame(SILENT_AAC_RAW, undefined, client);
     }
   }
 
@@ -1162,7 +1170,43 @@ export class RtspServer extends EventEmitter {
       this.sendFrameNow(frameData, targetClient);
       return;
     }
+    if (this.frameIsIdr(frameData)) this.videoQueue.length = 0;
     this.videoQueue.push(frameData);
+  }
+
+  /** True if the Annex-B buffer contains an IDR (not SPS/PPS alone). */
+  private frameIsIdr(frameData: Buffer): boolean {
+    let i = 0;
+    const len = frameData.length;
+    while (i < len - 4) {
+      let prefixLen = 0;
+      if (
+        frameData[i] === 0 &&
+        frameData[i + 1] === 0 &&
+        frameData[i + 2] === 1
+      )
+        prefixLen = 3;
+      else if (
+        frameData[i] === 0 &&
+        frameData[i + 1] === 0 &&
+        frameData[i + 2] === 0 &&
+        frameData[i + 3] === 1
+      )
+        prefixLen = 4;
+      if (prefixLen === 0) {
+        i++;
+        continue;
+      }
+      const nalByte = frameData[i + prefixLen];
+      if (this.isHevc) {
+        const t = (nalByte >> 1) & 0x3f;
+        if (t === 19 || t === 20 || t === 21) return true;
+      } else if ((nalByte & 0x1f) === 5) {
+        return true;
+      }
+      i += prefixLen + 1;
+    }
+    return false;
   }
 
   /** Check whether an Annex-B frame buffer starts with a keyframe NAL. */
@@ -1365,23 +1409,11 @@ export class RtspServer extends EventEmitter {
       this.flushPendingDescribes();
     }
 
-    // 90 kHz clock from real inter-frame time so VLC's A/V sync matches the
-    // camera instead of a fake 30 fps. Clamp so a hitch does not freeze the
-    // timeline, and a catch-up drain does not compress it to zero.
-    // PLAY replay keeps the advertised RTP-Info timestamp.
-    let rtpTimestamp: number;
-    if (targetClient) {
-      rtpTimestamp = this.videoRtpTimestamp >>> 0;
-      this.lastVideoSendAt = Date.now();
-    } else {
-      const now = Date.now();
-      let deltaMs = this.lastVideoSendAt ? now - this.lastVideoSendAt : 33;
-      if (deltaMs < 20) deltaMs = 20;
-      if (deltaMs > 80) deltaMs = 33;
-      this.lastVideoSendAt = now;
-      rtpTimestamp = (this.videoRtpTimestamp + Math.round(deltaMs * 90)) >>> 0;
-      this.videoRtpTimestamp = rtpTimestamp;
-    }
+    // 90 kHz, 40 ms/frame. Wall-clock deltas jumped backward whenever PLAY
+    // replayed an IDR and the pacer then drained a burst.
+    const rtpTimestamp = this.videoRtpTimestamp >>> 0;
+    this.videoRtpTimestamp = (this.videoRtpTimestamp + 3600) >>> 0;
+    this.lastVideoSendAt = Date.now();
     const MAX_PAYLOAD_SIZE = 1380;
 
     for (let n = 0; n < nalUnits.length; n++) {
@@ -1401,6 +1433,7 @@ export class RtspServer extends EventEmitter {
           0,
           Buffer.concat([rtpHeader, nal]),
           targetClient,
+          isKeyframe,
         );
       } else if (this.isHevc) {
         // RFC 7798 H.265 Fragmentation Unit (FU)
@@ -1436,6 +1469,7 @@ export class RtspServer extends EventEmitter {
             0,
             Buffer.concat([rtpHeader, fuPayloadHdr, payloadChunk]),
             targetClient,
+            isKeyframe,
           );
           offset += chunkLen;
         }
@@ -1470,6 +1504,7 @@ export class RtspServer extends EventEmitter {
             0,
             Buffer.concat([rtpHeader, fuHeaderBuf, payloadChunk]),
             targetClient,
+            isKeyframe,
           );
           offset += chunkLen;
         }
@@ -1482,6 +1517,7 @@ export class RtspServer extends EventEmitter {
     defaultChannel: number,
     rtpPacket: Buffer,
     targetClient?: RtspClient,
+    isKeyframe = false,
   ): void {
     const isAudio = defaultChannel >= 2;
     if (isAudio) {
@@ -1494,6 +1530,15 @@ export class RtspServer extends EventEmitter {
     const deliver = (client: RtspClient) => {
       if (!client.isPlaying || client.socket.destroyed) return;
       if (!isAudio && !client.receivedKeyframe) return;
+      if (client.waitLiveIdr) {
+        if (isAudio) {
+          /* mic keeps running while video waits for a live IDR */
+        } else if (!isKeyframe) {
+          return;
+        } else {
+          client.waitLiveIdr = false;
+        }
+      }
       if (client.transport === "udp") {
         const port = isAudio ? client.audioRtpPort : client.videoRtpPort;
         if (!port || !client.udpAddr) return;
@@ -1682,6 +1727,8 @@ export class AqaraCameraBridge extends EventEmitter {
   private p2pConnectedAt: number = 0;
   private _loggedQuality: boolean = false;
   private _qualityAcked: boolean = false;
+  private _sawHd: boolean = false;
+  private _gopRestarted: boolean = false;
 
   // --- Self-healing P2P state ---
   private desiredStreamActive: boolean = false; // user wants the stream up (HA p2p_stream ON)
@@ -2259,6 +2306,8 @@ export class AqaraCameraBridge extends EventEmitter {
         this.p2pConnectedAt = Date.now();
         this._loggedQuality = false;
         this._qualityAcked = false;
+        this._sawHd = false;
+        this._gopRestarted = false;
         this._ch3Log = 0;
         this.lastMediaIdx = -1;
         this.lastMediaPkt = null;
@@ -2397,6 +2446,22 @@ export class AqaraCameraBridge extends EventEmitter {
     );
   }
 
+  /** Empty 0x1002 starts a live GOP but drops HD. Skip if we already have it. */
+  private maybeStartDefaultGop(): void {
+    if (!this.isConnected || this.talkbackOnly || this._gopRestarted) return;
+    if (this._sawHd) return;
+    this._gopRestarted = true;
+    console.log(
+      `📤 [${this.did}] 0x1002 GOP fallback — no HD IDR after quality switch`,
+    );
+    this.sendEncDrw(
+      0,
+      this.ch0Seq++,
+      buildLumiFrame(LUMI_TYPE_SESSION_START, Buffer.alloc(0), this.cmdSeq++),
+    );
+    this.requestLiveKeyframe();
+  }
+
   private sendStreamHeartbeat(): void {
     if (!this.isConnected) return;
     this.sendEncDrw(
@@ -2507,15 +2572,10 @@ export class AqaraCameraBridge extends EventEmitter {
         console.log(
           `✅ [${this.did}] 0x100F changeStreamResolution channel=${this.streamQualityChannel()} ${data.length}B ${txt}`,
         );
-        this.sendEncDrw(
-          0,
-          this.ch0Seq++,
-          buildLumiFrame(
-            LUMI_TYPE_SESSION_START,
-            Buffer.alloc(0),
-            this.cmdSeq++,
-          ),
-        );
+        this.requestLiveKeyframe();
+        // Empty 0x1002 restarts the GOP at 360p. Only do it if HD never
+        // arrived — better a live SD GOP than a single HD still.
+        setTimeout(() => this.maybeStartDefaultGop(), 2500);
       }
     } else if (frameType === LUMI_TYPE_KEYFRAME_RESP) {
       if (this.frameCount === 0 && this._vidPktCount < 2) {
@@ -2830,14 +2890,15 @@ export class AqaraCameraBridge extends EventEmitter {
     // ride in non-IDR packets; dropping them made PLAY emit a naked type-5 IDR
     // and ffmpeg/VLC exit with "non-existing PPS 0 referenced".
     this.ingestParamSets(rawH264, isHevcFrame);
+    const w = full.length >= 22 ? full.readUInt16LE(16) : 0;
+    const h = full.length >= 22 ? full.readUInt16LE(20) : 0;
+    if (w >= 1200 || h >= 700) this._sawHd = true;
     if (this.frameCount <= 12 || this.frameCount % 30 === 0) {
       const types: number[] = [];
       walkAnnexBNals(rawH264, (nal) => {
         if (!nal.length) return;
         types.push(isHevcFrame ? (nal[0] >> 1) & 0x3f : nal[0] & 0x1f);
       });
-      const w = full.length >= 22 ? full.readUInt16LE(16) : 0;
-      const h = full.length >= 22 ? full.readUInt16LE(20) : 0;
       console.log(
         `🎞️ [${this.did}] frame#${this.frameCount} ${isKeyframe ? "I" : "P"} ${w}x${h} ${full.length}B flags=${full.readUInt16LE(2)} nals=${types.slice(0, 16).join(",") || "none"} sps=${!!this.rtspServer?.sps} pps=${!!this.rtspServer?.pps}`,
       );
