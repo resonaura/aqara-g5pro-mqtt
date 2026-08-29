@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "rtsp": "tsx src/scripts/rtsp/server.ts",
+    "rtsp:probe": "tsx src/scripts/rtsp/probe.ts",
     "setup": "tsx src/scripts/setup.ts",
     "login": "tsx src/scripts/login.ts",
     "cameras:list": "tsx src/scripts/cameras/list-p2p.ts",

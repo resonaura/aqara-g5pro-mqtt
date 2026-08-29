@@ -1,5 +1,13 @@
 import { config } from "dotenv";
-import { getCameras, getToken, login, queryAttrs } from "../../aqara.js";
+import {
+  getCameras,
+  getCameraStreamQualities,
+  getToken,
+  jsonQualityChannel,
+  login,
+  pickMaxStreamQuality,
+  queryAttrs,
+} from "../../aqara.js";
 import { AqaraCameraBridge, getLocalIpv4 } from "../../bridge.js";
 import {
   findFreePortRange,
@@ -84,7 +92,33 @@ async function main() {
     const streamSlug = slugMap[cam.did];
     const rtspPort = rtspPorts[camIdx++];
     const rtspUrl = `rtsp://${localIp}:${rtspPort}/live/${streamSlug}`;
-    console.log(`   🔌 Starting RTSP Engine on port ${rtspPort}...`);
+
+    // Cloud quality catalogue (same names as Aqara Home: 1520p / 1080p / Low).
+    // URLs in that JSON are a catalogue only — we never open camera RTSP.
+    // 0x101C videoStream: 0=1520p, 1=1080p, 2=Low (working payload from 007650c).
+    let p2pQualityChannel = 1;
+    try {
+      const qualities = await getCameraStreamQualities(cam.did);
+      const best = pickMaxStreamQuality(qualities);
+      if (best) {
+        p2pQualityChannel = jsonQualityChannel(best, cam.model);
+        console.log(
+          `   📺 Cloud qualities: ${qualities.map((q) => q.title).join(", ")}`,
+        );
+        console.log(
+          `   📺 P2P 0x100E {"channel":${p2pQualityChannel}} (${best.title})`,
+        );
+      } else {
+        console.log(`   📺 No cloud list — videoStream=0 (1520p/max)`);
+      }
+    } catch (err: any) {
+      console.log(
+        `   📺 Quality list failed (${err?.message || err}) — videoStream=0`,
+      );
+    }
+
+    console.log(`   🔌 Starting P2P RTSP engine on port ${rtspPort}...`);
+    console.log(`   🔥 Warming P2P — URL will print after the first IDR`);
 
     const state: CamState = {
       deviceName: cam.deviceName,
@@ -107,6 +141,8 @@ async function main() {
       appId: process.env.AQARA_APP_ID || "",
       appKey: process.env.AQARA_APP_KEY || "",
       rtspPort: rtspPort,
+      model: cam.model,
+      p2pQualityChannel,
     });
 
     bridge.on("connected", () => {
@@ -131,7 +167,7 @@ async function main() {
         if (e) e.port = actualPort;
         writeRtspPortMap(rtspPortBase, rtspPortEntries);
       }
-      console.log(`   ✅ RTSP Stream Ready:`);
+      console.log(`   ✅ Stream warm (IDR + SPS cached):`);
       console.log(`      🔗 ${state.rtspUrl}\n`);
     });
 

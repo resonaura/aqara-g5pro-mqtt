@@ -1,17 +1,28 @@
-import * as crypto from 'crypto';
-import { EventEmitter } from 'events';
+import * as crypto from "crypto";
+import { EventEmitter } from "events";
 
 // ChaCha20 block function (original djb variant: 64-bit counter + 64-bit nonce)
 function quarterRound(s: number[], a: number, b: number, c: number, d: number) {
-  s[a] = (s[a] + s[b]) >>> 0; s[d] ^= s[a]; s[d] = ((s[d] << 16) | (s[d] >>> 16)) >>> 0;
-  s[c] = (s[c] + s[d]) >>> 0; s[b] ^= s[c]; s[b] = ((s[b] << 12) | (s[b] >>> 20)) >>> 0;
-  s[a] = (s[a] + s[b]) >>> 0; s[d] ^= s[a]; s[d] = ((s[d] << 8) | (s[d] >>> 24)) >>> 0;
-  s[c] = (s[c] + s[d]) >>> 0; s[b] ^= s[c]; s[b] = ((s[b] << 7) | (s[b] >>> 25)) >>> 0;
+  s[a] = (s[a] + s[b]) >>> 0;
+  s[d] ^= s[a];
+  s[d] = ((s[d] << 16) | (s[d] >>> 16)) >>> 0;
+  s[c] = (s[c] + s[d]) >>> 0;
+  s[b] ^= s[c];
+  s[b] = ((s[b] << 12) | (s[b] >>> 20)) >>> 0;
+  s[a] = (s[a] + s[b]) >>> 0;
+  s[d] ^= s[a];
+  s[d] = ((s[d] << 8) | (s[d] >>> 24)) >>> 0;
+  s[c] = (s[c] + s[d]) >>> 0;
+  s[b] ^= s[c];
+  s[b] = ((s[b] << 7) | (s[b] >>> 25)) >>> 0;
 }
 
 function chacha20Block(key: Buffer, nonce8: Buffer, counter: number): Buffer {
-  const st: number[] = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
-  st[0] = 0x61707865; st[1] = 0x3320646e; st[2] = 0x79622d32; st[3] = 0x6b206574;
+  const st: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  st[0] = 0x61707865;
+  st[1] = 0x3320646e;
+  st[2] = 0x79622d32;
+  st[3] = 0x6b206574;
   for (let i = 0; i < 8; i++) st[4 + i] = key.readUInt32LE(i * 4);
   st[12] = counter >>> 0;
   st[13] = Math.floor(counter / 0x100000000) >>> 0;
@@ -51,16 +62,35 @@ function chacha20Block(key: Buffer, nonce8: Buffer, counter: number): Buffer {
  */
 function hsalsa20(sharedSecret: Buffer): Buffer {
   const R = (v: number, c: number) => ((v << c) | (v >>> (32 - c))) >>> 0;
-  const c0 = 0x61707865, c1 = 0x3320646e, c2 = 0x79622d32, c3 = 0x6b206574;
-  const k0 = sharedSecret.readUInt32LE(0), k1 = sharedSecret.readUInt32LE(4),
-        k2 = sharedSecret.readUInt32LE(8), k3 = sharedSecret.readUInt32LE(12),
-        k4 = sharedSecret.readUInt32LE(16), k5 = sharedSecret.readUInt32LE(20),
-        k6 = sharedSecret.readUInt32LE(24), k7 = sharedSecret.readUInt32LE(28);
+  const c0 = 0x61707865,
+    c1 = 0x3320646e,
+    c2 = 0x79622d32,
+    c3 = 0x6b206574;
+  const k0 = sharedSecret.readUInt32LE(0),
+    k1 = sharedSecret.readUInt32LE(4),
+    k2 = sharedSecret.readUInt32LE(8),
+    k3 = sharedSecret.readUInt32LE(12),
+    k4 = sharedSecret.readUInt32LE(16),
+    k5 = sharedSecret.readUInt32LE(20),
+    k6 = sharedSecret.readUInt32LE(24),
+    k7 = sharedSecret.readUInt32LE(28);
 
-  let x0 = c0, x1 = k0, x2 = k1, x3 = k2;
-  let x4 = k3, x5 = c1, x6 = 0, x7 = 0;
-  let x8 = 0, x9 = 0, x10 = c2, x11 = k4;
-  let x12 = k5, x13 = k6, x14 = k7, x15 = c3;
+  let x0 = c0,
+    x1 = k0,
+    x2 = k1,
+    x3 = k2;
+  let x4 = k3,
+    x5 = c1,
+    x6 = 0,
+    x7 = 0;
+  let x8 = 0,
+    x9 = 0,
+    x10 = c2,
+    x11 = k4;
+  let x12 = k5,
+    x13 = k6,
+    x14 = k7,
+    x15 = c3;
 
   for (let i = 0; i < 10; i++) {
     // Column round
@@ -127,7 +157,7 @@ export class AqaraStreamDecryptor extends EventEmitter {
    */
   constructor(keyHex: string) {
     super();
-    this.keyBuf = Buffer.from(keyHex, 'hex');
+    this.keyBuf = Buffer.from(keyHex, "hex");
     if (this.keyBuf.length !== 32) {
       const padded = Buffer.alloc(32);
       this.keyBuf.copy(padded);
@@ -145,14 +175,18 @@ export class AqaraStreamDecryptor extends EventEmitter {
    * ChaCha20(key=shareKey, nonce=frame[0:8], counter=0) — recovered from
    * -[MHFrameEncryptManager decryptAudioG711:shareKey:] at 0x10331231c.
    */
-  public chacha20Xor(nonce8: Buffer, data: Buffer, counter: number = 0): Buffer {
+  public chacha20Xor(
+    nonce8: Buffer,
+    data: Buffer,
+    counter: number = 0,
+  ): Buffer {
     if (data.length === 0) return data;
     const n = nonce8.subarray(0, 8);
     const ks = chacha20Block(this.keyBuf, n, counter);
     const out = Buffer.from(data);
     const blockLen = ks.length;
     for (let off = 0; off < out.length; off += blockLen) {
-      const block = chacha20Block(this.keyBuf, n, counter + (off / blockLen));
+      const block = chacha20Block(this.keyBuf, n, counter + off / blockLen);
       for (let i = 0; i < block.length && off + i < out.length; i++) {
         out[off + i] ^= block[i];
       }
@@ -180,9 +214,10 @@ export class AqaraStreamDecryptor extends EventEmitter {
     if (frame.readUInt16LE(0) !== 0x0088) return frame;
     const payLen = frame.readUInt32LE(28);
     const nonce = frame.subarray(32, 40);
-    const enc = (payLen > 0 && payLen <= frame.length - 40 && payLen <= 4096)
-      ? frame.subarray(40, 40 + payLen)
-      : frame.subarray(40);
+    const enc =
+      payLen > 0 && payLen <= frame.length - 40 && payLen <= 4096
+        ? frame.subarray(40, 40 + payLen)
+        : frame.subarray(40);
 
     return this.chacha20Xor(nonce, enc, 0);
   }
@@ -198,22 +233,26 @@ export class AqaraStreamDecryptor extends EventEmitter {
    *
    * Returns the full 32-byte AVIO header + 8-byte nonce + encrypted AAC.
    */
-  public encryptAudioFrame(audioData: Buffer, seq: number = 0, sampleRate = 16000): Buffer {
+  public encryptAudioFrame(
+    audioData: Buffer,
+    seq: number = 0,
+    sampleRate = 16000,
+  ): Buffer {
     // Mirror the exact layout decryptAudioFrame parses (verified against a real
     // E1 capture). The outgoing talkback frame is the byte-for-byte mirror of an
     // incoming audio frame, just with our encrypted AAC payload + fresh nonce.
     const header = Buffer.alloc(32);
-    header.writeUInt16LE(0x0088, 0);          // audio AVIO codec id (AAC)
-    header.writeUInt16LE(0x000e, 2);          // frame-type / flags (data)
-    header.writeUInt32LE(0, 4);              // flags (reserved)
-    const ts = BigInt(Date.now());            // 8-byte timestamp (ms)
+    header.writeUInt16LE(0x0088, 0); // audio AVIO codec id (AAC)
+    header.writeUInt16LE(0x000e, 2); // frame-type / flags (data)
+    header.writeUInt32LE(0, 4); // flags (reserved)
+    const ts = BigInt(Date.now()); // 8-byte timestamp (ms)
     header.writeUInt32LE(Number(ts & 0xffffffffn), 8);
     header.writeUInt32LE(Number((ts >> 32n) & 0xffffffffn), 12);
     const sampleRateKHz = Math.round(sampleRate / 1000); // marker in kHz (8 = 8 kHz)
     header.writeUInt32LE(sampleRateKHz, 16);
-    header.writeUInt32LE(0, 20);             // reserved
+    header.writeUInt32LE(0, 20); // reserved
     header.writeUInt32LE(seq & 0xffffffff, 24); // seq / frameno
-    header.writeUInt32LE(audioData.length, 28);  // encrypted payload length
+    header.writeUInt32LE(audioData.length, 28); // encrypted payload length
     const nonce = crypto.randomBytes(8);
     const enc = this.chacha20Xor(nonce, audioData, 0);
     return Buffer.concat([header, nonce, enc]);
@@ -252,5 +291,54 @@ export class AqaraStreamDecryptor extends EventEmitter {
     return tail;
   }
 
+  /**
+   * Decrypt a video payload and emit Annex-B (start-code prefixed) NAL units.
+   * The camera's NAL table addresses raw NALs in the tail with no 00 00 01
+   * prefixes — isAnnexBKeyframe() would never see an IDR without this wrap.
+   */
+  public decryptToAnnexB(frame: Buffer): Buffer {
+    const tail = this.decryptFrame(frame);
+    // Proven path from live-p2p-screenshot.py: after ChaCha the access unit
+    // already contains Annex-B `00 00 00 01 67` (SPS) + PPS + IDR. Prefer that
+    // over the NAL table — wrapping the whole tail as one type-5 NAL is what
+    // made ffmpeg exit with "non-existing PPS 0 referenced".
+    const sc4 = tail.indexOf(Buffer.from([0, 0, 0, 1]));
+    if (sc4 >= 0 && sc4 + 5 < tail.length) {
+      return tail.subarray(sc4);
+    }
+    if (frame.length < 10) return ensureAnnexB(tail);
+    const nalCount = frame[8];
+    const tableEnd = 9 + nalCount * 8;
+    if (nalCount <= 0 || nalCount > 16 || tableEnd >= frame.length) {
+      return ensureAnnexB(tail);
+    }
+    const table = frame.subarray(9, tableEnd);
+    const sc = Buffer.from([0, 0, 0, 1]);
+    const parts: Buffer[] = [];
+    for (let i = 0; i < nalCount; i++) {
+      const off = table.readUInt32LE(i * 8);
+      const nalLen = table.readUInt32LE(i * 8 + 4);
+      if (nalLen <= 0 || off < 0 || off + nalLen > tail.length) continue;
+      const nal = tail.subarray(off, off + nalLen);
+      if (hasAnnexBPrefix(nal)) parts.push(Buffer.from(nal));
+      else parts.push(sc, Buffer.from(nal));
+    }
+    return parts.length ? Buffer.concat(parts) : ensureAnnexB(tail);
+  }
+
   public destroy(): void {}
+}
+
+function hasAnnexBPrefix(nal: Buffer): boolean {
+  return (
+    nal.length >= 3 &&
+    nal[0] === 0 &&
+    nal[1] === 0 &&
+    (nal[2] === 1 || (nal.length >= 4 && nal[2] === 0 && nal[3] === 1))
+  );
+}
+
+function ensureAnnexB(data: Buffer): Buffer {
+  if (hasAnnexBPrefix(data)) return data;
+  return Buffer.concat([Buffer.from([0, 0, 0, 1]), data]);
 }

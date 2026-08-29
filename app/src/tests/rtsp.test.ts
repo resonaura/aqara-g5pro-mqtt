@@ -7,6 +7,8 @@ import { RtspServer } from "../bridge.js";
 class MockSocket extends EventEmitter {
   writes: Buffer[] = [];
   destroyed = false;
+  remoteAddress = "127.0.0.1";
+  localAddress = "127.0.0.1";
   write(buf: Buffer): boolean {
     this.writes.push(Buffer.from(buf));
     return true;
@@ -69,6 +71,16 @@ const SPS = Buffer.from(
 );
 const PPS = Buffer.from("68ee3c80", "hex");
 
+test("DESCRIBE is immediate even before SPS/PPS exist", () => {
+  const srv = new RtspServer(0, "testdid");
+  srv.isHevc = false;
+  const s = attach(srv);
+  send(s, "DESCRIBE rtsp://localhost/testdid RTSP/1.0\r\nCSeq: 1");
+  const res = s.all.toString("utf8");
+  assert.match(res, /RTSP\/1\.0 200 OK/);
+  assert.match(res, /application\/sdp/);
+});
+
 test("DESCRIBE returns SDP with H264 video and AAC audio", () => {
   const srv = new RtspServer(0, "testdid");
   srv.isHevc = false;
@@ -123,6 +135,47 @@ test("SETUP honors client-requested interleaved channels", () => {
   assert.match(s.all.toString("utf8"), /interleaved=4-5/);
 });
 
+test("SETUP rejects same-host UDP with 461 so VLC retries TCP", () => {
+  const srv = new RtspServer(0, "d");
+  const s = attach(srv);
+  send(
+    s,
+    "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1\r\nTransport: RTP/AVP;unicast;client_port=5000-5001",
+  );
+  const res = s.all.toString("utf8");
+  assert.match(res, /RTSP\/1\.0 461 Unsupported Transport/);
+  assert.doesNotMatch(res, /client_port=5000-5001/);
+});
+
+test("SETUP accepts UDP unicast from a remote client", () => {
+  const srv = new RtspServer(0, "d");
+  const s = attach(srv);
+  s.remoteAddress = "10.0.0.8";
+  send(
+    s,
+    "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1\r\nTransport: RTP/AVP;unicast;client_port=5000-5001",
+  );
+  const res = s.all.toString("utf8");
+  assert.match(res, /RTSP\/1\.0 200 OK/);
+  assert.match(res, /client_port=5000-5001/);
+  assert.match(res, /destination=10\.0\.0\.8/);
+  assert.doesNotMatch(res, /461/);
+});
+
+test("PLAY without a cached IDR does not emit silent-audio-only RTP", () => {
+  const srv = new RtspServer(0, "d");
+  const s = attach(srv);
+  send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
+  s.writes = [];
+  send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
+  assert.match(s.all.toString("utf8"), /RTSP\/1\.0 200 OK/);
+  assert.equal(
+    parseInterleaved(s.all).length,
+    0,
+    "audio-only PLAY makes VLC start the clock and disconnect before video arrives",
+  );
+});
+
 test("PLAY immediately replays the cached IDR so the client is not gray", () => {
   const srv = new RtspServer(0, "d");
   srv.sps = SPS;
@@ -140,10 +193,18 @@ test("PLAY immediately replays the cached IDR so the client is not gray", () => 
   send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
   s.writes = [];
   send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
+  const text = s.all.toString("latin1");
+  assert.match(text, /RTP-Info:.*track0;seq=/);
+  assert.match(text, /track1;seq=/);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 0);
   assert.ok(
     frames.length >= 1,
     "PLAY must emit the cached keyframe immediately",
+  );
+  const audio = parseInterleaved(s.all).filter((f) => f.channel === 2);
+  assert.ok(
+    audio.length >= 1,
+    "PLAY must emit an AAC packet so the audio track starts",
   );
   const types = frames.map((f) => f.payload[12] & 0x1f);
   assert.ok(types.includes(5) || types.includes(7) || types.includes(28));
@@ -261,15 +322,84 @@ test("broadcastAudio emits a single AAC RTP packet on channel 2", () => {
     900,
   );
 
-  const aac = Buffer.alloc(160, 0xab);
+  const rawAac = Buffer.alloc(160, 0xab);
+  const frameLen = 7 + rawAac.length;
+  const adts = Buffer.alloc(frameLen);
+  adts[0] = 0xff;
+  adts[1] = 0xf9;
+  adts[2] = 0x60;
+  adts[3] = 0x40 | ((frameLen >> 11) & 3);
+  adts[4] = (frameLen >> 3) & 0xff;
+  adts[5] = ((frameLen & 7) << 5) | 0x1f;
+  adts[6] = 0xfc;
+  rawAac.copy(adts, 7);
   s.writes = [];
-  srv.broadcastAudio(aac, 1000);
+  srv.broadcastAudio(adts, 1000);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 2);
   assert.equal(frames.length, 1);
   const info = rtpInfo(frames[0].payload);
   assert.equal(info.payloadType, 97);
   assert.equal(info.timestamp, 1000 * 16);
-  assert.ok(info.payload.subarray(4).equals(aac));
+  assert.ok(info.payload.subarray(4).equals(rawAac));
+});
+
+test("video RTP timestamps only move forward", () => {
+  const srv = new RtspServer(0, "d");
+  srv.sps = SPS;
+  srv.pps = PPS;
+  const s = attach(srv);
+  send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
+  send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
+  const idr = Buffer.concat([
+    Buffer.from([0, 0, 0, 1]),
+    SPS,
+    Buffer.from([0, 0, 0, 1]),
+    PPS,
+    Buffer.from([0, 0, 0, 1, 0x65, 0x01]),
+  ]);
+  srv.broadcastFrame(idr, 100);
+  s.writes = [];
+  srv.broadcastFrame(
+    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0x02])]),
+    140,
+  );
+  const t1 = rtpInfo(
+    parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload,
+  ).timestamp;
+  s.writes = [];
+  srv.broadcastFrame(
+    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0x03])]),
+    180,
+  );
+  const t2 = rtpInfo(
+    parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload,
+  ).timestamp;
+  assert.ok(t2 > t1, `timestamps must increase (${t1} then ${t2})`);
+});
+
+test("idle pacer does not replay the last IDR", async () => {
+  const srv = new RtspServer(0, "d");
+  srv.sps = SPS;
+  srv.pps = PPS;
+  const idr = Buffer.concat([
+    Buffer.from([0, 0, 0, 1]),
+    SPS,
+    Buffer.from([0, 0, 0, 1]),
+    PPS,
+    Buffer.from([0, 0, 0, 1, 0x65, 0x01]),
+  ]);
+  srv.lastKeyframe = idr;
+  const s = attach(srv);
+  send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
+  send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
+  (srv as any).startVideoPacer();
+  await new Promise((r) => setTimeout(r, 50));
+  const n1 = parseInterleaved(s.all).filter((f) => f.channel === 0).length;
+  assert.ok(n1 >= 1, "PLAY should already have sent the IDR");
+  await new Promise((r) => setTimeout(r, 280));
+  const n2 = parseInterleaved(s.all).filter((f) => f.channel === 0).length;
+  srv.stopVideoPacer();
+  assert.equal(n2, n1, "replaying the cached IDR makes VLC jump backward");
 });
 
 test("broadcastFrame ignores clients that are not playing", () => {

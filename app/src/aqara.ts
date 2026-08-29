@@ -93,7 +93,10 @@ rZzBHsMuBwA4LQdxBwIDAQAB
   const md5pw = crypto.createHash("md5").update(password).digest("hex");
   const encrypted = crypto
     .publicEncrypt(
-      { key: crypto.createPublicKey(pub), padding: crypto.constants.RSA_PKCS1_PADDING },
+      {
+        key: crypto.createPublicKey(pub),
+        padding: crypto.constants.RSA_PKCS1_PADDING,
+      },
       Buffer.from(md5pw),
     )
     .toString("base64");
@@ -120,7 +123,6 @@ rZzBHsMuBwA4LQdxBwIDAQAB
   TOKEN = res.data.result.token;
   USER_ID = res.data.result.userId;
 }
-
 
 export async function queryAttrs(
   attrs: string[],
@@ -215,4 +217,86 @@ export async function writeAttr(
     data: { [attr]: value },
   });
   return res.data;
+}
+
+/** One live-quality option from cloud (Aqara Home's 1520p / 1080p / Low list). */
+export type CameraStreamQuality = {
+  title: string;
+  height: number;
+  /** P2P 0x100E `channel` — same index as `/chN` in the cloud map, not an RTSP URL. */
+  channel: number;
+};
+
+const HEIGHT_RE = /(\d{3,4})\s*p/i;
+
+/**
+ * Parse the cloud `rtsp_url` JSON as a quality catalogue.
+ * We never connect to those URLs — only the names and `/chN` index are used
+ * for P2P `changeStreamResolution`. App UI for G5 Pro is 1520p / 1080p / Low;
+ * 360p in this map is Low Resolution. Highest height wins.
+ */
+export function parseCloudStreamQualities(raw: unknown): CameraStreamQuality[] {
+  let obj: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    obj = raw as Record<string, unknown>;
+  } else {
+    return [];
+  }
+  const out: CameraStreamQuality[] = [];
+  for (const [title, url] of Object.entries(obj)) {
+    const hm = title.match(HEIGHT_RE);
+    const height = hm ? parseInt(hm[1], 10) : /low/i.test(title) ? 360 : 0;
+    const ch = String(url ?? "").match(/\/ch(\d+)/i);
+    const channel = ch ? parseInt(ch[1], 10) : 0;
+    out.push({ title, height, channel });
+  }
+  return out.sort((a, b) => b.height - a.height);
+}
+
+export function pickMaxStreamQuality(
+  list: CameraStreamQuality[],
+): CameraStreamQuality | null {
+  return list[0] ?? null;
+}
+
+/** Map a named quality to StartVideoCmdContent.videoStream (0=1520p, 1=1080p, 2=Low). */
+export function videoStreamIndex(q: CameraStreamQuality | null): number {
+  if (!q) return 0;
+  if (q.height >= 1400) return 0;
+  if (q.height >= 1000) return 1;
+  return 2;
+}
+
+/**
+ * JSON 0x100E `{"channel":N}` as used by Aqara Home changeStreamResolution.
+ * Live-confirmed: 0=360p, 1=HD (1080p/1520p). Cloud `/ch4` is NOT this field.
+ */
+export function jsonQualityChannel(
+  q: CameraStreamQuality | null,
+  model = "",
+): number {
+  if (q) {
+    if (q.height >= 1000) return 1;
+    return 0;
+  }
+  const m = (model || "").toLowerCase();
+  if (m.includes("agl004") || m.includes("g5") || m.includes("acn006"))
+    return 1;
+  return 1;
+}
+
+/** Cloud catalogue for one camera. Empty if the model has no `rtsp_url` attr (E1). */
+export async function getCameraStreamQualities(
+  did: string,
+): Promise<CameraStreamQuality[]> {
+  const res = await queryAttrs(["rtsp_url"], did);
+  const raw = res.result?.find((a) => a.attr === "rtsp_url")?.value;
+  if (!raw) return [];
+  return parseCloudStreamQualities(raw);
 }

@@ -1,6 +1,6 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { AqaraStreamDecryptor } from '../decryptor.js';
+import assert from "node:assert/strict";
+import test from "node:test";
+import { AqaraStreamDecryptor } from "../decryptor.js";
 
 // ---------------------------------------------------------------------------
 // Independent, spec-faithful reference implementation of the DJB ChaCha20
@@ -18,15 +18,26 @@ function rotl32(x: number, n: number): number {
 }
 
 function qr(s: Uint32Array, a: number, b: number, c: number, d: number): void {
-  s[a] = (s[a] + s[b]) >>> 0; s[d] ^= s[a]; s[d] = rotl32(s[d], 16);
-  s[c] = (s[c] + s[d]) >>> 0; s[b] ^= s[c]; s[b] = rotl32(s[b], 12);
-  s[a] = (s[a] + s[b]) >>> 0; s[d] ^= s[a]; s[d] = rotl32(s[d], 8);
-  s[c] = (s[c] + s[d]) >>> 0; s[b] ^= s[c]; s[b] = rotl32(s[b], 7);
+  s[a] = (s[a] + s[b]) >>> 0;
+  s[d] ^= s[a];
+  s[d] = rotl32(s[d], 16);
+  s[c] = (s[c] + s[d]) >>> 0;
+  s[b] ^= s[c];
+  s[b] = rotl32(s[b], 12);
+  s[a] = (s[a] + s[b]) >>> 0;
+  s[d] ^= s[a];
+  s[d] = rotl32(s[d], 8);
+  s[c] = (s[c] + s[d]) >>> 0;
+  s[b] ^= s[c];
+  s[b] = rotl32(s[b], 7);
 }
 
 function refChacha20Block(key: Buffer, nonce: Buffer, counter: number): Buffer {
   const s = new Uint32Array(16);
-  s[0] = 0x61707865; s[1] = 0x3320646e; s[2] = 0x79622d32; s[3] = 0x6b206574;
+  s[0] = 0x61707865;
+  s[1] = 0x3320646e;
+  s[2] = 0x79622d32;
+  s[3] = 0x6b206574;
   for (let i = 0; i < 8; i++) s[4 + i] = key.readUInt32LE(i * 4);
   s[12] = counter >>> 0;
   s[13] = Math.floor(counter / 0x100000000) >>> 0;
@@ -34,15 +45,26 @@ function refChacha20Block(key: Buffer, nonce: Buffer, counter: number): Buffer {
   s[15] = nonce.readUInt32LE(4);
   const w = s.slice();
   for (let i = 0; i < 10; i++) {
-    qr(w, 0, 4, 8, 12); qr(w, 1, 5, 9, 13); qr(w, 2, 6, 10, 14); qr(w, 3, 7, 11, 15);
-    qr(w, 0, 5, 10, 15); qr(w, 1, 6, 11, 12); qr(w, 2, 7, 8, 13); qr(w, 3, 4, 9, 14);
+    qr(w, 0, 4, 8, 12);
+    qr(w, 1, 5, 9, 13);
+    qr(w, 2, 6, 10, 14);
+    qr(w, 3, 7, 11, 15);
+    qr(w, 0, 5, 10, 15);
+    qr(w, 1, 6, 11, 12);
+    qr(w, 2, 7, 8, 13);
+    qr(w, 3, 4, 9, 14);
   }
   const out = Buffer.alloc(64);
   for (let i = 0; i < 16; i++) out.writeUInt32LE((w[i] + s[i]) >>> 0, i * 4);
   return out;
 }
 
-function refChacha20Xor(key: Buffer, nonce: Buffer, data: Buffer, counter: number): Buffer {
+function refChacha20Xor(
+  key: Buffer,
+  nonce: Buffer,
+  data: Buffer,
+  counter: number,
+): Buffer {
   const out = Buffer.from(data);
   for (let off = 0; off < out.length; off += 64) {
     const ks = refChacha20Block(key, nonce, counter + Math.floor(off / 64));
@@ -51,11 +73,11 @@ function refChacha20Xor(key: Buffer, nonce: Buffer, data: Buffer, counter: numbe
   return out;
 }
 
-const KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+const KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
-test('chacha20Xor matches an independent standard ChaCha20 (djb, 8-byte nonce)', () => {
+test("chacha20Xor matches an independent standard ChaCha20 (djb, 8-byte nonce)", () => {
   const d = new AqaraStreamDecryptor(KEY);
-  const key = Buffer.from(KEY, 'hex');
+  const key = Buffer.from(KEY, "hex");
   for (const len of [0, 1, 7, 8, 63, 64, 65, 131, 200, 1024]) {
     const nonce = Buffer.alloc(8, 0x42);
     const data = crypto_random(len);
@@ -65,7 +87,7 @@ test('chacha20Xor matches an independent standard ChaCha20 (djb, 8-byte nonce)',
   }
 });
 
-test('chacha20Xor is symmetric (decrypt == encrypt)', () => {
+test("chacha20Xor is symmetric (decrypt == encrypt)", () => {
   const d = new AqaraStreamDecryptor(KEY);
   const nonce = Buffer.alloc(8, 0x11);
   const pt = crypto_random(160);
@@ -74,9 +96,9 @@ test('chacha20Xor is symmetric (decrypt == encrypt)', () => {
   assert.deepEqual(d.chacha20Xor(nonce, ct, 0), pt);
 });
 
-test('chacha20Xor uses counter 0 to match binary (out[0..8] differs from counter 1)', () => {
+test("chacha20Xor uses counter 0 to match binary (out[0..8] differs from counter 1)", () => {
   const d = new AqaraStreamDecryptor(KEY);
-  const key = Buffer.from(KEY, 'hex');
+  const key = Buffer.from(KEY, "hex");
   const nonce = Buffer.alloc(8, 0x7);
   const data = crypto_random(64);
   const c0 = d.chacha20Xor(nonce, data, 0);
@@ -89,9 +111,9 @@ test('chacha20Xor uses counter 0 to match binary (out[0..8] differs from counter
 // Build a realistic audio AVIO frame exactly like the wire layout the camera
 // sends: 32-byte header + 8-byte nonce + encrypted payload (no MTU padding
 // needed for the decrypt path because we slice by the declared length).
-test('decryptAudioFrame decrypts the payload with nonce[32:40] and counter 0', () => {
+test("decryptAudioFrame decrypts the payload with nonce[32:40] and counter 0", () => {
   const d = new AqaraStreamDecryptor(KEY);
-  const key = Buffer.from(KEY, 'hex');
+  const key = Buffer.from(KEY, "hex");
   const nonce = Buffer.alloc(8, 0x99);
   const g711 = crypto_random(131); // observed real payload length
   const enc = refChacha20Xor(key, nonce, g711, 0);
@@ -107,9 +129,9 @@ test('decryptAudioFrame decrypts the payload with nonce[32:40] and counter 0', (
   assert.deepEqual(out, g711);
 });
 
-test('decryptAudioFrame ignores zero MTU padding after the declared length', () => {
+test("decryptAudioFrame ignores zero MTU padding after the declared length", () => {
   const d = new AqaraStreamDecryptor(KEY);
-  const key = Buffer.from(KEY, 'hex');
+  const key = Buffer.from(KEY, "hex");
   const nonce = Buffer.alloc(8, 0x55);
   const g711 = crypto_random(131);
   const enc = refChacha20Xor(key, nonce, g711, 0);
@@ -125,7 +147,7 @@ test('decryptAudioFrame ignores zero MTU padding after the declared length', () 
   assert.deepEqual(out, g711);
 });
 
-test('encryptAudioFrame is the inverse of decryptAudioFrame', () => {
+test("encryptAudioFrame is the inverse of decryptAudioFrame", () => {
   const d = new AqaraStreamDecryptor(KEY);
   const g711 = crypto_random(200);
   const built = d.encryptAudioFrame(g711, 7);
@@ -140,3 +162,37 @@ function crypto_random(n: number): Buffer {
   for (let i = 0; i < n; i++) b[i] = (i * 31 + 7) & 0xff;
   return b;
 }
+
+test("decryptToAnnexB keeps in-band SPS/PPS/IDR when the tail already has start codes", () => {
+  const d = new AqaraStreamDecryptor(KEY);
+  const sps = Buffer.from([0x67, 0x4d, 0x00, 0x28]);
+  const pps = Buffer.from([0x68, 0xee, 0x3c, 0x80]);
+  const idr = Buffer.from([0x65, 0x88, 0x80, 0x10]);
+  const sc = Buffer.from([0, 0, 0, 1]);
+  const tail = Buffer.concat([sc, sps, sc, pps, sc, idr]);
+  // nalCount=1 covering the whole tail as one blob (what the camera does).
+  const payload = Buffer.alloc(9 + 8 + tail.length);
+  payload[8] = 1;
+  payload.writeUInt32LE(0, 9);
+  payload.writeUInt32LE(tail.length, 13);
+  tail.copy(payload, 17);
+  const out = d.decryptToAnnexB(payload);
+  assert.equal(out[4], 0x67);
+  assert.ok(out.includes(Buffer.from([0, 0, 0, 1, 0x68])));
+  assert.ok(out.includes(Buffer.from([0, 0, 0, 1, 0x65])));
+});
+
+test("decryptToAnnexB prefixes raw NALs from the camera table with start codes", () => {
+  const d = new AqaraStreamDecryptor(KEY);
+  // nalCount=1, offset=0, length=5, payload is an IDR NAL type 5 with no start code.
+  // ChaCha only xors at pos>=32, so a 5-byte NAL is returned unchanged.
+  const nal = Buffer.from([0x65, 0x01, 0x02, 0x03, 0x04]);
+  const payload = Buffer.alloc(9 + 8 + nal.length);
+  payload[8] = 1;
+  payload.writeUInt32LE(0, 9);
+  payload.writeUInt32LE(nal.length, 13);
+  nal.copy(payload, 17);
+  const out = d.decryptToAnnexB(payload);
+  assert.deepEqual(out.subarray(0, 4), Buffer.from([0, 0, 0, 1]));
+  assert.deepEqual(out.subarray(4), nal);
+});
