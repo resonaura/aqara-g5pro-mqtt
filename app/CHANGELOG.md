@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.6 — Fix: dotenv import hoisting
+
+- **Root cause**: ES module `import` hoisting caused `aqara.ts` to load and capture `process.env.TOKEN = ""` before `dotenv.config()` ran. The `TOKEN` and `USER_ID` module-level variables were frozen at empty strings, so API requests lacked the `Token` and `Userid` headers.
+- **Fix**: Replaced module-level `let TOKEN`/`let USER_ID` captures with `getToken()`/`getUserId()` functions that read `process.env.TOKEN`/`process.env.USER_ID` at call time. `login()` now writes to `process.env` directly.
+- **Build**: `dist/` rebuilt.
+
 ## v1.4.5 — Fix: missing USER_ID in .env
 
 - **Root cause**: `setup.ts` generated `.env` with `TOKEN` but omitted `USER_ID` from the login response. `aqara.ts` initialized `USER_ID` to empty string and never read it from `process.env`. API requests lacked the `Userid` header, so the Aqara server returned an empty device list.

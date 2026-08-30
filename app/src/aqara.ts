@@ -14,15 +14,12 @@ const PHONE_ID = uuidv4().toUpperCase();
 const APP_ID = process.env.APPID || "444c476ef7135e53330f46e7";
 const APP_KEY = "uOJy0qmKwXj6aHUB2KQEIJuXHMDVTAJi";
 
-let TOKEN: string = process.env.TOKEN || "";
-let USER_ID: string = process.env.USER_ID || "";
-
 export function getToken(): string {
-  return TOKEN;
+  return process.env.TOKEN || "";
 }
 
 export function getUserId(): string {
-  return USER_ID;
+  return process.env.USER_ID || "";
 }
 
 function md5(s: string): string {
@@ -77,9 +74,9 @@ api.interceptors.request.use((config) => {
   }
   config.headers["Time"] = time;
   config.headers["Nonce"] = nonce;
-  config.headers["Sign"] = aqaraSign({ nonce, time, token: TOKEN, body });
-  if (TOKEN) config.headers["Token"] = TOKEN;
-  if (USER_ID) config.headers["Userid"] = USER_ID;
+  config.headers["Sign"] = aqaraSign({ nonce, time, token: getToken(), body });
+  if (getToken()) config.headers["Token"] = getToken();
+  if (getUserId()) config.headers["Userid"] = getUserId();
   return config;
 });
 
@@ -120,8 +117,8 @@ rZzBHsMuBwA4LQdxBwIDAQAB
       `Aqara login failed: code=${res.data?.code} ${res.data?.message}`,
     );
   }
-  TOKEN = res.data.result.token;
-  USER_ID = res.data.result.userId;
+  process.env.TOKEN = res.data.result.token;
+  process.env.USER_ID = res.data.result.userId;
 }
 
 export async function queryAttrs(
