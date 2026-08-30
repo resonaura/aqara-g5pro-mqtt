@@ -396,7 +396,7 @@ test("video RTP timestamps only move forward", () => {
   const t2 = rtpInfo(
     parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload,
   ).timestamp;
-  assert.equal((t2 - t1) >>> 0, 3600);
+  assert.equal((t2 - t1) >>> 0, 6000);
 });
 
 test("idle pacer does not replay the last IDR", async () => {

@@ -595,10 +595,15 @@ export class RtspServer extends EventEmitter {
   // so VLC / RTSP clients never see back-to-back frames with near-zero gap.
   private videoQueue: Buffer[] = [];
   private videoPacer: NodeJS.Timeout | null = null;
-  // Target drain interval in ms.  30 fps → 33 ms; 20 fps → 50 ms.
-  // We use 33 ms as a safe default; the pacer naturally skips ticks when
-  // no frames are queued.
-  private readonly PACER_INTERVAL_MS = 33;
+  // Mic AAC uses 1024 samples at 16 kHz, i.e. one access unit every 64 ms.
+  // It reaches us in the same bursty UDP path as video, so pace it separately.
+  private audioQueue: Buffer[] = [];
+  private audioPacer: NodeJS.Timeout | null = null;
+  private audioPacerPrimed: boolean = false;
+  // Both observed cameras supply ~15 video frames/s (the status ticker adds
+  // about 45 frames every 3 s).  Draining at 30 fps caused a repeating
+  // burst/freeze pattern: the queue emptied in half the GOP interval.
+  private readonly PACER_INTERVAL_MS = 1000 / 15;
   // Maximum queue depth before we start dropping the oldest P-frames to
   // prevent unbounded latency accumulation.
   private readonly MAX_QUEUE_DEPTH = 6;
@@ -739,6 +744,7 @@ export class RtspServer extends EventEmitter {
             } catch {}
             this.emit("listening", this.port);
             this.startVideoPacer();
+            this.startAudioPacer();
             this.startRtcp();
             resolve();
           };
@@ -808,6 +814,39 @@ export class RtspServer extends EventEmitter {
       this.videoPacer = null;
     }
     this.videoQueue.length = 0;
+  }
+
+  /** Pace AAC access units at their declared 16 kHz / 1024-sample cadence. */
+  private startAudioPacer(): void {
+    if (this.audioPacer) return;
+    this.audioPacer = setInterval(() => {
+      if (!this.audioPacerPrimed) {
+        // Hold ~192 ms before the first packet.  Starting with one AU gives
+        // the next UDP jitter spike an audible hole immediately.
+        if (this.audioQueue.length < 3) return;
+        this.audioPacerPrimed = true;
+      }
+      if (this.audioQueue.length === 0) {
+        this.audioPacerPrimed = false;
+        return;
+      }
+      // Audio is independently decodable: favour freshness over playing more
+      // than 1.5 seconds behind after a UDP burst.
+      if (this.audioQueue.length > 24) {
+        this.audioQueue.splice(0, this.audioQueue.length - 8);
+      }
+      const frame = this.audioQueue.shift();
+      if (frame) this.sendSingleAacFrame(frame);
+    }, 64);
+  }
+
+  private stopAudioPacer(): void {
+    if (this.audioPacer) {
+      clearInterval(this.audioPacer);
+      this.audioPacer = null;
+    }
+    this.audioQueue.length = 0;
+    this.audioPacerPrimed = false;
   }
 
   private startRtcp(): void {
@@ -895,8 +934,18 @@ export class RtspServer extends EventEmitter {
       return;
     client.mediaPumped = true;
     client.receivedKeyframe = false;
+    // A camera can take many seconds to emit its next IDR, or temporarily
+    // pause P-frames after the initial GOP.  PLAY must therefore start from
+    // the already validated cached IDR; waiting only for a future IDR leaves
+    // VLC in an endless reconnect loop with zero RTP packets.
+    if (this.lastKeyframe) {
+      client.waitLiveIdr = false;
+      console.log(`[RTSP] PLAY client starting from cached IDR`);
+      this.sendFrameNow(this.lastKeyframe, client);
+      return;
+    }
     client.waitLiveIdr = true;
-    console.log(`[RTSP] PLAY client waiting for live IDR keyframe...`);
+    console.log(`[RTSP] PLAY client waiting for first live IDR keyframe...`);
     this.emit("need_keyframe");
   }
 
@@ -1136,16 +1185,24 @@ export class RtspServer extends EventEmitter {
           break;
         }
         const rawAac = remaining.subarray(hdrLen, adtsLen);
-        this.sendSingleAacFrame(
-          rawAac,
-          frameCount === 0 ? timestampMs : undefined,
-          targetClient,
-        );
+        if (targetClient || !this.audioPacer) {
+          this.sendSingleAacFrame(
+            rawAac,
+            frameCount === 0 ? timestampMs : undefined,
+            targetClient,
+          );
+        } else {
+          this.audioQueue.push(Buffer.from(rawAac));
+        }
         offset += adtsLen;
         frameCount++;
       } else {
         if (frameCount === 0) {
-          this.sendSingleAacFrame(audioData, timestampMs, targetClient);
+          if (targetClient || !this.audioPacer) {
+            this.sendSingleAacFrame(audioData, timestampMs, targetClient);
+          } else {
+            this.audioQueue.push(Buffer.from(audioData));
+          }
         }
         break;
       }
@@ -1471,10 +1528,9 @@ export class RtspServer extends EventEmitter {
       this.flushPendingDescribes();
     }
 
-    // 90 kHz, 40 ms/frame. Wall-clock deltas jumped backward whenever PLAY
-    // replayed an IDR and the pacer then drained a burst.
+    // 90 kHz, 15 fps; match the output pacer and the measured camera cadence.
     const rtpTimestamp = this.videoRtpTimestamp >>> 0;
-    this.videoRtpTimestamp = (this.videoRtpTimestamp + 3600) >>> 0;
+    this.videoRtpTimestamp = (this.videoRtpTimestamp + 6000) >>> 0;
     this.lastVideoSendAt = Date.now();
     const MAX_PAYLOAD_SIZE = 1380;
 
@@ -1739,6 +1795,7 @@ export class RtspServer extends EventEmitter {
 
   public stop(): void {
     this.stopVideoPacer();
+    this.stopAudioPacer();
     this.stopRtcp();
     for (const client of this.clients) {
       client.socket.destroy();
