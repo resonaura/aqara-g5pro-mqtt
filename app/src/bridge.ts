@@ -3263,6 +3263,10 @@ export class AqaraCameraBridge extends EventEmitter {
         if (assembled) this.flushCurrentFrame();
         else {
           this.droppedGapFrames++;
+          if (this.isConnected && this.hasSeenKeyframe) {
+            if (this.rtspServer) this.rtspServer.holdForNewIdr();
+            this.requestLiveKeyframe();
+          }
           if (this.frameCount < 8) {
             console.log(
               `📐 [${this.did}] AVIO restart idx=${idx} drop incomplete ${this.currentAccumulatedLen}/${this.currentExpectedLen}B`,
@@ -3354,15 +3358,20 @@ export class AqaraCameraBridge extends EventEmitter {
 
     if (expectedTotal > 0 && full.length < expectedTotal) {
       // Frame is incomplete — would corrupt the decoder reference buffer.
+      // Also tell the RTSP server to hold further P-frames until a fresh IDR
+      // arrives: without this, P-frames that reference the missing frame reach
+      // the player and produce macroblock artifacts / freezes until the next
+      // IDR restores the reference picture.
       this.droppedGapFrames++;
       if (this.isConnected && this.hasSeenKeyframe) {
         this.gapKeyframeRequests++;
+        if (this.rtspServer) this.rtspServer.holdForNewIdr();
         this.requestLiveKeyframe();
         if (this.droppedGapFrames % 10 === 1) {
           console.warn(
             `⚠️ [${this.did}] gap-drop #${this.droppedGapFrames} — ` +
               `have ${full.length}B of expected ${expectedTotal}B — ` +
-              `IDR requested (gapKfReqs=${this.gapKeyframeRequests})`,
+              `IDR requested + holding P-frames (gapKfReqs=${this.gapKeyframeRequests})`,
           );
         }
       }
