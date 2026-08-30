@@ -2163,7 +2163,7 @@ export class AqaraCameraBridge extends EventEmitter {
     this.skipVideo = !!skipVideo;
     this.talkbackOnly = !!skipVideo;
     await this.initCloudSession();
-    this.socket = dgram.createSocket("udp4");
+    this.socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
 
     // Start RTSP Server — but only once. On resurrection we MUST keep the
     // existing server (and its connected RTSP clients) alive; only the P2P
@@ -3118,7 +3118,7 @@ export class AqaraCameraBridge extends EventEmitter {
       this.expectedMediaIdx = idx;
     }
 
-    const diff = (idx - this.expectedMediaIdx) & 0xffff;
+    const diff = ((idx - this.expectedMediaIdx) << 16) >> 16;
     if (diff === 0) {
       // In-order packet
       this.handleVideoDataImmediate(idx, data);
@@ -3136,7 +3136,7 @@ export class AqaraCameraBridge extends EventEmitter {
         clearTimeout(this.reorderTimer);
         this.reorderTimer = null;
       }
-    } else if (diff > 0 && diff < 32) {
+    } else if (diff > 0 && diff < 64) {
       // Out-of-order packet arriving early over Wi-Fi
       this.mediaReorderBuffer.set(idx, data);
       if (!this.reorderTimer) {
@@ -3145,7 +3145,7 @@ export class AqaraCameraBridge extends EventEmitter {
       if (this.mediaReorderBuffer.size >= 16) {
         this.flushReorderBuffer();
       }
-    } else if (diff >= 32768) {
+    } else if (diff < 0) {
       // Duplicate or late packet arriving after we already advanced past it
       return;
     } else {
@@ -3167,8 +3167,8 @@ export class AqaraCameraBridge extends EventEmitter {
     const entries = Array.from(this.mediaReorderBuffer.entries());
     entries.sort(
       ([a], [b]) =>
-        ((a - this.expectedMediaIdx) & 0xffff) -
-        ((b - this.expectedMediaIdx) & 0xffff),
+        (((a - this.expectedMediaIdx) << 16) >> 16) -
+        (((b - this.expectedMediaIdx) << 16) >> 16),
     );
 
     for (const [seq, buf] of entries) {
