@@ -196,13 +196,16 @@ async function main() {
 
   // Live status telemetry ticker
   setInterval(() => {
-    for (const [did, s] of camStates.entries()) {
-      const icon = s.connected ? "🟢 LIVE" : "⚪ CONNECTING";
-      const keyIcon = s.hasSeenKeyframe ? "🔑" : "⏳";
-      const namePad = s.deviceName.padEnd(20, " ");
-
+    for (const item of activeBridges) {
+      const state = camStates.get(item.did);
+      if (!state) continue;
+      const icon = state.connected ? "🟢 LIVE" : "⚪ CONNECTING";
+      const keyIcon = state.hasSeenKeyframe ? "🔑" : "⏳";
+      const namePad = state.deviceName.padEnd(20, " ");
+      const gaps = item.bridge.droppedGapFrames;
+      const gapStr = gaps > 0 ? ` | ⚠️ gap-drops=${gaps}` : "";
       console.log(
-        ` [${icon}] ${namePad} | Status: ${keyIcon} | 🔗 ${s.rtspUrl}`,
+        ` [${icon}] ${namePad} | Status: ${keyIcon}${gapStr} | 🔗 ${state.rtspUrl}`,
       );
     }
   }, 3000);

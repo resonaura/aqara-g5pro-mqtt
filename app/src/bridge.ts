@@ -2901,6 +2901,10 @@ export class AqaraCameraBridge extends EventEmitter {
   private videoFrags: Map<number, Buffer> = new Map();
   private currentExpectedLen: number = 0;
   private currentAccumulatedLen: number = 0;
+  /** P-frames dropped because a UDP fragment was missing — would cause pixelation if emitted. */
+  public droppedGapFrames: number = 0;
+  /** Keyframe requests triggered by gap drops. */
+  public gapKeyframeRequests: number = 0;
   private sessionStarted: boolean = false;
 
   private resetVideoAssembly(): void {
@@ -2925,6 +2929,8 @@ export class AqaraCameraBridge extends EventEmitter {
     this._seenH = 0;
     this._qualityAcked = false;
     this._loggedQuality = false;
+    this.droppedGapFrames = 0;
+    this.gapKeyframeRequests = 0;
   }
   /** True only after the camera has acknowledged 0x1002 with 0x1003. */
   private p2pSessionReady: boolean = false;
@@ -3189,16 +3195,49 @@ export class AqaraCameraBridge extends EventEmitter {
         ((b - this.frameStartSeq) & 0xffff),
     );
 
-    // Channel 1 multiplexes video fragments and audio AVIO on one PPCS
-    // sequence. Holes in idx are skipped audio, not lost video — concat in
-    // idx order and split on the declared AVIO length, keeping any tail
-    // that already belongs to the next frame.
+    // Integrity check: the AVIO header declares the exact payload byte count.
+    // accumulated is the sum of every fragment we received.  If it is less than
+    // expected, at least one UDP datagram was lost.  Emitting a frame with a
+    // hole in the residual data would cause exactly the "pixelation in motion
+    // areas" described in the research: the decoder applies the motion vectors
+    // but reconstructs the residual from wrong bytes.
+    //
+    // Note: channel 1 multiplexes video AND audio on a single PPCS sequence,
+    // so idx gaps between video fragments are normal (audio slots fill those
+    // positions).  We therefore check accumulated vs expected length, NOT idx
+    // contiguity.
+    const expectedTotal = this.currentExpectedLen; // snapshot before clear
+    const accumulated = this.currentAccumulatedLen;
     const full = Buffer.concat(entries.map(([, buf]) => buf));
     this.videoFrags.clear();
     this.currentExpectedLen = 0;
     this.currentAccumulatedLen = 0;
 
     if (full.length < 32) return;
+
+    // accumulated is an approximation when audio frames share idx space; use
+    // full.length (actual bytes we have) vs expectedTotal as the authoritative
+    // check.  A small AVIO_SIZE_SLACK tolerance handles rounding/off-by-one.
+    if (expectedTotal > 0 && full.length + 32 < expectedTotal) {
+      // Frame is incomplete — would corrupt the decoder reference buffer.
+      this.droppedGapFrames++;
+      // Only request a keyframe when the stream is healthy enough to respond.
+      // Avoid spamming IDR requests on a degraded link.
+      if (this.isConnected && this.hasSeenKeyframe) {
+        this.gapKeyframeRequests++;
+        // One 0x1018 resets the GOP; the camera sends a fresh IDR within one
+        // GOP interval (≈ 2 s) so the error propagation chain is bounded.
+        this.requestLiveKeyframe();
+        if (this.droppedGapFrames % 10 === 1) {
+          console.warn(
+            `⚠️ [${this.did}] gap-drop #${this.droppedGapFrames} — ` +
+              `have ${full.length}B of expected ${expectedTotal}B — ` +
+              `IDR requested (gapKfReqs=${this.gapKeyframeRequests})`,
+          );
+        }
+      }
+      return;
+    }
 
     const { frames, remainder } = splitAvioFrames(full);
     for (const frame of frames) this.processVideoFrame(frame);
