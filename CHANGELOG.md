@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.1 - Build Fix: tsconfig scripts
+
+### 🔧 Fixed
+
+- **Build**: `tsconfig.build.json` — `src/scripts` excluded, missing `dist/scripts/setup.js` in HA add-on. Removed exclusion so scripts build correctly
+- **Build**: `app/package.json` — JSON syntax error (`version:` unquoted) broke Docker `npm install`
+
 ## v1.4.0 - P2P → Integrated RTSP + Docker FFmpeg + Logging Optimization
 
 ### ✨ New Features

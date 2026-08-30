@@ -1,7 +1,11 @@
-## 1.4.0
+## 1.4.1
+
+- **Fix**: `tsconfig.build.json` — removed `src/scripts` from exclude so `dist/scripts/setup.js` builds correctly for HA add-on
+- **Fix**: `app/package.json` — corrected JSON syntax after version bump
 
 ### ✨ New Features
 
+- **Docker: FFmpeg**...
 - **Docker: FFmpeg in image**: Root `Dockerfile` now installs `ffmpeg` in the runtime stage, enabling the built-in video transcoder (error concealment, deblocking, HEVC→H.264 passthrough) for P2P RTSP streams
 - **RTSP: seamless integration**: RTSP server is now fully integrated into the main app — it activates automatically when P2P Stream is turned ON via Home Assistant switch, and releases all resources when turned OFF. No separate `pnpm run rtsp` process needed
 - **RTSP: on-demand FFmpeg**: FFmpeg transcoder is spawned only when P2P Stream is active, keeping CPU/memory usage minimal when streaming is disabled
