@@ -19,6 +19,7 @@ FROM node:22.16.0-slim
 WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 COPY ./app/pnpm-lock.yaml ./app/pnpm-workspace.yaml ./app/package.json ./
 RUN pnpm install --frozen-lockfile --prod

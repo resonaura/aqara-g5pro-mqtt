@@ -245,18 +245,12 @@ async function optimistic(
       client.publish(stateTopic("switch", deviceId, attr), value, {
         retain: true,
       });
-      console.log(
-        `⚡ ${cameraInfo.device.deviceName} ${attr}=${value} (optimistic)`,
-      );
       break;
     case "number":
       client.publish(
         stateTopic("number", deviceId, attr),
         String(parseInt(value, 10)),
         { retain: true },
-      );
-      console.log(
-        `⚡ ${cameraInfo.device.deviceName} ${attr}=${parseInt(value, 10)} (optimistic)`,
       );
       break;
     case "light":
@@ -279,9 +273,6 @@ async function optimistic(
           stateTopic("light", deviceId, "spotlight"),
           JSON.stringify(next),
           { retain: true },
-        );
-        console.log(
-          `⚡ ${cameraInfo.device.deviceName} spotlight=${next.state}, ${next.brightness} (optimistic)`,
         );
       }
       break;
@@ -329,7 +320,14 @@ client.on("message", async (topic, msg) => {
   }
 
   const subjectId = cameraInfo.device.did;
-  console.log(`⬅️ HA → ${cameraInfo.device.deviceName}.${attr}=${value}`);
+  // Только важные события в лог, остальное шум при опросе
+  if (
+    attr === "p2p_stream" ||
+    attr === "talkback" ||
+    (domain === "button" && attr.startsWith("ptz_"))
+  ) {
+    console.log(`⬅️ HA → ${cameraInfo.device.deviceName}.${attr}=${value}`);
+  }
 
   // === SPECIAL HANDLER FOR P2P STREAM SWITCH ===
   if (attr === "p2p_stream") {

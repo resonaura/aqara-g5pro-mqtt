@@ -147,24 +147,10 @@ export async function getDevice(id: string): Promise<Device> {
 export async function getCameras(): Promise<Device[]> {
   const response = await getDevices();
 
-  console.log("🔍 API Response:", {
-    code: response.code,
-    message: response.message,
-    deviceCount: response.result?.devices?.length || 0,
-  });
-
   if (!response.result || !response.result.devices) {
     console.log("⚠️ No devices found in API response");
     return [];
   }
-
-  // Показываем все найденные устройства для отладки
-  console.log("📱 All devices found:");
-  response.result.devices.forEach((device) => {
-    console.log(
-      `  - ${device.deviceName} (${device.model}) - ${device.originalName}`,
-    );
-  });
 
   // Filter only Aqara cameras using model prefix like in setup script
   const cameras = response.result.devices.filter((device) =>
