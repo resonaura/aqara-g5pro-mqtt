@@ -632,7 +632,6 @@ export class RtspServer extends EventEmitter {
   private videoOctetCount = 0;
   private audioPktCount = 0;
   private audioOctetCount = 0;
-  private gopCache: Buffer[] = [];
   // DESCRIBE requests that arrived before SPS/PPS were known are held here
   private pendingDescribes: Array<{
     socket: net.Socket;
@@ -981,7 +980,6 @@ export class RtspServer extends EventEmitter {
   /** Live quality switch: drop the old GOP so P-frames from the new size cannot mix. */
   public holdForNewIdr(): void {
     this.videoQueue.length = 0;
-    this.gopCache = [];
     this.lastKeyframe = null;
     for (const c of this.clients) {
       if (c.isPlaying) c.waitLiveIdr = true;
@@ -1534,7 +1532,6 @@ export class RtspServer extends EventEmitter {
       }
       if (!targetClient) {
         this.lastKeyframe = frameData;
-        this.gopCache = [frameData];
       }
       if (targetClient) {
         targetClient.receivedKeyframe = true;
@@ -1547,8 +1544,6 @@ export class RtspServer extends EventEmitter {
           }
         }
       }
-    } else if (!targetClient && this.gopCache.length > 0 && this.gopCache.length < 30) {
-      this.gopCache.push(frameData);
     }
 
     // Once we have codec parameters, flush any DESCRIBE responses that were
@@ -1560,11 +1555,21 @@ export class RtspServer extends EventEmitter {
       this.flushPendingDescribes();
     }
 
-    // 90 kHz, 15 fps; match the output pacer and the measured camera cadence.
+    // 90 kHz RTP clock. Increment by actual elapsed wall time rather than a
+    // fixed 6000 (1/15 s) to avoid A/V drift when the camera varies its frame
+    // rate. Clamp to [3000, 18000] = [33 ms, 200 ms] so a pacer stall or an
+    // unusually long IDR never causes a jarring timestamp jump in the player.
+    const nowSendMs = Date.now();
+    const elapsedMs =
+      this.lastVideoSendAt > 0 ? nowSendMs - this.lastVideoSendAt : 66;
+    const rtpIncrement = Math.min(
+      18_000,
+      Math.max(3_000, Math.round(elapsedMs * 90)),
+    );
     const rtpTimestamp = this.videoRtpTimestamp >>> 0;
     this.lastVideoRtpTimestamp = rtpTimestamp;
-    this.videoRtpTimestamp = (this.videoRtpTimestamp + 6000) >>> 0;
-    this.lastVideoSendAt = Date.now();
+    this.videoRtpTimestamp = (this.videoRtpTimestamp + rtpIncrement) >>> 0;
+    this.lastVideoSendAt = nowSendMs;
     const MAX_PAYLOAD_SIZE = 1380;
 
     for (let n = 0; n < nalUnits.length; n++) {
@@ -2953,16 +2958,24 @@ export class AqaraCameraBridge extends EventEmitter {
   private recentMediaPackets: Map<string, number> = new Map();
 
   private isDuplicateMediaPacket(idx: number, data: Buffer): boolean {
-    const key = `${idx}:${data.length}:${crypto
-      .createHash("sha1")
-      .update(data)
-      .digest("hex")}`;
+    // Lightweight fingerprint: idx (16-bit counter) + byteLength + first 8 bytes.
+    // A real retransmit will share all three; a fresh packet with the same idx
+    // almost certainly differs in at least one byte of the header.  SHA-1 of the
+    // full body was ~30-50 µs per call and blocked the event loop for ~10 ms
+    // across a 200-fragment IDR burst, delaying ACKs and stalling the camera.
+    const fp =
+      data.length >= 8
+        ? data.readBigUInt64BE(0).toString(16)
+        : data.toString("hex", 0, Math.min(8, data.length));
+    const key = `${idx}:${data.length}:${fp}`;
     if (this.recentMediaPackets.has(key)) return true;
     this.recentMediaPackets.set(key, Date.now());
-    if (this.recentMediaPackets.size > 1024) {
-      const cutoff = Date.now() - 10_000;
+    // Evict entries older than 5 s (enough to cover any realistic retransmit
+    // window) rather than waiting for the map to hit 1024.
+    if (this.recentMediaPackets.size > 512) {
+      const cutoff = Date.now() - 5_000;
       for (const [oldKey, seenAt] of this.recentMediaPackets) {
-        if (seenAt >= cutoff && this.recentMediaPackets.size <= 512) break;
+        if (seenAt >= cutoff) break; // Map is insertion-ordered: early exit
         this.recentMediaPackets.delete(oldKey);
       }
     }
@@ -3015,7 +3028,7 @@ export class AqaraCameraBridge extends EventEmitter {
     return merged.subarray(pending.expected);
   }
 
-  private async handleVideoData(idx: number, data: Buffer): Promise<void> {
+  private handleVideoData(idx: number, data: Buffer): void {
     this._vidPktCount++;
     this.lastVideoFrameAt = Date.now();
     this.softMediaKickCount = 0;

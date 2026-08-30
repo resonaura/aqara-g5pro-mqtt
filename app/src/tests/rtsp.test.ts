@@ -396,7 +396,11 @@ test("video RTP timestamps only move forward", () => {
   const t2 = rtpInfo(
     parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload,
   ).timestamp;
-  assert.equal((t2 - t1) >>> 0, 6000);
+  // Wall-clock increment: frames sent synchronously → elapsed ≈ 0 ms →
+  // clamped to minimum 3000 ticks (33 ms). Assert monotonically increasing
+  // within the [3000, 18000] clamp rather than an exact constant.
+  assert.ok((t2 - t1) >>> 0 >= 3000, `expected t2>t1 with increment>=3000, got ${(t2 - t1) >>> 0}`);
+  assert.ok((t2 - t1) >>> 0 <= 18000, `expected increment<=18000, got ${(t2 - t1) >>> 0}`);
 });
 
 test("idle pacer does not replay the last IDR", async () => {
