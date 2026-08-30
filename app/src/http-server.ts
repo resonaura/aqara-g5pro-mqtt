@@ -1,0 +1,113 @@
+/**
+ * FrameHttpServer — tiny built-in HTTP server that serves cached JPEG snapshots.
+ *
+ * Serves `GET /frame/<slug>` → reads `data/frames/<slug>.jpg` and returns it
+ * with `Content-Type: image/jpeg`. Returns 404 if the frame is missing.
+ *
+ * Additional endpoints:
+ *   GET /health              → 200 OK, plain text "ok"
+ *   GET /frames/list         → JSON array of available frame slugs
+ *
+ * Bound to `process.env.HTTP_PORT || 8080`.  The server is a singleton —
+ * call `start()` once; call `stop()` on application shutdown.
+ */
+
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import http from "node:http";
+import path from "node:path";
+
+export class FrameHttpServer {
+  private server: http.Server | null = null;
+  private readonly port: number;
+  private readonly framesDir: string;
+
+  constructor(framesDir: string, port?: number) {
+    this.framesDir = framesDir;
+    this.port = port ?? Number(process.env.HTTP_PORT || 8080);
+  }
+
+  public start(): void {
+    if (this.server) return;
+
+    this.server = http.createServer((req, res) => {
+      const url = req.url ?? "/";
+
+      // ── /health ─────────────────────────────────────────────────────────────
+      if (url === "/health" || url === "/health/") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("ok");
+        return;
+      }
+
+      // ── /frames/list ────────────────────────────────────────────────────────
+      if (url === "/frames/list" || url === "/frames/list/") {
+        try {
+          const files = readdirSync(this.framesDir).filter(
+            (f) =>
+              f.endsWith(".jpg") &&
+              statSync(path.join(this.framesDir, f)).size > 0,
+          );
+          const slugs = files.map((f) => f.replace(/\.jpg$/, ""));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(slugs));
+        } catch {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("[]");
+        }
+        return;
+      }
+
+      // ── /frame/<slug> ────────────────────────────────────────────────────────
+      const match = url.match(/^\/frame\/([^/]+)$/);
+      if (match) {
+        const slug = match[1];
+        const filePath = path.join(this.framesDir, `${slug}.jpg`);
+        if (!existsSync(filePath)) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("Not found");
+          return;
+        }
+        try {
+          const data = readFileSync(filePath);
+          res.writeHead(200, {
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Content-Length": data.length,
+          });
+          res.end(data);
+        } catch {
+          res.writeHead(500, { "Content-Type": "text/plain" });
+          res.end("Internal error");
+        }
+        return;
+      }
+
+      // Unknown route
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not found");
+    });
+
+    this.server.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(
+          `❌ [HTTP] Port ${this.port} is already in use — frame endpoints unavailable`,
+        );
+      } else {
+        console.error(`❌ [HTTP] Server error: ${err.message}`);
+      }
+    });
+
+    this.server.listen(this.port, "0.0.0.0", () => {
+      // Only log once on startup — no spam per request
+      console.log(`🌐 [HTTP] Frame server listening on port ${this.port}`);
+    });
+  }
+
+  public stop(): void {
+    if (this.server) {
+      this.server.close(() => {
+        this.server = null;
+      });
+    }
+  }
+}

@@ -1,3 +1,18 @@
+## 1.4.3
+
+### ✨ New: Frame Snapshot Endpoint
+
+- **On-demand JPEG snapshots**: When P2P Stream is ON, a dedicated `ffmpeg` process pulls a full JPEG frame from the RTSP stream every **10 seconds** and caches it to `data/frames/<slug>.jpg`
+- **HTTP server**: Built-in HTTP server (port `HTTP_PORT` / default 8080) serves cached frames at `GET /frame/<slug>` with `Content-Type: image/jpeg` — activated only while P2P Stream is running for a camera
+- **MQTT discovery**: `sensor.frame_url` publishes the frame endpoint URL (`http://<host>:8080/frame/<slug>`) whenever a new frame is cached — auto-disabled when P2P Stream is turned off
+- **Resource-efficient**: Snapshotter is completely separate from the transcoder pipeline; zero extra ffmpeg processes unless P2P Stream is active
+
+### 📝 Updated
+
+- `app/src/index.ts` — imports `path`, `FrameSnapshotter`, `FrameHttpServer`; starts HTTP server on boot; spawns/kills snapshotter per bridge lifecycle
+- `app/src/snapshot.ts` — new module: `FrameSnapshotter` class
+- `app/src/http-server.ts` — new module: `FrameHttpServer` class
+
 ## 1.4.2
 
 - **Docker FFmpeg + RTSP fixes**: `ffmpeg` in `app/Dockerfile`; `tsconfig.build.json` includes `src/scripts`; `package.json` JSON fixed

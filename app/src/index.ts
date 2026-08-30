@@ -1,3 +1,4 @@
+import path from "path";
 import {
   aqaraDeviceToMQTT,
   checkDeviceCapabilities,
@@ -21,6 +22,7 @@ import {
   publishTalkbackRtmpDiscovery,
 } from "./discovery.js";
 import { ENTITIES } from "./entities.js";
+import { FrameHttpServer } from "./http-server.js";
 import {
   EVENT_ATTRS,
   processEventAttrs,
@@ -34,6 +36,7 @@ import {
 } from "./ports.js";
 import { RtmpIngestServer } from "./rtmp.js";
 import { assignUniqueSlugs } from "./slug.js";
+import { FrameSnapshotter } from "./snapshot.js";
 import { Device, MQTTDevice } from "./types.js";
 import { generateEnvExample, normalizeValue } from "./utils.js";
 
@@ -76,6 +79,7 @@ const cameraData: Array<{
   mqttDevice: MQTTDevice;
   hasSpotlight: boolean;
   bridge?: AqaraCameraBridge;
+  snapshotter?: FrameSnapshotter;
 }> = [];
 
 const rtspBasePort = parseInt(process.env.RTSP_PORT || "8555", 10);
@@ -132,6 +136,12 @@ await rtmpServer.start();
 console.log(
   `🎙️ Talkback RTMP ingest listening on port ${rtmpServer.listenPort}`,
 );
+
+// HTTP server for serving cached JPEG snapshots — only used while a P2P
+// stream is active for a given camera. Bound to process.env.HTTP_PORT || 8080.
+const framesDir = path.resolve(process.cwd(), "data", "frames");
+const httpServer = new FrameHttpServer(framesDir);
+httpServer.start();
 
 function cameraBySlug(name: string) {
   return cameraData.find((c) => slugMap[c.device.did] === name);
@@ -369,6 +379,31 @@ client.on("message", async (topic, msg) => {
             `rtmp://${host}:${rtmpServer.listenPort}/talk/${slugMap[cameraInfo.device.did]}`,
             { retain: true },
           );
+
+          // Snapshot only when P2P Stream is active (on-demand — does not run when off)
+          if (!cameraInfo.snapshotter) {
+            const snap = new FrameSnapshotter({
+              slug: slugMap[cameraInfo.device.did],
+              did: cameraInfo.device.did,
+              rtspUrl: streamUrl,
+            });
+            snap.on("frame", ({ slug }) => {
+              const frameUrl = `http://${host}:${process.env.HTTP_PORT || 8080}/frame/${slug}`;
+              client.publish(
+                `homeassistant/sensor/${deviceId}/frame_url/state`,
+                frameUrl,
+                { retain: true },
+              );
+              // Single log line per refresh — quiet by design
+              if (process.env.DEBUG) {
+                console.log(
+                  `📸 [Snapshot] ${cameraInfo.device.deviceName} frame refreshed (${slug})`,
+                );
+              }
+            });
+            snap.start();
+            cameraInfo.snapshotter = snap;
+          }
         });
 
         bridge.on("connected", ({ ip, port }) => {
@@ -412,6 +447,10 @@ client.on("message", async (topic, msg) => {
       if (cameraInfo.bridge) {
         cameraInfo.bridge.stop();
         cameraInfo.bridge = undefined;
+      }
+      if (cameraInfo.snapshotter) {
+        cameraInfo.snapshotter.stop();
+        cameraInfo.snapshotter = undefined;
       }
       client.publish(p2pSwitchTopic, "OFF", { retain: true });
       client.publish(p2pRtspTopic, "OFF", { retain: true });
