@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.4 — Fix: dotenv / login order
+
+- **Root cause**: `dotenv.config()` ran inside `config.ts` (after imports). `aqara.ts` captured `process.env.TOKEN = ""` at module load time — so after `setup.js` wrote `.env`, `index.ts` still used empty token and failed `getCameras()`.
+- **Fix**: `dotenv.config()` moved to line 1 of `index.ts`; `config.ts` cleaned.
+- **Setup**: `.env` generation verified (`TOKEN`, `AQUARA_URL`, `APPID` all correct).
+
 ## v1.4.3
 
 ### ✨ New: Frame Snapshot Endpoint

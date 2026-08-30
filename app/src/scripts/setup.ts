@@ -1,8 +1,8 @@
-import fs from "fs";
-import path from "path";
-import inquirer from "inquirer";
 import axios from "axios";
 import crypto from "crypto";
+import fs from "fs";
+import inquirer from "inquirer";
+import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import yargs from "yargs";
 
@@ -177,7 +177,11 @@ async function main() {
           ...baseHeaders,
           Time: loginTime,
           Nonce: loginNonce,
-          Sign: aqaraSign({ nonce: loginNonce, time: loginTime, body: loginBody }),
+          Sign: aqaraSign({
+            nonce: loginNonce,
+            time: loginTime,
+            body: loginBody,
+          }),
         },
         timeout: 15000,
       },
@@ -214,9 +218,7 @@ async function main() {
       },
     );
 
-    console.log(
-      `📥 Devices response (code=${deviceResp.data.code})`,
-    );
+    console.log(`📥 Devices response (code=${deviceResp.data.code})`);
 
     const allDevices: any[] = deviceResp.data.result?.devices || [];
     console.log(`   Total devices in account: ${allDevices.length}`);
