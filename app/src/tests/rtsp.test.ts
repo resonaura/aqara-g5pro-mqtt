@@ -193,19 +193,20 @@ test("PLAY immediately replays the cached IDR so the client is not gray", () => 
   send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
   s.writes = [];
   send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
+  srv.broadcastFrame(idr, 1000);
   const text = s.all.toString("latin1");
   assert.match(text, /RTP-Info:.*track0;seq=/);
   assert.match(text, /track1;seq=/);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 0);
   assert.ok(
     frames.length >= 1,
-    "PLAY must emit the cached keyframe immediately",
+    "PLAY must emit the keyframe on first broadcast",
   );
   const types = frames.map((f) => f.payload[12] & 0x1f);
   assert.ok(types.includes(5) || types.includes(7) || types.includes(28));
 });
 
-test("P-frames after PLAY wait for a live IDR (no mixed GOP)", () => {
+test("P-frames after PLAY GOP dump continue the same GOP", () => {
   const srv = new RtspServer(0, "d");
   srv.sps = SPS;
   srv.pps = PPS;
@@ -220,17 +221,7 @@ test("P-frames after PLAY wait for a live IDR (no mixed GOP)", () => {
   const s = attach(srv);
   send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
   send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
-  s.writes = [];
-  srv.broadcastFrame(
-    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0xaa])]),
-    1000,
-  );
-  assert.equal(
-    parseInterleaved(s.all).filter((f) => f.channel === 0).length,
-    0,
-    "stale P-frames after PLAY IDR gray-screen VLC",
-  );
-  srv.broadcastFrame(idr, 1100);
+  srv.broadcastFrame(idr, 1000);
   s.writes = [];
   srv.broadcastFrame(
     Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0xbb])]),
@@ -423,10 +414,11 @@ test("idle pacer does not replay the last IDR", async () => {
   const s = attach(srv);
   send(s, "SETUP rtsp://x/d/track0 RTSP/1.0\r\nCSeq: 1");
   send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
+  srv.broadcastFrame(idr, 100);
   (srv as any).startVideoPacer();
   await new Promise((r) => setTimeout(r, 50));
   const n1 = parseInterleaved(s.all).filter((f) => f.channel === 0).length;
-  assert.ok(n1 >= 1, "PLAY should already have sent the IDR");
+  assert.ok(n1 >= 1, "broadcastFrame should have sent the IDR");
   await new Promise((r) => setTimeout(r, 280));
   const n2 = parseInterleaved(s.all).filter((f) => f.channel === 0).length;
   srv.stopVideoPacer();

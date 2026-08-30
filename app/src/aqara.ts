@@ -274,21 +274,33 @@ export function videoStreamIndex(q: CameraStreamQuality | null): number {
 }
 
 /**
- * JSON 0x100E `{"channel":N}` as used by Aqara Home changeStreamResolution.
- * Live-confirmed: 0=360p, 1=HD (1080p/1520p). Cloud `/ch4` is NOT this field.
+ * JSON 0x100E `{"channel":N}` from Aqara Home changeLiveStreamResolution.
+ * Official E1 dump: start 640x360 (no 0x100E), user High → `{"channel":0}`
+ * → 2304x1296 I-frame, stream does not stop. 0=max, 1=mid, 2=low.
+ * Cloud `/chN` is NOT this field.
  */
 export function jsonQualityChannel(
   q: CameraStreamQuality | null,
   model = "",
 ): number {
-  if (q) {
-    if (q.height >= 1000) return 1;
-    return 0;
-  }
   const m = (model || "").toLowerCase();
-  if (m.includes("agl004") || m.includes("g5") || m.includes("acn006"))
-    return 1;
-  return 1;
+  const isG5 = m.includes("agl004") || m.includes("g5");
+  if (q) {
+    if (isG5) {
+      // G5 Pro uses non-standard channel ordering (Frida-confirmed):
+      // channel 3=1520p (max), channel 0=1080p (mid), channel 2=fluent (low)
+      if (q.height >= 1400) return 3;
+      if (q.height >= 1000) return 0;
+      return 2;
+    }
+    // E1 / generic: channel 0=max, 1=mid, 2=low
+    if (q.height >= 1200) return 0;
+    if (q.height >= 700) return 1;
+    return 2;
+  }
+  // No cloud quality list: default to max quality per model
+  if (isG5) return 3; // G5 Pro max = channel 3 (1520p)
+  return 0; // E1 and others: channel 0 = max
 }
 
 /** Cloud catalogue for one camera. Empty if the model has no `rtsp_url` attr (E1). */

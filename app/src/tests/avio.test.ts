@@ -4,8 +4,13 @@ import {
   AVIO_AUDIO,
   AVIO_VIDEO_H264,
   buildStreamStartBody,
+  extractLeadingAudio,
   findAvioOffset,
+  isAvioAudioHeader,
   isAvioVideoHeader,
+  isNewAvioDatagram,
+  keepAvioRemainder,
+  shouldFlushAvio,
   splitAvioFrames,
 } from "../bridge.js";
 
@@ -61,11 +66,61 @@ test("splitAvioFrames is a no-op on a partial first header", () => {
   assert.equal(remainder.length, 20);
 });
 
+test("splitAvioFrames keeps a short IDR until every declared byte arrives", () => {
+  const payload = Buffer.alloc(123876, 0x65);
+  const idr = avio(1, payload);
+  assert.equal(idr.length, 123908);
+  const short = idr.subarray(0, 123904);
+  const { frames, remainder } = splitAvioFrames(short);
+  assert.equal(frames.length, 0, "a truncated NAL must never be published");
+  assert.ok(remainder.equals(short));
+});
+
+test("isNewAvioDatagram ignores 4e00-looking IDR tails at idx>0", () => {
+  assert.equal(isNewAvioDatagram(true, 0, false, false), true);
+  assert.equal(isNewAvioDatagram(true, 121, true, false), false);
+  assert.equal(isNewAvioDatagram(true, 0, true, false), true);
+  assert.equal(isNewAvioDatagram(true, 20, true, true), true);
+  assert.equal(isNewAvioDatagram(false, 0, false, false), false);
+});
+
 test("findAvioOffset locates a P-frame header after leftover IDR bytes", () => {
   const p = avio(0, Buffer.alloc(80, 0x41));
   const packed = Buffer.concat([Buffer.alloc(17, 0xaa), p]);
   assert.equal(findAvioOffset(packed), 17);
   assert.equal(findAvioOffset(p), 0);
+});
+
+test("shouldFlushAvio requires the exact declared AVIO length", () => {
+  assert.equal(shouldFlushAvio(122880, 140456, 300, 120), false);
+  assert.equal(shouldFlushAvio(140448, 140456, 1024, 137), false);
+  assert.equal(shouldFlushAvio(139500, 140456, 500, 136), false);
+  assert.equal(shouldFlushAvio(140456, 140456, 500, 137), true);
+  assert.equal(shouldFlushAvio(0, 140456, 300, 0), false);
+});
+
+test("extractLeadingAudio peels 0x0088 frames and leaves the P-header", () => {
+  const audio = Buffer.alloc(40 + 8, 0);
+  audio.writeUInt16LE(AVIO_AUDIO, 0);
+  audio.writeUInt16LE(0x000e, 2);
+  audio.writeUInt32LE(8, 28);
+  const p = avio(0, Buffer.alloc(80, 0x41));
+  const packed = Buffer.concat([audio, p]);
+  assert.equal(isAvioAudioHeader(audio), true);
+  const { audio: frames, rest } = extractLeadingAudio(packed);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].length, 48);
+  assert.ok(rest.equals(p));
+});
+
+test("keepAvioRemainder drops IDR ciphertext and keeps a P-frame header", () => {
+  const junk = Buffer.alloc(1024, 0xab);
+  assert.equal(keepAvioRemainder(junk).length, 0);
+  const p = avio(0, Buffer.alloc(80, 0x41));
+  assert.ok(keepAvioRemainder(p).equals(p));
+  const hidden = Buffer.concat([Buffer.alloc(11, 0xcc), p]);
+  assert.ok(keepAvioRemainder(hidden).equals(p));
+  assert.equal(keepAvioRemainder(Buffer.alloc(20, 0x4e)).length, 20);
 });
 
 test("buildStreamStartBody is 16 bytes channel/videoStream/streamType LE", () => {

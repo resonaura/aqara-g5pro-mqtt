@@ -71,6 +71,7 @@ async function main() {
   }
 
   const camStates = new Map<string, CamState>();
+  const starters: Promise<void>[] = [];
 
   for (const cam of cameras) {
     console.log(`----------------------------------------------------`);
@@ -92,33 +93,8 @@ async function main() {
     const streamSlug = slugMap[cam.did];
     const rtspPort = rtspPorts[camIdx++];
     const rtspUrl = `rtsp://${localIp}:${rtspPort}/live/${streamSlug}`;
-
-    // Cloud quality catalogue (same names as Aqara Home: 1520p / 1080p / Low).
-    // URLs in that JSON are a catalogue only — we never open camera RTSP.
-    // 0x101C videoStream: 0=1520p, 1=1080p, 2=Low (working payload from 007650c).
-    let p2pQualityChannel = 1;
-    try {
-      const qualities = await getCameraStreamQualities(cam.did);
-      const best = pickMaxStreamQuality(qualities);
-      if (best) {
-        p2pQualityChannel = jsonQualityChannel(best, cam.model);
-        console.log(
-          `   📺 Cloud qualities: ${qualities.map((q) => q.title).join(", ")}`,
-        );
-        console.log(
-          `   📺 P2P 0x100E {"channel":${p2pQualityChannel}} (${best.title})`,
-        );
-      } else {
-        console.log(`   📺 No cloud list — videoStream=0 (1520p/max)`);
-      }
-    } catch (err: any) {
-      console.log(
-        `   📺 Quality list failed (${err?.message || err}) — videoStream=0`,
-      );
-    }
-
     console.log(`   🔌 Starting P2P RTSP engine on port ${rtspPort}...`);
-    console.log(`   🔥 Warming P2P — URL will print after the first IDR`);
+    console.log(`   🔗 ${rtspUrl} (picture after first IDR)`);
 
     const state: CamState = {
       deviceName: cam.deviceName,
@@ -132,60 +108,86 @@ async function main() {
     camStates.set(cam.did, state);
     rtspPortEntries.push({ port: rtspPort, did: cam.did, slug: streamSlug });
 
-    const bridge = new AqaraCameraBridge({
-      did: cam.did,
-      token: token,
-      cameraIp: cam.ip,
-      cameraPort: 32108,
-      baseUrl: process.env.AQARA_BASE_URL || "https://open-usa.aqara.com",
-      appId: process.env.AQARA_APP_ID || "",
-      appKey: process.env.AQARA_APP_KEY || "",
-      rtspPort: rtspPort,
-      model: cam.model,
-      p2pQualityChannel,
-    });
+    starters.push(
+      (async () => {
+        let p2pQualityChannel = 0;
+        try {
+          const qualities = await getCameraStreamQualities(cam.did);
+          const best = pickMaxStreamQuality(qualities);
+          if (best) {
+            p2pQualityChannel = jsonQualityChannel(best, cam.model);
+            console.log(
+              `   📺 ${cam.deviceName}: ${qualities.map((q) => q.title).join(", ")} → 0x100E {"channel":${p2pQualityChannel}} (${best.title})`,
+            );
+          } else {
+            console.log(
+              `   📺 ${cam.deviceName}: no cloud list — 0x100E {"channel":0} (max)`,
+            );
+          }
+        } catch (err: any) {
+          console.log(
+            `   📺 ${cam.deviceName}: quality list failed (${err?.message || err}) — videoStream=0`,
+          );
+        }
 
-    bridge.on("connected", () => {
-      state.connected = true;
-    });
+        const bridge = new AqaraCameraBridge({
+          did: cam.did,
+          token: token,
+          cameraIp: cam.ip,
+          cameraPort: 32108,
+          baseUrl: process.env.AQARA_BASE_URL || "https://open-usa.aqara.com",
+          appId: process.env.AQARA_APP_ID || "",
+          appKey: process.env.AQARA_APP_KEY || "",
+          rtspPort: rtspPort,
+          model: cam.model,
+          p2pQualityChannel,
+        });
 
-    bridge.on("stream_started", () => {
-      state.connected = true;
-      state.hasSeenKeyframe = true;
-    });
+        bridge.on("connected", () => {
+          state.connected = true;
+        });
 
-    bridge.on("disconnected", () => {
-      state.connected = false;
-    });
+        bridge.on("stream_started", () => {
+          state.connected = true;
+          state.hasSeenKeyframe = true;
+        });
 
-    bridge.on("rtsp_ready", (url: string) => {
-      const actualPort = Number(url.match(/:(\d+)\//)?.[1] || rtspPort);
-      if (actualPort !== rtspPort) {
-        state.rtspPort = actualPort;
-        state.rtspUrl = `rtsp://${localIp}:${actualPort}/live/${streamSlug}`;
-        const e = rtspPortEntries.find((x) => x.did === cam.did);
-        if (e) e.port = actualPort;
-        writeRtspPortMap(rtspPortBase, rtspPortEntries);
-      }
-      console.log(`   ✅ Stream warm (IDR + SPS cached):`);
-      console.log(`      🔗 ${state.rtspUrl}\n`);
-    });
+        bridge.on("disconnected", () => {
+          state.connected = false;
+        });
 
-    try {
-      await bridge.start();
-      activeBridges.push({
-        bridge,
-        slug: streamSlug,
-        did: cam.did,
-        port: rtspPort,
-      });
-    } catch (err: any) {
-      console.error(
-        `   ❌ Failed to start bridge for ${cam.deviceName}:`,
-        err.message,
-      );
-    }
+        bridge.on("rtsp_ready", (url: string) => {
+          const actualPort = Number(url.match(/:(\d+)\//)?.[1] || rtspPort);
+          if (actualPort !== rtspPort) {
+            state.rtspPort = actualPort;
+            state.rtspUrl = `rtsp://${localIp}:${actualPort}/live/${streamSlug}`;
+            const e = rtspPortEntries.find((x) => x.did === cam.did);
+            if (e) e.port = actualPort;
+            writeRtspPortMap(rtspPortBase, rtspPortEntries);
+          }
+          console.log(`   ✅ Stream warm (IDR + SPS cached):`);
+          console.log(`      🔗 ${state.rtspUrl}\n`);
+        });
+
+        try {
+          await bridge.start();
+          activeBridges.push({
+            bridge,
+            slug: streamSlug,
+            did: cam.did,
+            port: rtspPort,
+          });
+        } catch (err: any) {
+          console.error(
+            `   ❌ Failed to start bridge for ${cam.deviceName}:`,
+            err.message,
+          );
+        }
+      })(),
+    );
   }
+
+  await Promise.all(starters);
 
   writeRtspPortMap(rtspPortBase, rtspPortEntries);
   console.log(

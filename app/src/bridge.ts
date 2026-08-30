@@ -111,30 +111,32 @@ export type VideoStreamOption = {
 };
 
 /**
- * iOS `config_getVideoStreamTitleArrayWithDevice:` /
- * `config_getVideoStreamValueArrayWithDevice:`.
- * Live-confirmed: `{"channel":0}` is 360p (640x360). HD is a higher index.
+ * iOS changeLiveStreamResolutionWithStream JSON `{"channel":N}`.
+ * Official dump (E1, start 640x360, user picked High): 0x100E {"channel":0}
+ * then I-frame 2304x1296, GOP continues. 0=max, 1=mid, 2=low.
  */
 export function videoStreamLadder(model: string): VideoStreamOption[] {
   const m = (model || "").toLowerCase();
   if (m.includes("acn006")) {
     return [
-      { title: "1296p", channel: 1, minWidth: 1200 },
-      { title: "720p", channel: 2, minWidth: 700 },
-      { title: "360p", channel: 0, minWidth: 0 },
+      { title: "1296p", channel: 0, minWidth: 1200 },
+      { title: "720p", channel: 1, minWidth: 700 },
+      { title: "360p", channel: 2, minWidth: 0 },
     ];
   }
   if (m.includes("agl004") || m.includes("g5")) {
+    // Live Frida dump confirmed: G5 Pro channel 3=1520p, channel 0=1080p, channel 2=fluent.
+    // Note: this is NOT the same ordering as E1 (which uses 0=max, 1=mid, 2=low).
     return [
-      { title: "1520p", channel: 1, minWidth: 1400 },
-      { title: "1080p", channel: 2, minWidth: 1000 },
-      { title: "360p", channel: 0, minWidth: 0 },
+      { title: "1520p", channel: 3, minWidth: 1400 },
+      { title: "1080p", channel: 0, minWidth: 1000 },
+      { title: "360p", channel: 2, minWidth: 0 },
     ];
   }
   return [
-    { title: "high", channel: 1, minWidth: 1200 },
-    { title: "mid", channel: 2, minWidth: 700 },
-    { title: "sd", channel: 0, minWidth: 0 },
+    { title: "high", channel: 0, minWidth: 1200 },
+    { title: "mid", channel: 1, minWidth: 700 },
+    { title: "sd", channel: 2, minWidth: 0 },
   ];
 }
 
@@ -218,6 +220,14 @@ export function isAvioVideoHeader(data: Buffer, offset = 0): boolean {
   return payloadLen >= 16 && payloadLen <= 2_000_000;
 }
 
+/** Mic AVIO on the same PPCS channel as video (codec 0x0088, flags 0x000e). */
+export function isAvioAudioHeader(data: Buffer, offset = 0): boolean {
+  if (data.length < offset + 32) return false;
+  if (data.readUInt16LE(offset) !== AVIO_AUDIO) return false;
+  const payloadLen = data.readUInt32LE(offset + 28);
+  return payloadLen > 0 && payloadLen <= 4096;
+}
+
 /** First offset of a video AVIO header, or -1. Caps the scan so IDR NALs are not walked. */
 export function findAvioOffset(data: Buffer): number {
   if (isAvioVideoHeader(data, 0)) return 0;
@@ -229,11 +239,74 @@ export function findAvioOffset(data: Buffer): number {
 }
 
 /**
- * Pull every complete video AVIO frame off the front of a byte stream.
- * Channel-1 datagrams are 1024-byte PPCS payloads, not one-frame-per-packet:
- * the last datagram of an IDR often already contains the next P-frame header.
- * Returning that tail as `remainder` is what lets P-frames reach RTSP.
+ * Pull complete 0x0088 audio frames off the front of a channel-1 byte stream.
+ * Video and mic share PPCS ch1; the last IDR datagram often already has audio.
  */
+export function extractLeadingAudio(buf: Buffer): {
+  audio: Buffer[];
+  rest: Buffer;
+} {
+  const audio: Buffer[] = [];
+  let offset = 0;
+  while (isAvioAudioHeader(buf, offset)) {
+    const payLen = buf.readUInt32LE(offset + 28);
+    const frameLen = 40 + payLen;
+    if (offset + frameLen > buf.length) break;
+    audio.push(buf.subarray(offset, offset + frameLen));
+    offset += frameLen;
+  }
+  return { audio, rest: buf.subarray(offset) };
+}
+
+/**
+ * Drop leftover ciphertext that is not a (possibly partial) AVIO header.
+ * Prepending that junk onto the next datagram hid P-frame and audio starts.
+ */
+export function keepAvioRemainder(buf: Buffer): Buffer {
+  if (buf.length === 0) return buf;
+  if (buf.length < 32) return buf;
+  if (isAvioAudioHeader(buf) || buf.readUInt16LE(0) === AVIO_AUDIO) return buf;
+  const off = findAvioOffset(buf);
+  if (off < 0) return Buffer.alloc(0);
+  return off === 0 ? buf : buf.subarray(off);
+}
+
+/** AVIO's declared payload length is authoritative; never emit a short NAL. */
+export const AVIO_SIZE_SLACK = 0;
+
+/**
+ * Encrypted IDR tails often start with 4e00 and look like a new AVIO header.
+ * Only idx=0 (or not currently assembling) starts a frame; mid-GOP idx is
+ * continuation even when the payload fools isAvioVideoHeader.
+ */
+export function isNewAvioDatagram(
+  looksLikeHeader: boolean,
+  idx: number,
+  assembling: boolean,
+  complete: boolean,
+): boolean {
+  if (!looksLikeHeader) return false;
+  if (!assembling) return true;
+  if (complete) return true;
+  return idx === 0;
+}
+
+/**
+ * Flush only after the declared AVIO length has arrived. A packet being short
+ * merely means it is the final UDP datagram; it does not make missing bytes
+ * valid H.264/AAC data.
+ */
+export function shouldFlushAvio(
+  accumulated: number,
+  expected: number,
+  pktLen: number,
+  nFrags: number,
+): boolean {
+  if (expected <= 0 || nFrags === 0) return false;
+  void pktLen;
+  return accumulated >= expected;
+}
+
 export function splitAvioFrames(buf: Buffer): {
   frames: Buffer[];
   remainder: Buffer;
@@ -494,11 +567,7 @@ interface RtspClient {
   firstRtpLogged?: boolean;
   /** True after PLAY media (IDR/AAC) has been pushed. */
   mediaPumped?: boolean;
-  /**
-   * After PLAY we replay a cached IDR so VLC is not gray, then ignore
-   * P-frames until the next *live* IDR. Mixing GOPs makes VLC show a still,
-   * go gray, then recover — and the clock jumps backward.
-   */
+  /** After PLAY, skip P-frames until the GOP dump's generation. Unused if GOP dumped. */
   waitLiveIdr?: boolean;
 }
 
@@ -824,27 +893,20 @@ export class RtspServer extends EventEmitter {
   private pumpPlayMedia(client: RtspClient): void {
     if (!client.isPlaying || client.socket.destroyed || client.mediaPumped)
       return;
-    if (!this.lastKeyframe || !this.lastKeyframe.length) {
-      client.receivedKeyframe = false;
-      console.log("[RTSP] PLAY with no cached IDR yet — waiting for camera");
-      return;
-    }
     client.mediaPumped = true;
-    client.receivedKeyframe = true;
-    console.log(
-      `[RTSP] PLAY replay keyframe ${this.lastKeyframe.length}B ${client.transport}`,
-    );
-    const beforePkts = this.videoPktCount;
-    this.sendFrameNow(this.lastKeyframe, client);
-    // Hold P-frames until the next live IDR so VLC does not decode GOP N's
-    // IDR followed by GOP N+1's P-frames (gray + time jump). Audio keeps
-    // running — it does not depend on the video GOP.
+    client.receivedKeyframe = false;
     client.waitLiveIdr = true;
-    console.log(
-      `[RTSP] PLAY sent ${this.videoPktCount - beforePkts} video RTP packets`,
-    );
-    if (this.lastAudio && this.lastAudio.length) {
-      this.broadcastAudio(this.lastAudio, undefined, client);
+    console.log(`[RTSP] PLAY client waiting for live IDR keyframe...`);
+    this.emit("need_keyframe");
+  }
+
+  /** Live quality switch: drop the old GOP so P-frames from the new size cannot mix. */
+  public holdForNewIdr(): void {
+    this.videoQueue.length = 0;
+    this.gopCache = [];
+    this.lastKeyframe = null;
+    for (const c of this.clients) {
+      if (c.isPlaying) c.waitLiveIdr = true;
     }
   }
 
@@ -990,14 +1052,8 @@ export class RtspServer extends EventEmitter {
           `RTP-Info: ${rtpInfo}\r\n\r\n`;
 
         client.mediaPumped = false;
-        if (client.socket instanceof net.Socket) {
-          client.socket.write(response, () => {
-            setTimeout(() => this.pumpPlayMedia(client), 100);
-          });
-        } else {
-          client.socket.write(response);
-          this.pumpPlayMedia(client);
-        }
+        client.socket.write(response);
+        this.pumpPlayMedia(client);
         this.emit("need_keyframe");
         break;
       }
@@ -1387,16 +1443,22 @@ export class RtspServer extends EventEmitter {
         if (!hasPps && this.pps) missing.push(this.pps);
         if (missing.length > 0) nalUnits.unshift(...missing);
       }
-      this.lastKeyframe = frameData;
-      this.gopCache = [frameData];
+      if (!targetClient) {
+        this.lastKeyframe = frameData;
+        this.gopCache = [frameData];
+      }
       if (targetClient) {
         targetClient.receivedKeyframe = true;
+        targetClient.waitLiveIdr = false;
       } else {
         for (const c of this.clients) {
-          if (c.isPlaying) c.receivedKeyframe = true;
+          if (c.isPlaying) {
+            c.receivedKeyframe = true;
+            c.waitLiveIdr = false;
+          }
         }
       }
-    } else if (this.gopCache.length > 0 && this.gopCache.length < 30) {
+    } else if (!targetClient && this.gopCache.length > 0 && this.gopCache.length < 30) {
       this.gopCache.push(frameData);
     }
 
@@ -1723,12 +1785,17 @@ export class AqaraCameraBridge extends EventEmitter {
   private discoveryDeadline: number = 0;
   private watchdogTimer: NodeJS.Timeout | null = null;
   private mediaKeepaliveTimer: NodeJS.Timeout | null = null;
+  private encoderKickTimer: NodeJS.Timeout | null = null;
   private cmdSeq: number = 10;
   private p2pConnectedAt: number = 0;
   private _loggedQuality: boolean = false;
   private _qualityAcked: boolean = false;
-  private _sawHd: boolean = false;
-  private _gopRestarted: boolean = false;
+  private _lowInitSent: boolean = false;
+  private _hdRaiseSent: boolean = false;
+  private _getFrameAfterVideo: boolean = false;
+  private _stallGraceUntil: number = 0;
+  private _seenW: number = 0;
+  private _seenH: number = 0;
 
   // --- Self-healing P2P state ---
   private desiredStreamActive: boolean = false; // user wants the stream up (HA p2p_stream ON)
@@ -1768,11 +1835,11 @@ export class AqaraCameraBridge extends EventEmitter {
     this.did = options.did;
     this.token = options.token;
     this.model = options.model || "";
-    // JSON 0x100E channel. 0=360p, 1=HD. Default HD.
+    // JSON 0x100E channel. Official dump: 0=max, 1=mid, 2=low.
     this.p2pQualityChannel =
       typeof options.p2pQualityChannel === "number"
         ? options.p2pQualityChannel
-        : 1;
+        : 0;
     this.cameraIp = options.cameraIp || null;
     this.cameraPort = options.cameraPort || 0;
     this.baseUrl = options.baseUrl || DEFAULT_CONFIG.BASE_URL;
@@ -1901,6 +1968,9 @@ export class AqaraCameraBridge extends EventEmitter {
           publicKey: devKeyObj,
         });
         const sharedKeyHex = sharedSecret.toString("hex");
+        // AES-CTR on G5 is only an inference from firmware imports. The
+        // captured working P2P path uses this KDF/ChaCha decryptor for both
+        // cameras, so it must not be selected by model name.
         const videoKeyHex = AqaraStreamDecryptor.deriveKey(
           this.did,
           sharedSecret,
@@ -1908,7 +1978,7 @@ export class AqaraCameraBridge extends EventEmitter {
         this.decryptor = new AqaraStreamDecryptor(videoKeyHex);
         this.emit(
           "info",
-          `Computed X25519 shared: ${sharedKeyHex}, video key (sha256(did|shared)): ${videoKeyHex}`,
+          `Computed X25519 shared: ${sharedKeyHex}, video key: ${videoKeyHex} [ChaCha20]`,
         );
       } catch (err: any) {
         this.emit(
@@ -1955,11 +2025,7 @@ export class AqaraCameraBridge extends EventEmitter {
         this.rtspServer = new RtspServer(this.rtspPort, this.did);
         this.rtspServer.isHevc = false;
         this.rtspServer.on("need_keyframe", () => {
-          // 0x1018 GET_FRAME is a snapshot. Repeating it after the first IDR
-          // aborts the live GOP (one still, then watchdog).
-          if (this.isConnected && !this.hasSeenKeyframe) {
-            this.requestLiveKeyframe();
-          }
+          this.emit("need_keyframe");
         });
         await this.rtspServer.start();
         this.emit(
@@ -2089,6 +2155,10 @@ export class AqaraCameraBridge extends EventEmitter {
       return;
     const now = Date.now();
     const dead = !this.isConnected;
+    // UDP still flowing (mid-IDR or leftover P-bytes) — do not stall-resurrect.
+    if (!dead && now - this.lastVideoFrameAt < this.stallTimeoutMs) {
+      return;
+    }
     // Do NOT tear down a live P2P session that has not produced an IDR yet.
     // lastVideoFrameAt is stamped at punch/RDY, so an 8s stall was killing
     // the session while the camera was still warming — ⏳ forever, VLC PLAY
@@ -2097,6 +2167,7 @@ export class AqaraCameraBridge extends EventEmitter {
     const stalled =
       this.isConnected &&
       this.hasSeenKeyframe &&
+      now > this._stallGraceUntil &&
       now - this.lastVideoFrameAt > this.stallTimeoutMs;
     const firstFrameGaveUp =
       this.isConnected &&
@@ -2139,6 +2210,10 @@ export class AqaraCameraBridge extends EventEmitter {
     if (this.mediaKeepaliveTimer) {
       clearInterval(this.mediaKeepaliveTimer);
       this.mediaKeepaliveTimer = null;
+    }
+    if (this.encoderKickTimer) {
+      clearTimeout(this.encoderKickTimer);
+      this.encoderKickTimer = null;
     }
     this.clearTalkbackRetries();
     if (this.socket) {
@@ -2306,12 +2381,17 @@ export class AqaraCameraBridge extends EventEmitter {
         this.p2pConnectedAt = Date.now();
         this._loggedQuality = false;
         this._qualityAcked = false;
-        this._sawHd = false;
-        this._gopRestarted = false;
+        this._lowInitSent = false;
+        this._hdRaiseSent = false;
+        this._getFrameAfterVideo = false;
+        this._stallGraceUntil = 0;
         this._ch3Log = 0;
         this.lastMediaIdx = -1;
         this.lastMediaPkt = null;
         if (this.discoveryTimer) clearInterval(this.discoveryTimer);
+        console.log(
+          `🔗 [${this.did}] P2P ready ${this.cameraIp}:${this.cameraPort}`,
+        );
         this.emit("connected", { ip: this.cameraIp, port: this.cameraPort });
         if (this.skipVideo) {
           this.startSessionFlow(true); // talkback-only: login but no video stream
@@ -2338,9 +2418,8 @@ export class AqaraCameraBridge extends EventEmitter {
       const data = payload.subarray(4);
 
       this.queueAck(chan, idx);
-      // Media ACKs must go out immediately. Batching 8 during a 280-packet
-      // IDR burst made the camera stop after the keyframe — no P-frames,
-      // watchdog, VLC disconnect.
+      // Large IDRs arrive in a burst; delayed ACKs can make a camera stop
+      // sending before the next P-frame.
       if (chan === 1 || chan === 4) this.flushAcks(chan);
 
       if (chan === 0) {
@@ -2359,6 +2438,10 @@ export class AqaraCameraBridge extends EventEmitter {
         chan === 5 ||
         isAvioVideoHeader(data)
       ) {
+        if (this.encoderKickTimer) {
+          clearTimeout(this.encoderKickTimer);
+          this.encoderKickTimer = null;
+        }
         this.handleVideoData(idx, data);
       } else if (this._vidPktCount < 8) {
         console.log(
@@ -2388,8 +2471,7 @@ export class AqaraCameraBridge extends EventEmitter {
         device_id: this.did,
         timestamp: String(this.signTime || Date.now()),
       });
-      if (process.env.DEBUG)
-        console.log(`📤 [Login] Sending login attempt ${loginAttempts + 1}`);
+      console.log(`📤 [${this.did}] 0x1000 login attempt ${loginAttempts + 1}`);
       this.sendEncDrw(
         0,
         this.ch0Seq++,
@@ -2421,20 +2503,14 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     }, 2500);
 
-    // 5. Do not poll 0x1018 (GET_FRAME snapshot) or empty 0x101C (record list).
-    // Quality is set once by StartVideoCmdContent on 0x1003. Repeating JSON
-    // 0x100E {"channel":0} was pinning the encoder on 360p after talkback.
-    if (this.mediaKeepaliveTimer) clearInterval(this.mediaKeepaliveTimer);
-    this.mediaKeepaliveTimer = setInterval(() => {
-      if (!this.isConnected || this.talkbackOnly) return;
-      if (
-        process.env.STREAM_QUALITY_JSON &&
-        process.env.STREAM_QUALITY_JSON !== "skip" &&
-        !this._qualityAcked
-      ) {
-        this.sendQualitySwitch();
-      }
-    }, 5000);
+    // Do not poll 0x1018 (GET_FRAME snapshot) or 0x101C ch3 (record list).
+    // JSON 0x100E on a live GOP aborts it (0x100F success, then silence,
+    // then the 8s stall watchdog resurrects). Quality is a later live switch
+    // with a payload we have not captured yet — not JSON after the first IDR.
+    if (this.mediaKeepaliveTimer) {
+      clearInterval(this.mediaKeepaliveTimer);
+      this.mediaKeepaliveTimer = null;
+    }
   }
 
   private requestLiveKeyframe(): void {
@@ -2446,20 +2522,32 @@ export class AqaraCameraBridge extends EventEmitter {
     );
   }
 
-  /** Empty 0x1002 starts a live GOP but drops HD. Skip if we already have it. */
-  private maybeStartDefaultGop(): void {
-    if (!this.isConnected || this.talkbackOnly || this._gopRestarted) return;
-    if (this._sawHd) return;
-    this._gopRestarted = true;
-    console.log(
-      `📤 [${this.did}] 0x1002 GOP fallback — no HD IDR after quality switch`,
-    );
-    this.sendEncDrw(
-      0,
-      this.ch0Seq++,
-      buildLumiFrame(LUMI_TYPE_SESSION_START, Buffer.alloc(0), this.cmdSeq++),
-    );
-    this.requestLiveKeyframe();
+  /**
+   * Official startLiveVideo is empty 0x1002. A cold encoder (the camera that
+   * lost the P2P race) sometimes needs a second 0x1002, then JSON 0x100E.
+   */
+  private scheduleEncoderKick(): void {
+    if (this.encoderKickTimer) {
+      clearTimeout(this.encoderKickTimer);
+      this.encoderKickTimer = null;
+    }
+    this.encoderKickTimer = setTimeout(() => {
+      this.encoderKickTimer = null;
+      if (!this.isConnected || this.talkbackOnly || this._vidPktCount > 0)
+        return;
+      console.log(`📤 [${this.did}] 0x1002 kick — no ch1 after session`);
+      this.sendEncDrw(
+        0,
+        this.ch0Seq++,
+        buildLumiFrame(LUMI_TYPE_SESSION_START, Buffer.alloc(0), this.cmdSeq++),
+      );
+      this.encoderKickTimer = setTimeout(() => {
+        this.encoderKickTimer = null;
+        if (!this.isConnected || this.talkbackOnly || this._vidPktCount > 0)
+          return;
+        this.sendQualitySwitch(this.streamQualityChannel(), "kick");
+      }, 1500);
+    }, 1500);
   }
 
   private sendStreamHeartbeat(): void {
@@ -2526,21 +2614,16 @@ export class AqaraCameraBridge extends EventEmitter {
   ): Promise<void> {
     if (frameType === LUMI_TYPE_LOGIN_RESP) {
       const bodyStr = data.toString();
-      if (process.env.DEBUG || data.length > 60)
-        console.log(
-          `📨 [${this.did}] Camera Lumi Login Resp (len=${data.length}):`,
-          bodyStr,
-        );
-      if (process.env.DEBUG)
-        console.log(
-          `📥 [Login] Login response received, talkbackOnly=${this.talkbackOnly}, sessionStarted=${this.sessionStarted}`,
-        );
+      console.log(
+        `📨 [${this.did}] 0x1001 login ${data.length}B ${bodyStr.replace(/[^\x20-\x7e]/g, ".").slice(0, 80)}`,
+      );
       if (!this.sessionStarted) {
         this.sessionStarted = true;
         this.isStreamStarted = true;
         this._loggedResolution = false;
         this._loggedAudio = false;
 
+        console.log(`📤 [${this.did}] 0x1002 session start`);
         this.sendEncDrw(
           0,
           this.ch0Seq++,
@@ -2556,27 +2639,26 @@ export class AqaraCameraBridge extends EventEmitter {
       this.emit("p2p_session_ready");
       if (!this.talkbackOnly && !this.liveStreamRequested) {
         this.liveStreamRequested = true;
-        this.sendQualitySwitch();
-        this.requestLiveKeyframe();
+        console.log(
+          `📨 [${this.did}] 0x1003 session ready, 0x1004 audio start`,
+        );
+        // Empty 0x1002 already started the default GOP. Official raises HD
+        // with JSON 0x100E only after P-frames are flowing. Kick a silent
+        // encoder — whichever camera lost the race — without waiting 45s.
         this.sendEncDrw(
           0,
           this.ch0Seq++,
           buildLumiFrame(LUMI_TYPE_AUDIO_START, Buffer.alloc(0), this.cmdSeq++),
         );
+        // One initial request starts a fresh decodable GOP. It is deliberately
+        // not repeated by RTSP PLAY, where it would interrupt live video.
+        this.requestLiveKeyframe();
+        this.scheduleEncoderKick();
       }
     } else if (frameType === LUMI_TYPE_QUALITY_RESP) {
       this._qualityAcked = true;
-      if (!this._loggedQuality) {
-        this._loggedQuality = true;
-        const txt = data.toString("utf8").replace(/[^\x20-\x7e]/g, ".");
-        console.log(
-          `✅ [${this.did}] 0x100F changeStreamResolution channel=${this.streamQualityChannel()} ${data.length}B ${txt}`,
-        );
-        this.requestLiveKeyframe();
-        // Empty 0x1002 restarts the GOP at 360p. Only do it if HD never
-        // arrived — better a live SD GOP than a single HD still.
-        setTimeout(() => this.maybeStartDefaultGop(), 2500);
-      }
+      const txt = data.toString("utf8").replace(/[^\x20-\x7e]/g, ".");
+      console.log(`✅ [${this.did}] 0x100F ${data.length}B ${txt}`);
     } else if (frameType === LUMI_TYPE_KEYFRAME_RESP) {
       if (this.frameCount === 0 && this._vidPktCount < 2) {
         const txt = data.toString("utf8").replace(/[^\x20-\x7e]/g, ".");
@@ -2619,7 +2701,7 @@ export class AqaraCameraBridge extends EventEmitter {
     }
   }
 
-  /** JSON 0x100E channel and StartVideo.channel. 1=HD, 0=Low. Env STREAM_QUALITY overrides. */
+  /** JSON 0x100E channel. Official dump: 0=max, 1=mid, 2=low. Env STREAM_QUALITY overrides. */
   private streamQualityChannel(): number {
     const env = process.env.STREAM_QUALITY;
     if (env && /^\d+$/.test(env)) return parseInt(env, 10);
@@ -2627,32 +2709,36 @@ export class AqaraCameraBridge extends EventEmitter {
   }
 
   /**
-   * 0x100E changeStreamResolution. Aqara Home sends JSON `{"channel":N}`
-   * (1=HD). Binary 16-byte StartVideo acks with empty 0x100F and no video.
-   * STREAM_QUALITY_JSON overrides the body (probe harness).
+   * Live raise via 0x100E. Official: empty 0x1002 starts at last quality
+   * (often 360p); after GOP is up, `{"channel":0}` is max and does not stop
+   * the stream. Do not send this before P-frames exist.
    */
-  private sendQualitySwitch(): void {
+  private sendQualitySwitch(channel: number, why: string): void {
     if (!this.isConnected) return;
     if (process.env.STREAM_QUALITY_JSON === "skip") return;
-    const body = this.buildQualityPayload();
+    if (why === "init-low") {
+      if (this._lowInitSent) return;
+      this._lowInitSent = true;
+    } else if (why === "raise") {
+      if (this._hdRaiseSent) return;
+      this._hdRaiseSent = true;
+    }
+    const raw = process.env.STREAM_QUALITY_JSON;
+    const body =
+      raw && raw !== "skip"
+        ? Buffer.from(raw)
+        : Buffer.from(JSON.stringify({ channel }));
     const utf = body.toString("utf8");
     const looksJson = utf.startsWith("{") || utf.startsWith("[");
     console.log(
-      `📤 [${this.did}] 0x100E ${looksJson ? utf : body.toString("hex")}`,
+      `📤 [${this.did}] 0x100E ${why} ${looksJson ? utf : body.toString("hex")}`,
     );
     this.sendEncDrw(
       0,
       this.ch0Seq++,
       buildLumiFrame(LUMI_TYPE_QUALITY, body, this.cmdSeq++),
     );
-  }
-
-  private buildQualityPayload(): Buffer {
-    const raw = process.env.STREAM_QUALITY_JSON;
-    if (raw && raw !== "skip") return Buffer.from(raw);
-    return Buffer.from(
-      JSON.stringify({ channel: this.streamQualityChannel() }),
-    );
+    this._stallGraceUntil = Date.now() + 20000;
   }
 
   private frameStartSeq: number = 0;
@@ -2673,6 +2759,17 @@ export class AqaraCameraBridge extends EventEmitter {
     this.frameCount = 0;
     this.lastMediaIdx = -1;
     this.lastMediaPkt = null;
+    this.recentMediaPackets.clear();
+    this.hasSeenKeyframe = false;
+    this._loggedResolution = false;
+    this._lowInitSent = false;
+    this._hdRaiseSent = false;
+    this._getFrameAfterVideo = false;
+    this._stallGraceUntil = 0;
+    this._seenW = 0;
+    this._seenH = 0;
+    this._qualityAcked = false;
+    this._loggedQuality = false;
   }
   /** True only after the camera has acknowledged 0x1002 with 0x1003. */
   private p2pSessionReady: boolean = false;
@@ -2687,6 +2784,7 @@ export class AqaraCameraBridge extends EventEmitter {
   private _firstVideoPkt: boolean = true;
   private _loggedResolution: boolean = false;
   private _loggedAudio: boolean = false;
+  private _idrDumped: boolean = false;
   private _vidPktCount = 0;
   private _postIdrLog = 0;
 
@@ -2694,73 +2792,121 @@ export class AqaraCameraBridge extends EventEmitter {
   private lastAudioNonce: Buffer | null = null;
   private lastMediaIdx: number = -1;
   private lastMediaPkt: Buffer | null = null;
+  /** PPCS can retransmit an older DRW after newer fragments already arrived. */
+  private recentMediaPackets: Map<string, number> = new Map();
+
+  private isDuplicateMediaPacket(idx: number, data: Buffer): boolean {
+    const key = `${idx}:${data.length}:${crypto
+      .createHash("sha1")
+      .update(data)
+      .digest("hex")}`;
+    if (this.recentMediaPackets.has(key)) return true;
+    this.recentMediaPackets.set(key, Date.now());
+    if (this.recentMediaPackets.size > 1024) {
+      const cutoff = Date.now() - 10_000;
+      for (const [oldKey, seenAt] of this.recentMediaPackets) {
+        if (seenAt >= cutoff && this.recentMediaPackets.size <= 512) break;
+        this.recentMediaPackets.delete(oldKey);
+      }
+    }
+    return false;
+  }
+
+  private takeAudio(frames: Buffer[]): void {
+    for (const frame of frames) {
+      if (frame.length < 40) continue;
+      const nonce = frame.subarray(32, 40);
+      if (this.lastAudioNonce && nonce.equals(this.lastAudioNonce)) continue;
+      this.lastAudioNonce = Buffer.from(nonce);
+      this.processAudioFrame(frame);
+    }
+  }
 
   private async handleVideoData(idx: number, data: Buffer): Promise<void> {
     this._vidPktCount++;
+    this.lastVideoFrameAt = Date.now();
     this.emit("packet_data_ch1", idx, data);
-    // PPCS retransmits the same DRW. A new IDR also restarts idx at 0 —
-    // only skip an exact copy, not a new frame with the same index.
-    if (
-      this.lastMediaPkt &&
-      idx === this.lastMediaIdx &&
-      data.equals(this.lastMediaPkt)
-    ) {
+    // A new IDR can restart idx at 0, so dedupe by exact content as well as
+    // index. This also removes late retransmits such as an old P-frame after
+    // its successor has already reached the RTSP client.
+    if (this.isDuplicateMediaPacket(idx, data)) {
       return;
     }
     this.lastMediaIdx = idx;
     this.lastMediaPkt = Buffer.from(data);
 
-    // 1. Audio AVIO frames (0x0088) — own datagrams on the same PPCS channel.
-    // Do not fold them into the video byte stream.
-    if (data.length >= 40 && data.readUInt16LE(0) === AVIO_AUDIO) {
-      const payLen = data.readUInt32LE(28);
-      const frameLen = 40 + payLen;
-      if (payLen > 0 && payLen <= 4096 && frameLen <= data.length) {
-        const nonce = data.subarray(32, 40);
-        if (this.lastAudioNonce && nonce.equals(this.lastAudioNonce)) {
-          return;
-        }
-        this.lastAudioNonce = Buffer.from(nonce);
-        this.processAudioFrame(data.subarray(0, frameLen));
-        return;
-      }
+    // Own-datagram mic frames. Never prepend leftover video onto these.
+    if (isAvioAudioHeader(data) && data.length >= 40) {
+      const { audio, rest } = extractLeadingAudio(data);
+      this.takeAudio(audio);
+      if (!rest.length) return;
+      data = rest;
     }
 
     const logPkt =
-      this._vidPktCount <= 24 ||
-      (this.frameCount >= 1 && this._postIdrLog < 16);
+      this._vidPktCount <= 8 || (this.frameCount >= 1 && this._postIdrLog < 8);
     if (logPkt) {
-      if (this.frameCount >= 1 && this._vidPktCount > 24) this._postIdrLog++;
+      if (this.frameCount >= 1 && this._vidPktCount > 8) this._postIdrLog++;
+      const headHex = data.subarray(0, Math.min(64, data.length)).toString("hex");
       console.log(
         `📦 [${this.did}] ch1 #${this._vidPktCount} idx=${idx} ${data.length}B head=${data.subarray(0, Math.min(8, data.length)).toString("hex")} rem=${this.mediaStreamBuffer.length} frames=${this.frameCount}`,
       );
+      if (this._vidPktCount <= 3) {
+        console.log(
+          `   🔬 [${this.did}] ch1 raw(64B)=${headHex}`,
+        );
+      }
     }
 
     if (this.mediaStreamBuffer.length) {
-      if (isAvioVideoHeader(data)) {
+      if (isAvioVideoHeader(data) || isAvioAudioHeader(data)) {
+        // New aligned datagram — drain leftover audio, drop ciphertext junk.
+        const peeled = extractLeadingAudio(this.mediaStreamBuffer);
+        this.takeAudio(peeled.audio);
         this.mediaStreamBuffer = Buffer.alloc(0);
-      } else {
+      } else if (this.currentExpectedLen === 0) {
         data = Buffer.concat([this.mediaStreamBuffer, data]);
         this.mediaStreamBuffer = Buffer.alloc(0);
+        const peeled = extractLeadingAudio(data);
+        this.takeAudio(peeled.audio);
+        data = peeled.rest;
+      } else {
+        this.mediaStreamBuffer = Buffer.alloc(0);
       }
     }
 
-    // Only a datagram that *starts* with AVIO is a new frame. Scanning
-    // encrypted NAL payload for 4e00 false-starts and drops the IDR.
-    let isAvioHead = isAvioVideoHeader(data);
-    if (!isAvioHead && this.currentExpectedLen === 0) {
+    // Encrypted NAL datagrams often look like 4e00. Only start a new AVIO
+    // frame on idx=0 (or when idle / previous frame is complete).
+    let looksHeader = isAvioVideoHeader(data);
+    if (!looksHeader && this.currentExpectedLen === 0) {
       const off = findAvioOffset(data);
       if (off > 0) {
+        const peeled = extractLeadingAudio(data.subarray(0, off));
+        this.takeAudio(peeled.audio);
         data = data.subarray(off);
-        isAvioHead = true;
+        looksHeader = true;
       }
     }
+    const assembling = this.videoFrags.size > 0 && this.currentExpectedLen > 0;
+    const assembled =
+      assembling &&
+      this.currentAccumulatedLen + AVIO_SIZE_SLACK >= this.currentExpectedLen;
+    const isAvioHead = isNewAvioDatagram(
+      looksHeader,
+      idx,
+      assembling,
+      assembled,
+    );
 
     if (isAvioHead) {
-      if (this.videoFrags.size > 0) {
-        if (this.currentAccumulatedLen >= this.currentExpectedLen) {
-          this.flushCurrentFrame();
-        } else {
+      if (assembling) {
+        if (assembled) this.flushCurrentFrame();
+        else {
+          if (this.frameCount < 8) {
+            console.log(
+              `📐 [${this.did}] AVIO restart idx=0 drop ${this.currentAccumulatedLen}/${this.currentExpectedLen}B`,
+            );
+          }
           this.videoFrags.clear();
           this.currentExpectedLen = 0;
           this.currentAccumulatedLen = 0;
@@ -2769,17 +2915,19 @@ export class AqaraCameraBridge extends EventEmitter {
       this.frameStartSeq = idx;
       this.currentExpectedLen = 32 + data.readUInt32LE(28);
       this.currentAccumulatedLen = 0;
-      if (this.frameCount < 3) {
+      if (this.frameCount < 8) {
         console.log(
-          `📐 [${this.did}] AVIO start idx=${idx} expect ${this.currentExpectedLen}B`,
+          `📐 [${this.did}] AVIO start idx=${idx} expect ${this.currentExpectedLen}B flags=${data.readUInt16LE(2)}`,
         );
       }
     }
 
     if (this.currentExpectedLen === 0) {
-      // Continuation without a parsed header. Stash until a header shows up.
+      const peeled = extractLeadingAudio(data);
+      this.takeAudio(peeled.audio);
+      const kept = keepAvioRemainder(peeled.rest);
       this.mediaStreamBuffer =
-        data.length > 2_000_000 ? data.subarray(data.length - 32) : data;
+        kept.length > 2_000_000 ? kept.subarray(kept.length - 32) : kept;
       return;
     }
 
@@ -2792,24 +2940,26 @@ export class AqaraCameraBridge extends EventEmitter {
     if (!this.videoFrags.has(idx)) {
       this.videoFrags.set(idx, data);
       this.currentAccumulatedLen += data.length;
-      this.lastVideoFrameAt = Date.now();
     }
 
     if (
-      this._vidPktCount % 40 === 0 &&
+      this.frameCount < 8 &&
       this.currentExpectedLen > 0 &&
-      this.frameCount < 3
+      this._vidPktCount % 40 === 0
     ) {
       console.log(
         `📐 [${this.did}] assembling ${this.currentAccumulatedLen}/${this.currentExpectedLen}B n=${this.videoFrags.size}`,
       );
     }
 
-    const complete =
-      this.currentExpectedLen > 0 &&
-      this.currentAccumulatedLen >= this.currentExpectedLen;
-    const lastFrag = data.length < 1024 && this.videoFrags.size > 1;
-    if (complete || lastFrag) {
+    if (
+      shouldFlushAvio(
+        this.currentAccumulatedLen,
+        this.currentExpectedLen,
+        data.length,
+        this.videoFrags.size,
+      )
+    ) {
       this.flushCurrentFrame();
     }
   }
@@ -2836,7 +2986,10 @@ export class AqaraCameraBridge extends EventEmitter {
 
     const { frames, remainder } = splitAvioFrames(full);
     for (const frame of frames) this.processVideoFrame(frame);
-    if (remainder.length) this.mediaStreamBuffer = remainder;
+    const peeled = extractLeadingAudio(remainder);
+    this.takeAudio(peeled.audio);
+    // Keep a P-frame/audio header tail; drop IDR ciphertext that is not AVIO.
+    this.mediaStreamBuffer = keepAvioRemainder(peeled.rest);
   }
 
   private processVideoFrame(full: Buffer): void {
@@ -2850,9 +3003,8 @@ export class AqaraCameraBridge extends EventEmitter {
         h16 = full.readUInt16LE(18);
       const w20 = full.readUInt16LE(20),
         h20 = full.readUInt16LE(22);
-      const channel = parseInt(process.env.STREAM_QUALITY ?? "0", 10) || 0;
       console.log(
-        `🖼️ [${this.did}] STREAM_QUALITY=${channel} | AVIO header(hex)=${full.subarray(0, 32).toString("hex")} | ` +
+        `🖼️ [${this.did}] STREAM_QUALITY=${this.streamQualityChannel()} | AVIO header(hex)=${full.subarray(0, 32).toString("hex")} | ` +
           `candidate res @16:${w16}x${h16} @20:${w20}x${h20}`,
       );
     }
@@ -2863,7 +3015,8 @@ export class AqaraCameraBridge extends EventEmitter {
     let rawH264: Buffer = full.subarray(32);
     if (this.decryptor && full.length > 48) {
       try {
-        rawH264 = this.decryptor.decryptToAnnexB(full.subarray(32));
+        const payload = full.subarray(32);
+        rawH264 = this.decryptor.decryptToAnnexB(payload);
       } catch {
         try {
           rawH264 = this.decryptor.decrypt(full.subarray(32));
@@ -2892,7 +3045,6 @@ export class AqaraCameraBridge extends EventEmitter {
     this.ingestParamSets(rawH264, isHevcFrame);
     const w = full.length >= 22 ? full.readUInt16LE(16) : 0;
     const h = full.length >= 22 ? full.readUInt16LE(20) : 0;
-    if (w >= 1200 || h >= 700) this._sawHd = true;
     if (this.frameCount <= 12 || this.frameCount % 30 === 0) {
       const types: number[] = [];
       walkAnnexBNals(rawH264, (nal) => {
@@ -2905,6 +3057,32 @@ export class AqaraCameraBridge extends EventEmitter {
     }
 
     this.lastVideoFrameAt = Date.now();
+
+    if (
+      isKeyframe &&
+      this._seenW > 0 &&
+      (w !== this._seenW || h !== this._seenH) &&
+      this.rtspServer
+    ) {
+      this.rtspServer.holdForNewIdr();
+    }
+    if (w > 0) this._seenW = w;
+    if (h > 0) this._seenH = h;
+
+    // Official: empty 0x1002 starts at the camera's last quality (often 360p).
+    // After the GOP is live, 0x100E raises to the requested quality.
+    const want = this.streamQualityChannel();
+    const alreadyRequested =
+      (want === 0 && (w >= 1200 || h >= 700)) ||
+      (want === 3 && (w >= 1400 || h >= 1400));
+    if (!this._hdRaiseSent && this.hasSeenKeyframe && this.frameCount >= 8) {
+      if (alreadyRequested) {
+        this._hdRaiseSent = true;
+      } else {
+        this._loggedResolution = false;
+        this.sendQualitySwitch(want, "raise");
+      }
+    }
 
     const haveParams = this.rtspServer
       ? isHevcFrame
@@ -3508,6 +3686,10 @@ export class AqaraCameraBridge extends EventEmitter {
     if (this.mediaKeepaliveTimer) {
       clearInterval(this.mediaKeepaliveTimer);
       this.mediaKeepaliveTimer = null;
+    }
+    if (this.encoderKickTimer) {
+      clearTimeout(this.encoderKickTimer);
+      this.encoderKickTimer = null;
     }
     this.clearTalkbackRetries();
     if (this.rtspServer) this.rtspServer.stop();

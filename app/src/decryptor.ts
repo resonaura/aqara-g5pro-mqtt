@@ -1,6 +1,20 @@
 import * as crypto from "crypto";
 import { EventEmitter } from "events";
 
+function hasAnnexBPrefix(nal: Buffer): boolean {
+  return (
+    nal.length >= 3 &&
+    nal[0] === 0 &&
+    nal[1] === 0 &&
+    (nal[2] === 1 || (nal.length >= 4 && nal[2] === 0 && nal[3] === 1))
+  );
+}
+
+function ensureAnnexB(data: Buffer): Buffer {
+  if (hasAnnexBPrefix(data)) return data;
+  return Buffer.concat([Buffer.from([0, 0, 0, 1]), data]);
+}
+
 // ChaCha20 block function (original djb variant: 64-bit counter + 64-bit nonce)
 function quarterRound(s: number[], a: number, b: number, c: number, d: number) {
   s[a] = (s[a] + s[b]) >>> 0;
@@ -44,7 +58,44 @@ function chacha20Block(key: Buffer, nonce8: Buffer, counter: number): Buffer {
   return out;
 }
 
-/**
+// HSalsa20 is the key derivation used by the captured working live-P2P path.
+// This is deliberately kept separate from the per-frame ChaCha20 cipher below.
+function hsalsa20(sharedSecret: Buffer): Buffer {
+  const R = (v: number, c: number) => ((v << c) | (v >>> (32 - c))) >>> 0;
+  const c0 = 0x61707865, c1 = 0x3320646e, c2 = 0x79622d32, c3 = 0x6b206574;
+  const k0 = sharedSecret.readUInt32LE(0), k1 = sharedSecret.readUInt32LE(4),
+    k2 = sharedSecret.readUInt32LE(8), k3 = sharedSecret.readUInt32LE(12),
+    k4 = sharedSecret.readUInt32LE(16), k5 = sharedSecret.readUInt32LE(20),
+    k6 = sharedSecret.readUInt32LE(24), k7 = sharedSecret.readUInt32LE(28);
+  let x0 = c0, x1 = k0, x2 = k1, x3 = k2;
+  let x4 = k3, x5 = c1, x6 = 0, x7 = 0;
+  let x8 = 0, x9 = 0, x10 = c2, x11 = k4;
+  let x12 = k5, x13 = k6, x14 = k7, x15 = c3;
+  for (let i = 0; i < 10; i++) {
+    x4 = (x4 ^ R((x0 + x12) >>> 0, 7)) >>> 0; x8 = (x8 ^ R((x4 + x0) >>> 0, 9)) >>> 0;
+    x12 = (x12 ^ R((x8 + x4) >>> 0, 13)) >>> 0; x0 = (x0 ^ R((x12 + x8) >>> 0, 18)) >>> 0;
+    x9 = (x9 ^ R((x5 + x1) >>> 0, 7)) >>> 0; x13 = (x13 ^ R((x9 + x5) >>> 0, 9)) >>> 0;
+    x1 = (x1 ^ R((x13 + x9) >>> 0, 13)) >>> 0; x5 = (x5 ^ R((x1 + x13) >>> 0, 18)) >>> 0;
+    x14 = (x14 ^ R((x10 + x6) >>> 0, 7)) >>> 0; x2 = (x2 ^ R((x14 + x10) >>> 0, 9)) >>> 0;
+    x6 = (x6 ^ R((x2 + x14) >>> 0, 13)) >>> 0; x10 = (x10 ^ R((x6 + x2) >>> 0, 18)) >>> 0;
+    x3 = (x3 ^ R((x15 + x11) >>> 0, 7)) >>> 0; x7 = (x7 ^ R((x3 + x15) >>> 0, 9)) >>> 0;
+    x11 = (x11 ^ R((x7 + x3) >>> 0, 13)) >>> 0; x15 = (x15 ^ R((x11 + x7) >>> 0, 18)) >>> 0;
+    x1 = (x1 ^ R((x0 + x3) >>> 0, 7)) >>> 0; x2 = (x2 ^ R((x1 + x0) >>> 0, 9)) >>> 0;
+    x3 = (x3 ^ R((x2 + x1) >>> 0, 13)) >>> 0; x0 = (x0 ^ R((x3 + x2) >>> 0, 18)) >>> 0;
+    x6 = (x6 ^ R((x5 + x4) >>> 0, 7)) >>> 0; x7 = (x7 ^ R((x6 + x5) >>> 0, 9)) >>> 0;
+    x4 = (x4 ^ R((x7 + x6) >>> 0, 13)) >>> 0; x5 = (x5 ^ R((x4 + x7) >>> 0, 18)) >>> 0;
+    x11 = (x11 ^ R((x10 + x9) >>> 0, 7)) >>> 0; x8 = (x8 ^ R((x11 + x10) >>> 0, 9)) >>> 0;
+    x9 = (x9 ^ R((x8 + x11) >>> 0, 13)) >>> 0; x10 = (x10 ^ R((x9 + x8) >>> 0, 18)) >>> 0;
+    x12 = (x12 ^ R((x15 + x14) >>> 0, 7)) >>> 0; x13 = (x13 ^ R((x12 + x15) >>> 0, 9)) >>> 0;
+    x14 = (x14 ^ R((x13 + x12) >>> 0, 13)) >>> 0; x15 = (x15 ^ R((x14 + x13) >>> 0, 18)) >>> 0;
+  }
+  const out = Buffer.alloc(32);
+  out.writeUInt32LE(x0, 0); out.writeUInt32LE(x5, 4); out.writeUInt32LE(x10, 8); out.writeUInt32LE(x15, 12);
+  out.writeUInt32LE(x6, 16); out.writeUInt32LE(x7, 20); out.writeUInt32LE(x8, 24); out.writeUInt32LE(x9, 28);
+  return out;
+}
+
+  /**
  * Aqara E1 video frame decryption (recovered from
  * LMLKMHFrameEncryptManager decryptVideo:length:outBuf:outLength:shareKey:codeId:
  * in AqaraHome 5.2.8 arm64).
@@ -57,104 +108,10 @@ function chacha20Block(key: Buffer, nonce8: Buffer, counter: number): Buffer {
  *
  * Decryption: for each NAL (a=offset, b=length): XOR 16-byte blocks located at
  * positions 32, 192, 352, ... (stride 160) within the NAL, while pos + 16 <= b.
- * Every block uses the SAME keystream: first 16 bytes of
- * ChaCha20(key=shareKey, nonce=frame[0:8], counter=0).
  */
-function hsalsa20(sharedSecret: Buffer): Buffer {
-  const R = (v: number, c: number) => ((v << c) | (v >>> (32 - c))) >>> 0;
-  const c0 = 0x61707865,
-    c1 = 0x3320646e,
-    c2 = 0x79622d32,
-    c3 = 0x6b206574;
-  const k0 = sharedSecret.readUInt32LE(0),
-    k1 = sharedSecret.readUInt32LE(4),
-    k2 = sharedSecret.readUInt32LE(8),
-    k3 = sharedSecret.readUInt32LE(12),
-    k4 = sharedSecret.readUInt32LE(16),
-    k5 = sharedSecret.readUInt32LE(20),
-    k6 = sharedSecret.readUInt32LE(24),
-    k7 = sharedSecret.readUInt32LE(28);
-
-  let x0 = c0,
-    x1 = k0,
-    x2 = k1,
-    x3 = k2;
-  let x4 = k3,
-    x5 = c1,
-    x6 = 0,
-    x7 = 0;
-  let x8 = 0,
-    x9 = 0,
-    x10 = c2,
-    x11 = k4;
-  let x12 = k5,
-    x13 = k6,
-    x14 = k7,
-    x15 = c3;
-
-  for (let i = 0; i < 10; i++) {
-    // Column round
-    x4 = (x4 ^ R((x0 + x12) >>> 0, 7)) >>> 0;
-    x8 = (x8 ^ R((x4 + x0) >>> 0, 9)) >>> 0;
-    x12 = (x12 ^ R((x8 + x4) >>> 0, 13)) >>> 0;
-    x0 = (x0 ^ R((x12 + x8) >>> 0, 18)) >>> 0;
-
-    x9 = (x9 ^ R((x5 + x1) >>> 0, 7)) >>> 0;
-    x13 = (x13 ^ R((x9 + x5) >>> 0, 9)) >>> 0;
-    x1 = (x1 ^ R((x13 + x9) >>> 0, 13)) >>> 0;
-    x5 = (x5 ^ R((x1 + x13) >>> 0, 18)) >>> 0;
-
-    x14 = (x14 ^ R((x10 + x6) >>> 0, 7)) >>> 0;
-    x2 = (x2 ^ R((x14 + x10) >>> 0, 9)) >>> 0;
-    x6 = (x6 ^ R((x2 + x14) >>> 0, 13)) >>> 0;
-    x10 = (x10 ^ R((x6 + x2) >>> 0, 18)) >>> 0;
-
-    x3 = (x3 ^ R((x15 + x11) >>> 0, 7)) >>> 0;
-    x7 = (x7 ^ R((x3 + x15) >>> 0, 9)) >>> 0;
-    x11 = (x11 ^ R((x7 + x3) >>> 0, 13)) >>> 0;
-    x15 = (x15 ^ R((x11 + x7) >>> 0, 18)) >>> 0;
-
-    // Row round
-    x1 = (x1 ^ R((x0 + x3) >>> 0, 7)) >>> 0;
-    x2 = (x2 ^ R((x1 + x0) >>> 0, 9)) >>> 0;
-    x3 = (x3 ^ R((x2 + x1) >>> 0, 13)) >>> 0;
-    x0 = (x0 ^ R((x3 + x2) >>> 0, 18)) >>> 0;
-
-    x6 = (x6 ^ R((x5 + x4) >>> 0, 7)) >>> 0;
-    x7 = (x7 ^ R((x6 + x5) >>> 0, 9)) >>> 0;
-    x4 = (x4 ^ R((x7 + x6) >>> 0, 13)) >>> 0;
-    x5 = (x5 ^ R((x4 + x7) >>> 0, 18)) >>> 0;
-
-    x11 = (x11 ^ R((x10 + x9) >>> 0, 7)) >>> 0;
-    x8 = (x8 ^ R((x11 + x10) >>> 0, 9)) >>> 0;
-    x9 = (x9 ^ R((x8 + x11) >>> 0, 13)) >>> 0;
-    x10 = (x10 ^ R((x9 + x8) >>> 0, 18)) >>> 0;
-
-    x12 = (x12 ^ R((x15 + x14) >>> 0, 7)) >>> 0;
-    x13 = (x13 ^ R((x12 + x15) >>> 0, 9)) >>> 0;
-    x14 = (x14 ^ R((x13 + x12) >>> 0, 13)) >>> 0;
-    x15 = (x15 ^ R((x14 + x13) >>> 0, 18)) >>> 0;
-  }
-
-  const out = Buffer.alloc(32);
-  out.writeUInt32LE(x0, 0);
-  out.writeUInt32LE(x5, 4);
-  out.writeUInt32LE(x10, 8);
-  out.writeUInt32LE(x15, 12);
-  out.writeUInt32LE(x6, 16);
-  out.writeUInt32LE(x7, 20);
-  out.writeUInt32LE(x8, 24);
-  out.writeUInt32LE(x9, 28);
-  return out;
-}
-
 export class AqaraStreamDecryptor extends EventEmitter {
   private keyBuf: Buffer;
 
-  /**
-   * keyHex = HSalsa20(X25519_shared_secret) — recovered directly from
-   * -[MHFrameEncryptManager getShareKey:remotePublicKey:myPrivateKey:] in AqaraHome.
-   */
   constructor(keyHex: string) {
     super();
     this.keyBuf = Buffer.from(keyHex, "hex");
@@ -165,6 +122,12 @@ export class AqaraStreamDecryptor extends EventEmitter {
     }
   }
 
+  /**
+   * The last known-good live path derives the sparse-ChaCha key with HSalsa20.
+   * This must remain independent from the DID; selecting SHA-256 here changes
+   * only encrypted 16-byte spans, which is enough to create striped H.264
+   * pictures while still leaving the stream superficially decodable.
+   */
   public static deriveKey(_did: string, sharedSecret: Buffer): Buffer {
     return hsalsa20(sharedSecret);
   }
@@ -298,13 +261,9 @@ export class AqaraStreamDecryptor extends EventEmitter {
    */
   public decryptToAnnexB(frame: Buffer): Buffer {
     const tail = this.decryptFrame(frame);
-    // Proven path from live-p2p-screenshot.py: after ChaCha the access unit
-    // already contains Annex-B `00 00 00 01 67` (SPS) + PPS + IDR. Prefer that
-    // over the NAL table — wrapping the whole tail as one type-5 NAL is what
-    // made ffmpeg exit with "non-existing PPS 0 referenced".
-    const sc4 = tail.indexOf(Buffer.from([0, 0, 0, 1]));
-    if (sc4 >= 0 && sc4 + 5 < tail.length) {
-      return tail.subarray(sc4);
+    const startCode = tail.indexOf(Buffer.from([0, 0, 0, 1]));
+    if (startCode >= 0 && startCode + 5 < tail.length) {
+      return tail.subarray(startCode);
     }
     if (frame.length < 10) return ensureAnnexB(tail);
     const nalCount = frame[8];
@@ -327,18 +286,4 @@ export class AqaraStreamDecryptor extends EventEmitter {
   }
 
   public destroy(): void {}
-}
-
-function hasAnnexBPrefix(nal: Buffer): boolean {
-  return (
-    nal.length >= 3 &&
-    nal[0] === 0 &&
-    nal[1] === 0 &&
-    (nal[2] === 1 || (nal.length >= 4 && nal[2] === 0 && nal[3] === 1))
-  );
-}
-
-function ensureAnnexB(data: Buffer): Buffer {
-  if (hasAnnexBPrefix(data)) return data;
-  return Buffer.concat([Buffer.from([0, 0, 0, 1]), data]);
 }

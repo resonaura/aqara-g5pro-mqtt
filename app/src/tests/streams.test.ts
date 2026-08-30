@@ -54,18 +54,34 @@ test("videoStreamIndex maps 1520p/1080p/Low to 0/1/2", () => {
   assert.equal(videoStreamIndex(null), 0);
 });
 
-test("jsonQualityChannel maps HD to 1 and Low to 0", () => {
+test("jsonQualityChannel maps max to 0, mid to 1, Low to 2 for standard cameras", () => {
   assert.equal(
-    jsonQualityChannel({ title: "1520p", height: 1520, channel: 1 }),
-    1,
+    jsonQualityChannel({ title: "1296p", height: 1296, channel: 1 }),
+    0,
   );
   assert.equal(
-    jsonQualityChannel({ title: "1080p", height: 1080, channel: 2 }),
+    jsonQualityChannel({ title: "720p", height: 720, channel: 2 }),
     1,
   );
   assert.equal(
     jsonQualityChannel({ title: "360p", height: 360, channel: 4 }),
+    2,
+  );
+  assert.equal(jsonQualityChannel(null, "lumi.camera.acn006"), 0);
+});
+
+test("jsonQualityChannel maps G5 Pro (agl004) channels: 1520p->3, 1080p->0, 360p->2", () => {
+  assert.equal(
+    jsonQualityChannel({ title: "1520p", height: 1520, channel: 1 }, "lumi.camera.agl004"),
+    3,
+  );
+  assert.equal(
+    jsonQualityChannel({ title: "1080p", height: 1080, channel: 2 }, "lumi.camera.agl004"),
     0,
   );
-  assert.equal(jsonQualityChannel(null, "lumi.camera.agl004"), 1);
+  assert.equal(
+    jsonQualityChannel({ title: "360p", height: 360, channel: 4 }, "lumi.camera.agl004"),
+    2,
+  );
+  assert.equal(jsonQualityChannel(null, "lumi.camera.agl004"), 3);
 });
