@@ -583,11 +583,13 @@ export class RtspServer extends EventEmitter {
   private rtpSsrc: number = Math.floor(Math.random() * 0xffffffff);
   private videoRtpTimestamp: number =
     1 + Math.floor(Math.random() * 0x0fffffff);
+  private lastVideoRtpTimestamp: number = this.videoRtpTimestamp;
   private lastVideoSendAt: number = 0;
   private audioRtpSeq: number = 1 + Math.floor(Math.random() * 0xfffe);
   private audioRtpSsrc: number = Math.floor(Math.random() * 0xffffffff);
   private audioRtpTimestamp: number =
     1 + Math.floor(Math.random() * 0x0fffffff);
+  private lastAudioRtpTimestamp: number = this.audioRtpTimestamp;
   private baseWallClock: number = 0;
 
   // ── Jitter / Pacing buffer ──────────────────────────────────────────────
@@ -600,6 +602,9 @@ export class RtspServer extends EventEmitter {
   private audioQueue: Buffer[] = [];
   private audioPacer: NodeJS.Timeout | null = null;
   private audioPacerPrimed: boolean = false;
+  private audioIngressCount = 0;
+  private audioSentCount = 0;
+  private audioPacerUnderruns = 0;
   // Both observed cameras supply ~15 video frames/s (the status ticker adds
   // about 45 frames every 3 s).  Draining at 30 fps caused a repeating
   // burst/freeze pattern: the queue emptied in half the GOP interval.
@@ -821,13 +826,13 @@ export class RtspServer extends EventEmitter {
     if (this.audioPacer) return;
     this.audioPacer = setInterval(() => {
       if (!this.audioPacerPrimed) {
-        // Hold ~192 ms before the first packet.  Starting with one AU gives
-        // the next UDP jitter spike an audible hole immediately.
-        if (this.audioQueue.length < 3) return;
+        // The camera sends AAC in bursts.  Keep half a second before the
+        // first packet, otherwise the first small UDP gap drains the queue.
+        if (this.audioQueue.length < 8) return;
         this.audioPacerPrimed = true;
       }
       if (this.audioQueue.length === 0) {
-        this.audioPacerPrimed = false;
+        this.audioPacerUnderruns++;
         return;
       }
       // Audio is independently decodable: favour freshness over playing more
@@ -836,7 +841,16 @@ export class RtspServer extends EventEmitter {
         this.audioQueue.splice(0, this.audioQueue.length - 8);
       }
       const frame = this.audioQueue.shift();
-      if (frame) this.sendSingleAacFrame(frame);
+      if (frame) {
+        this.audioSentCount++;
+        this.sendSingleAacFrame(frame);
+        if (this.audioSentCount % 150 === 0) {
+          console.log(
+            `[RTSP] AAC pace in=${this.audioIngressCount} out=${this.audioSentCount} ` +
+              `queued=${this.audioQueue.length} underruns=${this.audioPacerUnderruns}`,
+          );
+        }
+      }
     }, 64);
   }
 
@@ -941,6 +955,10 @@ export class RtspServer extends EventEmitter {
     if (this.lastKeyframe) {
       client.waitLiveIdr = false;
       console.log(`[RTSP] PLAY client starting from cached IDR`);
+      // Drop P-frames queued before this client joined.  They may belong to
+      // an older GOP than the cached IDR and produce one gray/pixelated frame
+      // while VLC tries to stitch the two references together.
+      this.videoQueue.length = 0;
       this.sendFrameNow(this.lastKeyframe, client);
       return;
     }
@@ -1193,6 +1211,7 @@ export class RtspServer extends EventEmitter {
           );
         } else {
           this.audioQueue.push(Buffer.from(rawAac));
+          this.audioIngressCount++;
         }
         offset += adtsLen;
         frameCount++;
@@ -1202,6 +1221,7 @@ export class RtspServer extends EventEmitter {
             this.sendSingleAacFrame(audioData, timestampMs, targetClient);
           } else {
             this.audioQueue.push(Buffer.from(audioData));
+            this.audioIngressCount++;
           }
         }
         break;
@@ -1236,6 +1256,7 @@ export class RtspServer extends EventEmitter {
         Math.floor((timestampMs * 16) % 0xffffffff) >>> 0;
     }
     const rtpTimestamp = this.audioRtpTimestamp >>> 0;
+    this.lastAudioRtpTimestamp = rtpTimestamp;
     this.audioRtpTimestamp = (this.audioRtpTimestamp + 1024) >>> 0;
 
     // RFC 3640 AAC-hbr packet format:
@@ -1530,6 +1551,7 @@ export class RtspServer extends EventEmitter {
 
     // 90 kHz, 15 fps; match the output pacer and the measured camera cadence.
     const rtpTimestamp = this.videoRtpTimestamp >>> 0;
+    this.lastVideoRtpTimestamp = rtpTimestamp;
     this.videoRtpTimestamp = (this.videoRtpTimestamp + 6000) >>> 0;
     this.lastVideoSendAt = Date.now();
     const MAX_PAYLOAD_SIZE = 1380;
@@ -1703,7 +1725,7 @@ export class RtspServer extends EventEmitter {
       false,
       this.buildRtcpSr(
         this.rtpSsrc,
-        this.videoRtpTimestamp,
+        this.lastVideoRtpTimestamp,
         this.videoPktCount,
         this.videoOctetCount,
       ),
@@ -1713,7 +1735,7 @@ export class RtspServer extends EventEmitter {
       true,
       this.buildRtcpSr(
         this.audioRtpSsrc,
-        this.audioRtpTimestamp,
+        this.lastAudioRtpTimestamp,
         this.audioPktCount,
         this.audioOctetCount,
       ),
@@ -1864,6 +1886,8 @@ export class AqaraCameraBridge extends EventEmitter {
    * legitimately arrive in bursts, so it must not be the sole liveness
    * signal. */
   private lastP2pTrafficAt: number = 0;
+  private lastSoftMediaKickAt: number = 0;
+  private softMediaKickCount: number = 0;
   private lastResurrectAt: number = 0; // for backoff
   private stallTimeoutMs: number =
     Math.max(3, parseInt(process.env.STREAM_STALL_TIMEOUT_SEC || "8", 10)) *
@@ -2221,6 +2245,39 @@ export class AqaraCameraBridge extends EventEmitter {
       return;
     const now = Date.now();
     const dead = !this.isConnected;
+    const mediaIdle = this.lastVideoFrameAt
+      ? now - this.lastVideoFrameAt
+      : Number.POSITIVE_INFINITY;
+    const p2pAlive =
+      !dead && now - this.lastP2pTrafficAt < this.transportStallTimeoutMs;
+
+    // A P2P heartbeat only proves that UDP is alive, not that the camera
+    // encoder is still producing channel-1 media. G5 can stop after its first
+    // IDR in precisely that state. Nudge its media session before destroying a
+    // healthy P2P association.
+    if (
+      p2pAlive &&
+      this.hasSeenKeyframe &&
+      // A fresh GOP should be followed by P-frames/audio within a fraction of
+      // a second. Both E1 and G5 can otherwise sit on one IDR indefinitely;
+      // the old E1-specific 12 s delay created a large real media hole.
+      mediaIdle > 5_000 &&
+      now - this.lastSoftMediaKickAt > 8_000
+    ) {
+      this.lastSoftMediaKickAt = now;
+      this.softMediaKickCount++;
+      console.warn(
+        `⚠️ [${this.did}] media idle ${mediaIdle}ms with P2P alive — ` +
+          `requesting fresh GOP (kick #${this.softMediaKickCount})`,
+      );
+      this.sendEncDrw(
+        0,
+        this.ch0Seq++,
+        buildLumiFrame(LUMI_TYPE_SESSION_START, Buffer.alloc(0), this.cmdSeq++),
+      );
+      this.requestLiveKeyframe();
+      return;
+    }
     // Any authenticated traffic from the active peer (media or ALIVE) proves
     // the P2P session is healthy.  In particular, a large IDR can delay the
     // next decoded frame long enough to trip the old 8 s video-only watchdog.
@@ -2244,9 +2301,6 @@ export class AqaraCameraBridge extends EventEmitter {
       this.p2pConnectedAt > 0 &&
       now - this.p2pConnectedAt > 45000;
     if (dead || stalled || firstFrameGaveUp) {
-      const mediaIdle = this.lastVideoFrameAt
-        ? now - this.lastVideoFrameAt
-        : -1;
       const trafficIdle = this.lastP2pTrafficAt
         ? now - this.lastP2pTrafficAt
         : -1;
@@ -2314,6 +2368,7 @@ export class AqaraCameraBridge extends EventEmitter {
     this.resetVideoAssembly();
     this.lastAudioTs = -1;
     this.lastAudioNonce = null;
+    this.pendingAudioFrame = null;
     this.emit("disconnected");
 
     try {
@@ -2470,6 +2525,8 @@ export class AqaraCameraBridge extends EventEmitter {
         this.reconnectAttempts = 0;
         this.lastVideoFrameAt = Date.now();
         this.lastP2pTrafficAt = this.lastVideoFrameAt;
+        this.lastSoftMediaKickAt = 0;
+        this.softMediaKickCount = 0;
         this.p2pConnectedAt = Date.now();
         this._loggedQuality = false;
         this._qualityAcked = false;
@@ -2884,6 +2941,13 @@ export class AqaraCameraBridge extends EventEmitter {
 
   private lastAudioTs: number = -1;
   private lastAudioNonce: Buffer | null = null;
+  /** A mic AVIO frame can span several PPCS datagrams. Keep it separate from
+   * video's remainder so a following 0x004e header cannot discard it. */
+  private pendingAudioFrame: {
+    data: Buffer;
+    expected: number;
+    nextIdx: number;
+  } | null = null;
   private lastMediaIdx: number = -1;
   private lastMediaPkt: Buffer | null = null;
   /** PPCS can retransmit an older DRW after newer fragments already arrived. */
@@ -2916,9 +2980,46 @@ export class AqaraCameraBridge extends EventEmitter {
     }
   }
 
+  private stashAudioFragment(data: Buffer, nextIdx: number): boolean {
+    if (!isAvioAudioHeader(data)) return false;
+    const expected = 40 + data.readUInt32LE(28);
+    if (data.length >= expected) {
+      this.takeAudio([data.subarray(0, expected)]);
+      return true;
+    }
+    this.pendingAudioFrame = {
+      data: Buffer.from(data),
+      expected,
+      nextIdx: nextIdx & 0xffff,
+    };
+    return true;
+  }
+
+  /** Returns null when this PPCS datagram was consumed as audio continuation. */
+  private consumeAudioContinuation(idx: number, data: Buffer): Buffer | null {
+    const pending = this.pendingAudioFrame;
+    if (!pending) return data;
+    if (idx !== pending.nextIdx) {
+      // The next media frame began before the missing audio continuation. Drop
+      // only the incomplete AAC frame; never let it contaminate video assembly.
+      this.pendingAudioFrame = null;
+      return data;
+    }
+    const merged = Buffer.concat([pending.data, data]);
+    if (merged.length < pending.expected) {
+      pending.data = merged;
+      pending.nextIdx = (idx + 1) & 0xffff;
+      return null;
+    }
+    this.pendingAudioFrame = null;
+    this.takeAudio([merged.subarray(0, pending.expected)]);
+    return merged.subarray(pending.expected);
+  }
+
   private async handleVideoData(idx: number, data: Buffer): Promise<void> {
     this._vidPktCount++;
     this.lastVideoFrameAt = Date.now();
+    this.softMediaKickCount = 0;
     this.emit("packet_data_ch1", idx, data);
     // A new IDR can restart idx at 0, so dedupe by exact content as well as
     // index. This also removes late retransmits such as an old P-frame after
@@ -2926,11 +3027,20 @@ export class AqaraCameraBridge extends EventEmitter {
     if (this.isDuplicateMediaPacket(idx, data)) {
       return;
     }
+    const afterAudioContinuation = this.consumeAudioContinuation(idx, data);
+    if (afterAudioContinuation === null) return;
+    data = afterAudioContinuation;
+    if (data.length === 0) return;
     this.lastMediaIdx = idx;
     this.lastMediaPkt = Buffer.from(data);
 
     // Own-datagram mic frames. Never prepend leftover video onto these.
     if (isAvioAudioHeader(data) && data.length >= 40) {
+      const expected = 40 + data.readUInt32LE(28);
+      if (data.length < expected) {
+        this.stashAudioFragment(data, (idx + 1) & 0xffff);
+        return;
+      }
       const { audio, rest } = extractLeadingAudio(data);
       this.takeAudio(audio);
       if (!rest.length) return;
@@ -3082,6 +3192,16 @@ export class AqaraCameraBridge extends EventEmitter {
     for (const frame of frames) this.processVideoFrame(frame);
     const peeled = extractLeadingAudio(remainder);
     this.takeAudio(peeled.audio);
+    if (
+      peeled.rest.length > 0 &&
+      this.stashAudioFragment(
+        peeled.rest,
+        ((entries[entries.length - 1]?.[0] || 0) + 1) & 0xffff,
+      )
+    ) {
+      this.mediaStreamBuffer = Buffer.alloc(0);
+      return;
+    }
     // Keep a P-frame/audio header tail; drop IDR ciphertext that is not AVIO.
     this.mediaStreamBuffer = keepAvioRemainder(peeled.rest);
   }
