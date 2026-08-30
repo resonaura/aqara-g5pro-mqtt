@@ -260,29 +260,45 @@ export class AqaraStreamDecryptor extends EventEmitter {
    * prefixes — isAnnexBKeyframe() would never see an IDR without this wrap.
    */
   public decryptToAnnexB(frame: Buffer): Buffer {
-    const tail = this.decryptFrame(frame);
-    const startCode = tail.indexOf(Buffer.from([0, 0, 0, 1]));
-    if (startCode >= 0 && startCode + 5 < tail.length) {
-      return tail.subarray(startCode);
-    }
-    if (frame.length < 10) return ensureAnnexB(tail);
+    if (frame.length < 10) return frame;
     const nalCount = frame[8];
     const tableEnd = 9 + nalCount * 8;
-    if (nalCount <= 0 || nalCount > 16 || tableEnd >= frame.length) {
-      return ensureAnnexB(tail);
+
+    const tail = this.decryptFrame(frame);
+
+    // If tail already contains in-band Annex-B start codes (00 00 00 01),
+    // it includes in-band SPS (0x67), PPS (0x68), and IDR (0x65). Return as-is!
+    if (hasAnnexBPrefix(tail)) {
+      return tail;
     }
-    const table = frame.subarray(9, tableEnd);
-    const sc = Buffer.from([0, 0, 0, 1]);
-    const parts: Buffer[] = [];
-    for (let i = 0; i < nalCount; i++) {
-      const off = table.readUInt32LE(i * 8);
-      const nalLen = table.readUInt32LE(i * 8 + 4);
-      if (nalLen <= 0 || off < 0 || off + nalLen > tail.length) continue;
-      const nal = tail.subarray(off, off + nalLen);
-      if (hasAnnexBPrefix(nal)) parts.push(Buffer.from(nal));
-      else parts.push(sc, Buffer.from(nal));
+
+    // If tail does not start with a start code, use the NAL table to wrap raw NALs
+    if (nalCount > 0 && nalCount <= 32 && tableEnd < frame.length) {
+      const table = frame.subarray(9, tableEnd);
+      const sc = Buffer.from([0, 0, 0, 1]);
+      const parts: Buffer[] = [];
+
+      const firstOff = table.readUInt32LE(0);
+      if (firstOff > 0 && firstOff < tail.length) {
+        // In-band parameter sets (SPS/PPS) located before the first table entry
+        const lead = tail.subarray(0, firstOff);
+        if (hasAnnexBPrefix(lead)) parts.push(lead);
+        else parts.push(sc, lead);
+      }
+
+      for (let i = 0; i < nalCount; i++) {
+        const off = table.readUInt32LE(i * 8);
+        const nalLen = table.readUInt32LE(i * 8 + 4);
+        if (nalLen <= 0 || off < 0 || off + nalLen > tail.length) continue;
+        const nal = tail.subarray(off, off + nalLen);
+        if (hasAnnexBPrefix(nal)) parts.push(Buffer.from(nal));
+        else parts.push(sc, Buffer.from(nal));
+      }
+      if (parts.length > 0) return Buffer.concat(parts);
     }
-    return parts.length ? Buffer.concat(parts) : ensureAnnexB(tail);
+
+    // Fallback for streams without NAL table (raw Annex-B)
+    return ensureAnnexB(tail);
   }
 
   public destroy(): void {}
