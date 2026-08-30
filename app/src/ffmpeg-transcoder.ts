@@ -135,6 +135,11 @@ export class FfmpegTranscoder extends EventEmitter {
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
+      "-fflags", "nobuffer+discardcorrupt",
+      "-flags", "low_delay",
+      "-avioflags", "direct",
+      "-probesize", "32",
+      "-analyzeduration", "0",
       "-err_detect", "+ignore_err",
       "-ec", "+guess_mvs+deblock",
       "-flags2", "+showall",
@@ -213,6 +218,27 @@ export class FfmpegTranscoder extends EventEmitter {
       this.proc = null;
     }
     this.buffer = Buffer.alloc(0);
+  }
+
+  /**
+   * Kill the current ffmpeg process and reset all internal state so the next
+   * write() call spawns a fresh encoder. Use this on P2P reconnect so that
+   * the new IDR from the camera starts a brand-new encoding session with
+   * fresh SPS/PPS rather than continuing the old bitstream.
+   */
+  public reset(): void {
+    if (this.proc) {
+      try {
+        this.proc.stdin?.end();
+        this.proc.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      this.proc = null;
+    }
+    this.buffer = Buffer.alloc(0);
+    // Do NOT set this.stopped — the transcoder is still logically active
+    // and write() will restart ffmpeg on the next frame.
   }
 
   /**

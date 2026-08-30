@@ -132,3 +132,14 @@ test("buildStreamStartBody is 16 bytes channel/videoStream/streamType LE", () =>
   assert.equal(sd.readUInt32LE(0), 4);
   assert.equal(sd.readUInt32LE(4), 2);
 });
+
+test("out-of-order UDP fragments reorder correctly into single frame", () => {
+  const payload = Buffer.alloc(1500, 0x55);
+  const frame = avio(0, payload);
+  const frag1 = frame.subarray(0, 1024);
+  const frag2 = frame.subarray(1024);
+  assert.equal(frag1.length + frag2.length, frame.length);
+  const { frames } = splitAvioFrames(Buffer.concat([frag1, frag2]));
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].length, frame.length);
+});

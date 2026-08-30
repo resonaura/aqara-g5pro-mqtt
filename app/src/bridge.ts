@@ -291,6 +291,9 @@ export function isNewAvioDatagram(
   if (!looksLikeHeader) return false;
   if (!assembling) return true;
   if (complete) return true;
+  // Only idx=0 starts a new frame while we are still assembling — encrypted
+  // IDR tails often start with 0x4e00 and look like a fresh AVIO header but
+  // are actually continuation payloads.  Trusting them would split the frame.
   return idx === 0;
 }
 
@@ -987,6 +990,18 @@ export class RtspServer extends EventEmitter {
     for (const c of this.clients) {
       if (c.isPlaying) c.waitLiveIdr = true;
     }
+  }
+
+  /**
+   * Flush stale audio on P2P reconnect.  Without this the pacer queue keeps
+   * growing with old audio frames and the queued= counter climbs indefinitely.
+   */
+  public flushAudio(): void {
+    this.audioQueue.length = 0;
+    this.audioPacerPrimed = false;
+    this.audioPacerUnderruns = 0;
+    this.audioIngressCount = 0;
+    this.audioSentCount = 0;
   }
 
   private handleRtspRequest(client: RtspClient, req: string): void {
@@ -1923,6 +1938,10 @@ export class AqaraCameraBridge extends EventEmitter {
   private isStreamStarted: boolean = false;
   private skipVideo: boolean = false;
   private talkbackOnly: boolean = false;
+  private lastIdrRequestAt: number = 0;
+  private mediaReorderBuffer: Map<number, Buffer> = new Map();
+  private expectedMediaIdx: number = -1;
+  private reorderTimer: NodeJS.Timeout | null = null;
 
   private p2pInfo: P2PInfo | null = null;
   private ppcsKeyBuf: Buffer = Buffer.alloc(0);
@@ -1961,7 +1980,7 @@ export class AqaraCameraBridge extends EventEmitter {
     this.decryptor = new AqaraStreamDecryptor(videoKey);
 
     const enableTranscoding =
-      options.transcodeVideo ?? (process.env.TRANSCODE_VIDEO !== "false");
+      options.transcodeVideo ?? (process.env.TRANSCODE_VIDEO === "true");
     if (enableTranscoding) {
       this.transcoder = new FfmpegTranscoder({
         did: this.did,
@@ -2408,6 +2427,22 @@ export class AqaraCameraBridge extends EventEmitter {
     this.lastAudioTs = -1;
     this.lastAudioNonce = null;
     this.pendingAudioFrame = null;
+
+    // Clear RTSP IDR cache so reconnecting RTSP clients wait for a fresh IDR
+    // instead of receiving stale SPS/PPS that won't match the new encoder session.
+    if (this.rtspServer) {
+      this.rtspServer.holdForNewIdr();
+      this.rtspServer.flushAudio();
+    }
+    // Reset the FFmpeg transcoder so it starts a brand-new encoding session.
+    // Without this, the transcoder continues the old bitstream while the camera
+    // starts a new one, producing SPS/PPS mismatches → grey frames.
+    if (this.transcoder) {
+      this.transcoder.reset();
+    }
+    // Re-arm the 0x1018 GET_FRAME so it fires again after the new first IDR.
+    this._firstVideoPkt = true;
+
     this.emit("disconnected");
 
     try {
@@ -2692,9 +2727,11 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     }, 2500);
 
-    // Periodic GOP Keyframe Refresh: every 3.5s request an IDR from the camera
-    // so any temporal compression error is purged from the camera hardware encoder.
-    const periodicIdrSec = parseFloat(process.env.PERIODIC_IDR_SEC || "3.5");
+    // Periodic GOP Keyframe Refresh: only enabled if explicitly configured.
+    // In production, camera hardware encoder produces its own regular GOPs.
+    // Spamming 0x1018 over DRW channel 0 exhausts the camera SoC DRW window
+    // and causes the camera to stall after 30 seconds.
+    const periodicIdrSec = parseFloat(process.env.PERIODIC_IDR_SEC || "0");
     if (periodicIdrSec > 0) {
       if (this.mediaKeepaliveTimer) clearInterval(this.mediaKeepaliveTimer);
       this.mediaKeepaliveTimer = setInterval(() => {
@@ -2705,8 +2742,13 @@ export class AqaraCameraBridge extends EventEmitter {
     }
   }
 
-  private requestLiveKeyframe(): void {
+  private requestLiveKeyframe(force: boolean = false): void {
     if (!this.isConnected) return;
+    const now = Date.now();
+    if (!force && now - this.lastIdrRequestAt < 2000) {
+      return;
+    }
+    this.lastIdrRequestAt = now;
     this.sendEncDrw(
       0,
       this.ch0Seq++,
@@ -2958,6 +3000,12 @@ export class AqaraCameraBridge extends EventEmitter {
     this._loggedQuality = false;
     this.droppedGapFrames = 0;
     this.gapKeyframeRequests = 0;
+    this.mediaReorderBuffer.clear();
+    if (this.reorderTimer) {
+      clearTimeout(this.reorderTimer);
+      this.reorderTimer = null;
+    }
+    this.expectedMediaIdx = -1;
   }
   /** True only after the camera has acknowledged 0x1002 with 0x1003. */
   private p2pSessionReady: boolean = false;
@@ -3062,16 +3110,79 @@ export class AqaraCameraBridge extends EventEmitter {
   }
 
   private handleVideoData(idx: number, data: Buffer): void {
+    if (this.isDuplicateMediaPacket(idx, data)) {
+      return;
+    }
+
+    if (this.expectedMediaIdx === -1) {
+      this.expectedMediaIdx = idx;
+    }
+
+    const diff = (idx - this.expectedMediaIdx) & 0xffff;
+    if (diff === 0) {
+      // In-order packet
+      this.handleVideoDataImmediate(idx, data);
+      this.expectedMediaIdx = (idx + 1) & 0xffff;
+
+      // Drain any contiguous buffered packets
+      while (this.mediaReorderBuffer.has(this.expectedMediaIdx)) {
+        const nextData = this.mediaReorderBuffer.get(this.expectedMediaIdx)!;
+        this.mediaReorderBuffer.delete(this.expectedMediaIdx);
+        this.handleVideoDataImmediate(this.expectedMediaIdx, nextData);
+        this.expectedMediaIdx = (this.expectedMediaIdx + 1) & 0xffff;
+      }
+
+      if (this.mediaReorderBuffer.size === 0 && this.reorderTimer) {
+        clearTimeout(this.reorderTimer);
+        this.reorderTimer = null;
+      }
+    } else if (diff > 0 && diff < 32) {
+      // Out-of-order packet arriving early over Wi-Fi
+      this.mediaReorderBuffer.set(idx, data);
+      if (!this.reorderTimer) {
+        this.reorderTimer = setTimeout(() => this.flushReorderBuffer(), 20);
+      }
+      if (this.mediaReorderBuffer.size >= 16) {
+        this.flushReorderBuffer();
+      }
+    } else if (diff >= 32768) {
+      // Duplicate or late packet arriving after we already advanced past it
+      return;
+    } else {
+      // Large sequence jump (e.g. IDR sequence reset or big packet loss)
+      this.flushReorderBuffer();
+      this.expectedMediaIdx = idx;
+      this.handleVideoDataImmediate(idx, data);
+      this.expectedMediaIdx = (idx + 1) & 0xffff;
+    }
+  }
+
+  private flushReorderBuffer(): void {
+    if (this.reorderTimer) {
+      clearTimeout(this.reorderTimer);
+      this.reorderTimer = null;
+    }
+    if (this.mediaReorderBuffer.size === 0) return;
+
+    const entries = Array.from(this.mediaReorderBuffer.entries());
+    entries.sort(
+      ([a], [b]) =>
+        ((a - this.expectedMediaIdx) & 0xffff) -
+        ((b - this.expectedMediaIdx) & 0xffff),
+    );
+
+    for (const [seq, buf] of entries) {
+      this.mediaReorderBuffer.delete(seq);
+      this.handleVideoDataImmediate(seq, buf);
+      this.expectedMediaIdx = (seq + 1) & 0xffff;
+    }
+  }
+
+  private handleVideoDataImmediate(idx: number, data: Buffer): void {
     this._vidPktCount++;
     this.lastVideoFrameAt = Date.now();
     this.softMediaKickCount = 0;
     this.emit("packet_data_ch1", idx, data);
-    // A new IDR can restart idx at 0, so dedupe by exact content as well as
-    // index. This also removes late retransmits such as an old P-frame after
-    // its successor has already reached the RTSP client.
-    if (this.isDuplicateMediaPacket(idx, data)) {
-      return;
-    }
     const afterAudioContinuation = this.consumeAudioContinuation(idx, data);
     if (afterAudioContinuation === null) return;
     data = afterAudioContinuation;
@@ -3151,9 +3262,10 @@ export class AqaraCameraBridge extends EventEmitter {
       if (assembling) {
         if (assembled) this.flushCurrentFrame();
         else {
+          this.droppedGapFrames++;
           if (this.frameCount < 8) {
             console.log(
-              `📐 [${this.did}] AVIO restart idx=0 drop ${this.currentAccumulatedLen}/${this.currentExpectedLen}B`,
+              `📐 [${this.did}] AVIO restart idx=${idx} drop incomplete ${this.currentAccumulatedLen}/${this.currentExpectedLen}B`,
             );
           }
           this.videoFrags.clear();
@@ -3164,6 +3276,11 @@ export class AqaraCameraBridge extends EventEmitter {
       this.frameStartSeq = idx;
       this.currentExpectedLen = 32 + data.readUInt32LE(28);
       this.currentAccumulatedLen = 0;
+      if (this._firstVideoPkt) {
+        this._firstVideoPkt = false;
+        // Official app flow: send 0x1018 immediately after first video frame arrives
+        setTimeout(() => this.requestLiveKeyframe(), 15);
+      }
       if (this.frameCount < 8) {
         console.log(
           `📐 [${this.did}] AVIO start idx=${idx} expect ${this.currentExpectedLen}B flags=${data.readUInt16LE(2)}`,
@@ -3223,18 +3340,11 @@ export class AqaraCameraBridge extends EventEmitter {
     );
 
     // Integrity check: the AVIO header declares the exact payload byte count.
-    // accumulated is the sum of every fragment we received.  If it is less than
-    // expected, at least one UDP datagram was lost.  Emitting a frame with a
-    // hole in the residual data would cause exactly the "pixelation in motion
-    // areas" described in the research: the decoder applies the motion vectors
-    // but reconstructs the residual from wrong bytes.
-    //
-    // Note: channel 1 multiplexes video AND audio on a single PPCS sequence,
-    // so idx gaps between video fragments are normal (audio slots fill those
-    // positions).  We therefore check accumulated vs expected length, NOT idx
-    // contiguity.
+    // accumulated is the sum of every fragment we received. If it is less than
+    // expected, at least one UDP datagram was lost. Emitting a frame with a
+    // hole in the residual data would cause pixelation in motion areas:
+    // the decoder applies motion vectors but reconstructs residual from wrong bytes.
     const expectedTotal = this.currentExpectedLen; // snapshot before clear
-    const accumulated = this.currentAccumulatedLen;
     const full = Buffer.concat(entries.map(([, buf]) => buf));
     this.videoFrags.clear();
     this.currentExpectedLen = 0;
@@ -3242,18 +3352,11 @@ export class AqaraCameraBridge extends EventEmitter {
 
     if (full.length < 32) return;
 
-    // accumulated is an approximation when audio frames share idx space; use
-    // full.length (actual bytes we have) vs expectedTotal as the authoritative
-    // check.  A small AVIO_SIZE_SLACK tolerance handles rounding/off-by-one.
-    if (expectedTotal > 0 && full.length + 32 < expectedTotal) {
+    if (expectedTotal > 0 && full.length < expectedTotal) {
       // Frame is incomplete — would corrupt the decoder reference buffer.
       this.droppedGapFrames++;
-      // Only request a keyframe when the stream is healthy enough to respond.
-      // Avoid spamming IDR requests on a degraded link.
       if (this.isConnected && this.hasSeenKeyframe) {
         this.gapKeyframeRequests++;
-        // One 0x1018 resets the GOP; the camera sends a fresh IDR within one
-        // GOP interval (≈ 2 s) so the error propagation chain is bounded.
         this.requestLiveKeyframe();
         if (this.droppedGapFrames % 10 === 1) {
           console.warn(
