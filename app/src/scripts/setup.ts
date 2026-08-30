@@ -197,6 +197,7 @@ async function main() {
     }
 
     const token = resp.data.result.token;
+    const userId = resp.data.result.userId;
     console.log(`\n✅ Login success`);
     console.log(`   Token: ${token.substring(0, 10)}... (len=${token.length})`);
 
@@ -243,6 +244,7 @@ async function main() {
 AQUARA_URL=${server}
 APPID=${appid}
 TOKEN=${token}
+USER_ID=${userId}
 MQTT_URL=${mqttUrl}
 MQTT_USER=${mqttUser}
 MQTT_PASS=${mqttPass}

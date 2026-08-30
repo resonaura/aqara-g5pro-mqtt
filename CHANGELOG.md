@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.5 — Fix: missing USER_ID in .env
+
+- **Root cause**: `setup.ts` generated `.env` with `TOKEN` but omitted `USER_ID` from the login response. `aqara.ts` initialized `USER_ID` to empty string and never read it from `process.env`. API requests lacked the `Userid` header, so the Aqara server returned an empty device list.
+- **Fix**: `setup.ts` now extracts `userId` from `resp.data.result.userId` and writes `USER_ID=${userId}` into `.env`. `aqara.ts` initializes `USER_ID` from `process.env.USER_ID || ""`.
+- **Build**: `dist/` rebuilt with both changes.
+
 ## v1.4.4 — Fix: dotenv / login order
 
 - **Root cause**: `dotenv.config()` ran inside `config.ts` (after imports). `aqara.ts` captured `process.env.TOKEN = ""` at module load time — so after `setup.js` wrote `.env`, `index.ts` still used empty token and failed `getCameras()`.

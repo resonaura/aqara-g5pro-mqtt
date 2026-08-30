@@ -15,7 +15,7 @@ const APP_ID = process.env.APPID || "444c476ef7135e53330f46e7";
 const APP_KEY = "uOJy0qmKwXj6aHUB2KQEIJuXHMDVTAJi";
 
 let TOKEN: string = process.env.TOKEN || "";
-let USER_ID: string = "";
+let USER_ID: string = process.env.USER_ID || "";
 
 export function getToken(): string {
   return TOKEN;
