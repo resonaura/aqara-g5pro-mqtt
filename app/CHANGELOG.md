@@ -1,3 +1,8 @@
+## 1.4.2
+
+- **Docker FFmpeg + RTSP fixes**: `ffmpeg` in `app/Dockerfile`; `tsconfig.build.json` includes `src/scripts`; `package.json` JSON fixed
+- **P2P → RTSP integrated** in main app (no `pnpm run rtsp`); FFmpeg on-demand when P2P ON (default OFF); talkback via RTMP
+
 ## 1.4.1
 
 - **Fix**: `tsconfig.build.json` — removed `src/scripts` from exclude so `dist/scripts/setup.js` builds correctly for HA add-on

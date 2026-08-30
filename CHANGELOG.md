@@ -1,13 +1,30 @@
 # Changelog
 
+## v1.4.2
+
+### 🔧 Fixed
+
+- `app/Dockerfile` — added `ffmpeg` to runtime stage (`apt-get install ... ffmpeg`)
+- `tsconfig.build.json` — added `include: ["src/**/*"]` so `dist/scripts/setup.js` builds correctly for HA add-on
+- `app/package.json` — corrected JSON syntax (was broken after 1.4.0 version bump)
+
+### ✨ P2P → Integrated RTSP
+
+- **No separate `pnpm run rtsp`**: RTSP server fully integrated into main `index.ts` via `AqaraCameraBridge`; starts when `p2p_stream` ON, stops when OFF
+- **On-demand FFmpeg**: `FfmpegTranscoder` activates only when P2P Stream is ON (`TRANSCODE_VIDEO=true`); off by default, conserves CPU/memory
+- **Talkback audio**: Works via RTMP ingest (`rtmp://host:1935/talk/<slug>`) when P2P active
+
+### 🔇 Logging
+
+- Only `p2p_stream`, `talkback`, `ptz_*` events + errors logged during normal polling
+- Optimistic updates and per-attribute polling spam removed
+
 ## v1.4.1 - Build Fix: tsconfig scripts
 
 ### 🔧 Fixed
 
 - **Build**: `tsconfig.build.json` — `src/scripts` excluded, missing `dist/scripts/setup.js` in HA add-on. Removed exclusion so scripts build correctly
 - **Build**: `app/package.json` — JSON syntax error (`version:` unquoted) broke Docker `npm install`
-
-## v1.4.0 - P2P → Integrated RTSP + Docker FFmpeg + Logging Optimization
 
 ### ✨ New Features
 
