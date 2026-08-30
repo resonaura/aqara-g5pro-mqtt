@@ -11,6 +11,7 @@ import * as net from "net";
 import * as os from "os";
 import { AqaraStreamDecryptor } from "./decryptor.js";
 import { isPortAllowed } from "./ports.js";
+import { FfmpegTranscoder } from "./ffmpeg-transcoder.js";
 
 // ============= Type Definitions =============
 
@@ -55,6 +56,8 @@ export interface BridgeOptions {
   model?: string;
   /** 0x101C videoStream: 0=1520p, 1=1080p, 2=Low. Default 0 (max). */
   p2pQualityChannel?: number;
+  /** Enable in-process FFmpeg error-concealment & deblocking transcoder (default true if ffmpeg exists). */
+  transcodeVideo?: boolean;
 }
 
 // ============= Constants =============
@@ -1934,6 +1937,7 @@ export class AqaraCameraBridge extends EventEmitter {
   public frameCount: number = 0;
   private hasSeenKeyframe: boolean = false;
   private decryptor: AqaraStreamDecryptor | null = null;
+  private transcoder: FfmpegTranscoder | null = null;
 
   constructor(options: BridgeOptions) {
     super();
@@ -1955,6 +1959,26 @@ export class AqaraCameraBridge extends EventEmitter {
       options.videoKey ||
       "fc639c2ec4167ee22f4dd023b113c9e46adbb18e427dd0fdaea48286dd54d3cf";
     this.decryptor = new AqaraStreamDecryptor(videoKey);
+
+    const enableTranscoding =
+      options.transcodeVideo ?? (process.env.TRANSCODE_VIDEO !== "false");
+    if (enableTranscoding) {
+      this.transcoder = new FfmpegTranscoder({
+        did: this.did,
+        name: options.deviceName || this.did,
+        fps: 15,
+        deblock: true,
+      });
+      this.transcoder.on("frame", (cleanFrame: Buffer) => {
+        if (this.rtspServer) {
+          this.ingestParamSets(cleanFrame, false);
+          if (isAnnexBKeyframe(cleanFrame, false)) {
+            this.rtspServer.lastKeyframe = cleanFrame;
+          }
+          this.rtspServer.broadcastFrame(cleanFrame);
+        }
+      });
+    }
   }
 
   private signHeaders(body: string = ""): Record<string, string> {
@@ -2668,13 +2692,16 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     }, 2500);
 
-    // Do not poll 0x1018 (GET_FRAME snapshot) or 0x101C ch3 (record list).
-    // JSON 0x100E on a live GOP aborts it (0x100F success, then silence,
-    // then the 8s stall watchdog resurrects). Quality is a later live switch
-    // with a payload we have not captured yet — not JSON after the first IDR.
-    if (this.mediaKeepaliveTimer) {
-      clearInterval(this.mediaKeepaliveTimer);
-      this.mediaKeepaliveTimer = null;
+    // Periodic GOP Keyframe Refresh: every 3.5s request an IDR from the camera
+    // so any temporal compression error is purged from the camera hardware encoder.
+    const periodicIdrSec = parseFloat(process.env.PERIODIC_IDR_SEC || "3.5");
+    if (periodicIdrSec > 0) {
+      if (this.mediaKeepaliveTimer) clearInterval(this.mediaKeepaliveTimer);
+      this.mediaKeepaliveTimer = setInterval(() => {
+        if (this.isConnected && this.hasSeenKeyframe && !this.talkbackOnly) {
+          this.requestLiveKeyframe();
+        }
+      }, Math.round(periodicIdrSec * 1000));
     }
   }
 
@@ -3389,13 +3416,20 @@ export class AqaraCameraBridge extends EventEmitter {
       if (!hasStartCode) {
         outFrame = Buffer.concat([sc, rawH264]);
       }
-      if (isKeyframe) {
-        this.rtspServer.lastKeyframe = this.prependParamSets(
-          outFrame,
-          isHevcFrame,
-        );
+      if (this.transcoder) {
+        const frameToSend = isKeyframe
+          ? this.prependParamSets(outFrame, isHevcFrame)
+          : outFrame;
+        this.transcoder.write(frameToSend);
+      } else {
+        if (isKeyframe) {
+          this.rtspServer.lastKeyframe = this.prependParamSets(
+            outFrame,
+            isHevcFrame,
+          );
+        }
+        this.rtspServer.broadcastFrame(outFrame);
       }
-      this.rtspServer.broadcastFrame(outFrame);
     }
     this.emit("frame", { data: rawH264, isKeyframe, timestamp: Date.now() });
   }
@@ -3961,6 +3995,10 @@ export class AqaraCameraBridge extends EventEmitter {
     if (this.decryptor) {
       this.decryptor.destroy();
       this.decryptor = null;
+    }
+    if (this.transcoder) {
+      this.transcoder.stop();
+      this.transcoder = null;
     }
     if (this.socket) {
       try {

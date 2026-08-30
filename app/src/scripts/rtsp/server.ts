@@ -15,7 +15,6 @@ import {
   type RtspPortEntry,
 } from "../../ports.js";
 import { assignUniqueSlugs } from "../../slug.js";
-import { FfmpegRelay } from "../../ffmpeg-relay.js";
 
 config();
 
@@ -59,7 +58,6 @@ async function main() {
     slug: string;
     did: string;
     port: number;
-    relay?: FfmpegRelay;
   }> = [];
 
   interface CamState {
@@ -143,6 +141,7 @@ async function main() {
           rtspPort: rtspPort,
           model: cam.model,
           p2pQualityChannel,
+          deviceName: cam.deviceName,
         });
 
         bridge.on("connected", () => {
@@ -173,34 +172,12 @@ async function main() {
 
         try {
           await bridge.start();
-          const entry: (typeof activeBridges)[number] = {
+          activeBridges.push({
             bridge,
             slug: streamSlug,
             did: cam.did,
             port: rtspPort,
-          };
-
-          // Optional: ffmpeg relay → MediaMTX single-port aggregation.
-          // Set MEDIAMTX_URL=rtsp://127.0.0.1:8554 in .env to enable.
-          const mediamtxBase = process.env.MEDIAMTX_URL?.replace(/\/$/, "");
-          if (mediamtxBase) {
-            const internalUrl = `rtsp://127.0.0.1:${rtspPort}/live/${streamSlug}`;
-            const publishUrl = `${mediamtxBase}/live/${streamSlug}`;
-            const relay = new FfmpegRelay({
-              name: cam.deviceName,
-              internalRtspUrl: internalUrl,
-              mediamtxUrl: publishUrl,
-              // Wait for the first IDR before connecting ffmpeg, so SDP is ready.
-              warmupDelayMs: 5_000,
-            });
-            relay.start();
-            entry.relay = relay;
-            console.log(
-              `   📡 Relay: ${internalUrl} → ${publishUrl}`,
-            );
-          }
-
-          activeBridges.push(entry);
+          });
         } catch (err: any) {
           console.error(
             `   ❌ Failed to start bridge for ${cam.deviceName}:`,
@@ -228,13 +205,8 @@ async function main() {
       const namePad = state.deviceName.padEnd(20, " ");
       const gaps = item.bridge.droppedGapFrames;
       const gapStr = gaps > 0 ? ` | ⚠️ gap-drops=${gaps}` : "";
-      // If relay is active, show the MediaMTX public URL; otherwise the direct port.
-      const mediamtxBase = process.env.MEDIAMTX_URL?.replace(/\/$/, "");
-      const publicUrl = mediamtxBase && item.relay
-        ? `${mediamtxBase}/live/${item.slug}`
-        : state.rtspUrl;
       console.log(
-        ` [${icon}] ${namePad} | Status: ${keyIcon}${gapStr} | 🔗 ${publicUrl}`,
+        ` [${icon}] ${namePad} | Status: ${keyIcon}${gapStr} | 🔗 ${state.rtspUrl}`,
       );
     }
   }, 3000);
@@ -242,7 +214,6 @@ async function main() {
   const cleanup = () => {
     console.log("\n🛑 Stopping all RTSP bridges...");
     for (const item of activeBridges) {
-      item.relay?.stop();
       item.bridge.stop();
     }
     process.exit(0);
