@@ -758,7 +758,6 @@ export class RtspServer extends EventEmitter {
               this.rtpUdp6!.bind(0);
             } catch {}
             this.emit("listening", this.port);
-            this.startVideoPacer();
             this.startAudioPacer();
             this.startRtcp();
             resolve();
@@ -1326,13 +1325,7 @@ export class RtspServer extends EventEmitter {
     targetClient?: RtspClient,
   ): void {
     if (!frameData.length) return;
-    // Direct send for single-client targeted frames or if pacer is not active
-    if (targetClient || !this.videoPacer) {
-      this.sendFrameNow(frameData, targetClient);
-      return;
-    }
-    if (this.frameIsIdr(frameData)) this.videoQueue.length = 0;
-    this.videoQueue.push(frameData);
+    this.sendFrameNow(frameData, targetClient);
   }
 
   /** True if the Annex-B buffer contains an IDR (not SPS/PPS alone). */
@@ -1579,7 +1572,7 @@ export class RtspServer extends EventEmitter {
     // unusually long IDR never causes a jarring timestamp jump in the player.
     const nowSendMs = Date.now();
     const elapsedMs =
-      this.lastVideoSendAt > 0 ? nowSendMs - this.lastVideoSendAt : 66;
+      this.lastVideoSendAt > 0 ? nowSendMs - this.lastVideoSendAt : 40;
     const rtpIncrement = Math.min(
       18_000,
       Math.max(3_000, Math.round(elapsedMs * 90)),
