@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.4.0 - P2P → Integrated RTSP + Docker FFmpeg + Logging Optimization
+
+### ✨ New Features
+
+- **Docker FFmpeg**: `apt-get install -y ffmpeg` added to runtime stage — transcoder works out of the box
+- **Integrated RTSP**: P2P RTSP streams are managed directly by the main app (`index.ts`) via the `p2p_stream` MQTT switch; server starts/stops with bridge lifecycle. No standalone `pnpm run rtsp` required
+- **On-demand transcoding**: `FfmpegTranscoder` activates only when P2P is ON (default OFF), conserving resources
+
+### 🔇 Logging
+
+- Removed flood of `⬅️ HA →` messages; only `p2p_stream`, `talkback`, `ptz_*` events logged
+- Removed `⚡ ... optimistic` noisy updates
+- Removed per-attribute `📊` polling logs; only spotlight/SD-card changes kept
+
 ## v1.3.1 - Optimistic State Updates
 
 ### ✨ New Features
@@ -62,22 +76,24 @@
 ### 📋 Technical Details
 
 #### Modified Files:
-- `src/aqara.ts`: 
+
+- `src/aqara.ts`:
   - Added `getCameras()` function to retrieve all cameras
   - Added `checkDeviceCapabilities()` function to check camera capabilities
   - Updated filtering to use `lumi.camera` model prefix
-- `src/discovery.ts`: 
+- `src/discovery.ts`:
   - Added `hasSpotlight` parameter for conditional spotlight publishing
-- `src/index.ts`: 
+- `src/index.ts`:
   - Completely rewritten logic to support multiple cameras
   - Updated polling and command handling functions
-- `src/config.ts`: 
+- `src/config.ts`:
   - Removed `SUBJECT_ID` validation
-- `src/scripts/setup.ts`: 
+- `src/scripts/setup.ts`:
   - Removed specific camera selection
   - Improved camera filtering
 
 #### New Behavior:
+
 1. On startup, the application automatically discovers all cameras in the account
 2. For each camera, checks for spotlight support
 3. Publishes entities to Home Assistant for all discovered cameras
@@ -86,6 +102,7 @@
 ### 🚀 Migration
 
 For users upgrading from previous versions:
+
 1. Remove `SUBJECT_ID` from .env file (if present)
 2. Restart the application - it will automatically discover all cameras
 

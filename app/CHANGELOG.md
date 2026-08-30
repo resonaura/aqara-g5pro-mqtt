@@ -1,3 +1,23 @@
+## 1.4.0
+
+### ✨ New Features
+
+- **Docker: FFmpeg in image**: Root `Dockerfile` now installs `ffmpeg` in the runtime stage, enabling the built-in video transcoder (error concealment, deblocking, HEVC→H.264 passthrough) for P2P RTSP streams
+- **RTSP: seamless integration**: RTSP server is now fully integrated into the main app — it activates automatically when P2P Stream is turned ON via Home Assistant switch, and releases all resources when turned OFF. No separate `pnpm run rtsp` process needed
+- **RTSP: on-demand FFmpeg**: FFmpeg transcoder is spawned only when P2P Stream is active, keeping CPU/memory usage minimal when streaming is disabled
+
+### 🔇 Logging Optimizations
+
+- **Reduced noise**: Main app no longer logs every MQTT message or attribute publish during polling. Only meaningful events are logged:
+  - P2P Stream enable/disable actions
+  - Talkback channel toggles
+  - PTZ button presses
+  - Camera connection/disconnection events
+  - Stream ready notifications
+  - Error conditions
+- **Optimistic updates**: State change commands are now silent (previously logged every optimistic publish)
+- **Polling**: Attribute updates from polling no longer flood logs (only spotlight state changes and SD card events)
+
 ## 1.3.1
 
 - **Feature**: Optimistic state updates — expected state is published to MQTT instantly on command, confirmed by a real poll after 2s
@@ -27,7 +47,7 @@
 ## 1.1.0
 
 - **New**: Multi-camera support - automatically discovers all Aqara cameras
-- **New**: Smart spotlight detection - only creates light entities for supported cameras  
+- **New**: Smart spotlight detection - only creates light entities for supported cameras
 - **New**: Improved camera filtering using lumi.camera model prefix
 - **Breaking**: Removed SUBJECT_ID requirement from configuration
 - **Breaking**: Setup script no longer requires camera selection
