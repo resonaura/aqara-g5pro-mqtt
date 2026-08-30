@@ -605,6 +605,11 @@ export class RtspServer extends EventEmitter {
   private audioIngressCount = 0;
   private audioSentCount = 0;
   private audioPacerUnderruns = 0;
+  // Two seconds absorbs the observed P2P scheduler bursts while remaining
+  // small enough for a live-monitoring stream. Eight AUs (512 ms) proved
+  // insufficient: ingress and egress matched on average, but the queue still
+  // hit zero dozens of times per minute.
+  private readonly AUDIO_PRIMER_FRAMES = 32;
   // Both observed cameras supply ~15 video frames/s (the status ticker adds
   // about 45 frames every 3 s).  Draining at 30 fps caused a repeating
   // burst/freeze pattern: the queue emptied in half the GOP interval.
@@ -826,19 +831,25 @@ export class RtspServer extends EventEmitter {
     if (this.audioPacer) return;
     this.audioPacer = setInterval(() => {
       if (!this.audioPacerPrimed) {
-        // The camera sends AAC in bursts.  Keep half a second before the
-        // first packet, otherwise the first small UDP gap drains the queue.
-        if (this.audioQueue.length < 8) return;
+        // The camera sends AAC in bursts. Keep a real two-second reservoir
+        // before starting (or restarting after an underrun).
+        if (this.audioQueue.length < this.AUDIO_PRIMER_FRAMES) return;
         this.audioPacerPrimed = true;
       }
       if (this.audioQueue.length === 0) {
         this.audioPacerUnderruns++;
+        // Do not keep emitting a timer tick against an empty queue. Re-prime
+        // from real AUs so the next burst restarts smoothly.
+        this.audioPacerPrimed = false;
         return;
       }
       // Audio is independently decodable: favour freshness over playing more
       // than 1.5 seconds behind after a UDP burst.
-      if (this.audioQueue.length > 24) {
-        this.audioQueue.splice(0, this.audioQueue.length - 8);
+      if (this.audioQueue.length > 64) {
+        this.audioQueue.splice(
+          0,
+          this.audioQueue.length - this.AUDIO_PRIMER_FRAMES,
+        );
       }
       const frame = this.audioQueue.shift();
       if (frame) {
@@ -1871,7 +1882,6 @@ export class AqaraCameraBridge extends EventEmitter {
   private _qualityAcked: boolean = false;
   private _lowInitSent: boolean = false;
   private _hdRaiseSent: boolean = false;
-  private _getFrameAfterVideo: boolean = false;
   private _stallGraceUntil: number = 0;
   private _seenW: number = 0;
   private _seenH: number = 0;
@@ -2532,7 +2542,6 @@ export class AqaraCameraBridge extends EventEmitter {
         this._qualityAcked = false;
         this._lowInitSent = false;
         this._hdRaiseSent = false;
-        this._getFrameAfterVideo = false;
         // Let login/session/encoder setup settle.  The previous 8 s watchdog
         // could kill a healthy just-started stream before its first GOP.
         this._stallGraceUntil = this.lastVideoFrameAt + 15_000;
@@ -2790,20 +2799,11 @@ export class AqaraCameraBridge extends EventEmitter {
       this.emit("p2p_session_ready");
       if (!this.talkbackOnly && !this.liveStreamRequested) {
         this.liveStreamRequested = true;
-        console.log(
-          `📨 [${this.did}] 0x1003 session ready, 0x1004 audio start`,
-        );
-        // Empty 0x1002 already started the default GOP. Official raises HD
-        // with JSON 0x100E only after P-frames are flowing. Kick a silent
-        // encoder — whichever camera lost the race — without waiting 45s.
-        this.sendEncDrw(
-          0,
-          this.ch0Seq++,
-          buildLumiFrame(LUMI_TYPE_AUDIO_START, Buffer.alloc(0), this.cmdSeq++),
-        );
-        // One initial request starts a fresh decodable GOP. It is deliberately
-        // not repeated by RTSP PLAY, where it would interrupt live video.
-        this.requestLiveKeyframe();
+        console.log(`📨 [${this.did}] 0x1003 session ready`);
+        // The official client starts incoming mic audio with the same empty
+        // 0x1002 live-video session; it does *not* send 0x1004 here.  0x1004
+        // is reserved for an explicit audio subscription/talkback path.
+        // Likewise it sends 0x1018 only after the first decoded video frame.
         this.scheduleEncoderKick();
       }
     } else if (frameType === LUMI_TYPE_QUALITY_RESP) {
@@ -2915,7 +2915,6 @@ export class AqaraCameraBridge extends EventEmitter {
     this._loggedResolution = false;
     this._lowInitSent = false;
     this._hdRaiseSent = false;
-    this._getFrameAfterVideo = false;
     this._stallGraceUntil = 0;
     this._seenW = 0;
     this._seenH = 0;
