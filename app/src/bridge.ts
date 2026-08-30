@@ -1803,10 +1803,19 @@ export class AqaraCameraBridge extends EventEmitter {
   private p2pEstablishing: boolean = false; // connect()/discovery in progress (don't double-run)
   private reconnectAttempts: number = 0;
   private lastVideoFrameAt: number = 0; // for stall detection
+  /** Last authenticated packet from the active camera endpoint.  Video can
+   * legitimately arrive in bursts, so it must not be the sole liveness
+   * signal. */
+  private lastP2pTrafficAt: number = 0;
   private lastResurrectAt: number = 0; // for backoff
   private stallTimeoutMs: number =
     Math.max(3, parseInt(process.env.STREAM_STALL_TIMEOUT_SEC || "8", 10)) *
     1000;
+  private transportStallTimeoutMs: number =
+    Math.max(
+      12,
+      parseInt(process.env.P2P_TRANSPORT_STALL_TIMEOUT_SEC || "20", 10),
+    ) * 1000;
   private reconnectBackoffMs: number =
     Math.max(2, parseInt(process.env.RECONNECT_BACKOFF_SEC || "4", 10)) * 1000;
   private ch0Seq: number = 0;
@@ -2155,8 +2164,10 @@ export class AqaraCameraBridge extends EventEmitter {
       return;
     const now = Date.now();
     const dead = !this.isConnected;
-    // UDP still flowing (mid-IDR or leftover P-bytes) — do not stall-resurrect.
-    if (!dead && now - this.lastVideoFrameAt < this.stallTimeoutMs) {
+    // Any authenticated traffic from the active peer (media or ALIVE) proves
+    // the P2P session is healthy.  In particular, a large IDR can delay the
+    // next decoded frame long enough to trip the old 8 s video-only watchdog.
+    if (!dead && now - this.lastP2pTrafficAt < this.transportStallTimeoutMs) {
       return;
     }
     // Do NOT tear down a live P2P session that has not produced an IDR yet.
@@ -2168,13 +2179,25 @@ export class AqaraCameraBridge extends EventEmitter {
       this.isConnected &&
       this.hasSeenKeyframe &&
       now > this._stallGraceUntil &&
-      now - this.lastVideoFrameAt > this.stallTimeoutMs;
+      now - this.lastVideoFrameAt > this.stallTimeoutMs &&
+      now - this.lastP2pTrafficAt > this.transportStallTimeoutMs;
     const firstFrameGaveUp =
       this.isConnected &&
       !this.hasSeenKeyframe &&
       this.p2pConnectedAt > 0 &&
       now - this.p2pConnectedAt > 45000;
     if (dead || stalled || firstFrameGaveUp) {
+      const mediaIdle = this.lastVideoFrameAt
+        ? now - this.lastVideoFrameAt
+        : -1;
+      const trafficIdle = this.lastP2pTrafficAt
+        ? now - this.lastP2pTrafficAt
+        : -1;
+      console.warn(
+        `⚠️ [${this.did}] watchdog reconnect dead=${dead} stalled=${stalled} ` +
+          `firstFrameTimeout=${firstFrameGaveUp} mediaIdle=${mediaIdle}ms ` +
+          `p2pIdle=${trafficIdle}ms`,
+      );
       this.resurrect();
     }
   }
@@ -2336,6 +2359,17 @@ export class AqaraCameraBridge extends EventEmitter {
 
     if (magic !== PPCS_MAGIC) return;
 
+    // Only trust traffic from the currently negotiated camera endpoint.  A
+    // master-server packet must not keep a dead camera session artificially
+    // alive.
+    if (
+      this.isConnected &&
+      this.cameraIp === rinfo.address &&
+      this.cameraPort === rinfo.port
+    ) {
+      this.lastP2pTrafficAt = Date.now();
+    }
+
     // TUTK Master Server response: type 0x40 returns dynamic camera endpoint
     if (msgType === 0x40 && payload.length >= 8) {
       const port = (payload[3] << 8) | payload[2];
@@ -2378,13 +2412,16 @@ export class AqaraCameraBridge extends EventEmitter {
         this.p2pEstablishing = false;
         this.reconnectAttempts = 0;
         this.lastVideoFrameAt = Date.now();
+        this.lastP2pTrafficAt = this.lastVideoFrameAt;
         this.p2pConnectedAt = Date.now();
         this._loggedQuality = false;
         this._qualityAcked = false;
         this._lowInitSent = false;
         this._hdRaiseSent = false;
         this._getFrameAfterVideo = false;
-        this._stallGraceUntil = 0;
+        // Let login/session/encoder setup settle.  The previous 8 s watchdog
+        // could kill a healthy just-started stream before its first GOP.
+        this._stallGraceUntil = this.lastVideoFrameAt + 15_000;
         this._ch3Log = 0;
         this.lastMediaIdx = -1;
         this.lastMediaPkt = null;
