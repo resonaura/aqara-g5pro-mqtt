@@ -50,6 +50,7 @@ private:
     std::shared_ptr<AvioReassembler> reassembler_;
     std::unique_ptr<RtspServer> rtsp_server_;
     std::unique_ptr<P2pClient> p2p_client_;
+    bool seen_first_keyframe_ = false;
 };
 
 } // namespace aqara

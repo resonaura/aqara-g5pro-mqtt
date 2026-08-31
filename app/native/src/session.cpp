@@ -38,6 +38,10 @@ request_keyframe();
 
     reassembler_->set_callbacks(
         [this](const VideoFrame& vf) {
+            if (vf.is_keyframe && !seen_first_keyframe_) {
+                seen_first_keyframe_ = true;
+                if (event_cb_) event_cb_("{\"event\":\"keyframe\",\"did\":\"" + config_.did + "\"}");
+            }
             if (rtsp_server_) rtsp_server_->broadcast_video(vf);
         },
         [this](const AudioFrame& af) {

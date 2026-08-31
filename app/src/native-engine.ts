@@ -124,6 +124,8 @@ export class NativeMediaEngine extends EventEmitter {
       this.emit("talkback_ready", msg.did);
     } else if (msg.event === "session_started") {
       this.emit("session_started", msg.did, msg.rtsp_port);
+    } else if (msg.event === "keyframe") {
+      this.emit("keyframe", msg.did);
     } else {
       this.emit(msg.event || "message", msg);
     }

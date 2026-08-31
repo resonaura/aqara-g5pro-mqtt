@@ -139,8 +139,17 @@ async function main() {
           state.connected = true;
         });
 
+        bridge.on("p2p_session_ready", () => {
+          state.connected = true;
+          state.hasSeenKeyframe = true;
+        });
+
         bridge.on("stream_started", () => {
           state.connected = true;
+          state.hasSeenKeyframe = true;
+        });
+
+        bridge.on("keyframe", () => {
           state.hasSeenKeyframe = true;
         });
 

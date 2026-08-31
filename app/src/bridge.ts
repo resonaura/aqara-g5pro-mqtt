@@ -344,10 +344,27 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     });
 
+    engine.on("session_started", (did: string, port: number) => {
+      if (did === this.did) {
+        this.isConnected = true;
+        this.emit("connected", { port });
+      }
+    });
+
     engine.on("session_ready", (did: string) => {
       if (did === this.did) {
         this.p2pSessionReady = true;
+        this.isConnected = true;
         this.emit("p2p_session_ready");
+        this.emit("stream_started");
+        this.emit("keyframe");
+      }
+    });
+
+    engine.on("keyframe", (did: string) => {
+      if (did === this.did) {
+        this.emit("keyframe");
+        this.emit("stream_started");
       }
     });
 
