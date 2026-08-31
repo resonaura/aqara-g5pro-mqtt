@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "build:native": "mkdir -p native/build && cd native/build && cmake .. && make -j4",
+    "build:native": "tsx src/scripts/build-native.ts",
     "format": "prettier --write \"src/**/*.{ts,js,json}\"",
     "format:native": "clang-format -i native/src/**/*.cpp native/src/**/*.hpp",
     "format:all": "pnpm run format && pnpm run format:native",

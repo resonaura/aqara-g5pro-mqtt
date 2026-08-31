@@ -67,6 +67,7 @@ void AvioReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
     state.stream_buf.clear();
     state.pending_audio.clear();
     state.pending_audio_expected = 0;
+    state.gap_notified = false;
     state.expected_seq = next_seq;
     std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " sequence gap, resync at seq=" << next_seq
               << " gaps=" << sequence_gaps_ << std::endl;
@@ -96,6 +97,8 @@ void AvioReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* 
             state.reorder_buf.erase(it);
             state.expected_seq = static_cast<uint16_t>(state.expected_seq + 1);
         }
+        if (state.reorder_buf.empty())
+            state.gap_notified = false;
         return;
     }
 
@@ -105,6 +108,11 @@ void AvioReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* 
     }
 
     if (diff < 64) {
+        if (!state.gap_notified) {
+            state.gap_notified = true;
+            if (kf_req_cb_)
+                kf_req_cb_();
+        }
         state.reorder_buf.try_emplace(seq, data, data + len);
         if (state.reorder_buf.size() < 16)
             return;

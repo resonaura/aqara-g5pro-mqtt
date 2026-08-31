@@ -12,7 +12,7 @@ function publishDiscoveryEntity(
 
   const payload: Record<string, any> = {
     name: entity.name,
-    unique_id: objectId,
+    unique_id: `${mqttDevice.id}_${objectId}`,
     state_topic: `${baseTopic}/state`,
     command_topic: entity.command ? `${baseTopic}/set` : undefined,
     icon: entity.icon,
@@ -198,7 +198,7 @@ export function publishPtzDiscovery(client: MqttClient, mqttDevice: MQTTDevice) 
       `${base}/config`,
       JSON.stringify({
         name: d.name,
-        unique_id: d.attr,
+        unique_id: `${mqttDevice.id}_${d.attr}`,
         command_topic: `${base}/set`,
         icon: d.icon,
         device: {

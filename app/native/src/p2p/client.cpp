@@ -354,7 +354,7 @@ void P2pClient::discovery_loop() {
     uint8_t lan_bcast[4] = {0xF1, 0x30, 0x00, 0x00};
     auto bcasts = get_broadcast_ips();
     std::cout << "[P2P-Native] Discovery started on local port " << my_port << " local_ip=" << local_ip
-              << " key=" << std::string(ppcs_key_.begin(), ppcs_key_.end()) << std::endl;
+              << std::endl;
 
     int attempts = 0;
     while (running_ && !is_connected_ && attempts < 150) {
@@ -442,9 +442,6 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
 
     char ip_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &(src.sin_addr), ip_str, INET_ADDRSTRLEN);
-    std::cout << "[P2P-Native] Recv " << len << "B from " << ip_str << ":" << ntohs(src.sin_port) << " type=0x"
-              << std::hex << (int)msg_type << std::dec << " paylen=" << payload_len << std::endl;
-
     const uint8_t* payload = dec.data() + 4;
 
     if ((msg_type == 0x40 || msg_type == 0x21) && payload_len >= 8) {
@@ -494,9 +491,13 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         // discovery candidates after a session is already active.
         const bool already_connected = is_connected_.load();
         if (already_connected && !same_endpoint(src, camera_addr_)) {
-            return;
-        }
-        if (!already_connected) {
+            if (!session_started_ && is_lan_ip(src)) {
+                camera_addr_ = src;
+                last_login_sent_ms_ = 0;
+            } else {
+                return;
+            }
+        } else if (!already_connected) {
             camera_addr_ = src;
         }
 
@@ -521,9 +522,13 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         // Ignore late RDY_ACK packets from non-winning endpoints.
         const bool already_connected = is_connected_.load();
         if (already_connected && !same_endpoint(src, camera_addr_)) {
-            return;
-        }
-        if (!already_connected) {
+            if (!session_started_ && is_lan_ip(src)) {
+                camera_addr_ = src;
+                last_login_sent_ms_ = 0;
+            } else {
+                return;
+            }
+        } else if (!already_connected) {
             camera_addr_ = src;
         }
         const bool first_handshake = !is_connected_.exchange(true);
@@ -543,10 +548,17 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         // flush_acks() targets camera_addr_. Reject data from a late candidate,
         // otherwise ACKs go to a different peer and the camera retries forever.
         if (is_connected_ && !same_endpoint(src, camera_addr_)) {
-            return;
+            if (!session_ready_ && is_lan_ip(src)) {
+                camera_addr_ = src;
+            } else {
+                return;
+            }
         }
         uint8_t channel = payload[1];
         uint16_t seq = (static_cast<uint16_t>(payload[2]) << 8) | static_cast<uint16_t>(payload[3]);
+        if (channel != 0) {
+            last_media_traffic_ms_ = current_time_ms();
+        }
         const uint8_t* chan_data = payload + 4;
         size_t chan_len = payload_len - 4;
 
@@ -558,6 +570,7 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         } else if (channel == 1 || channel == 4 || channel == 5) {
             if (!session_ready_) {
                 session_ready_ = true;
+                session_ready_since_ms_ = current_time_ms();
                 if (event_cb_) {
                     event_cb_("{\"event\":\"session_ready\",\"did\":\"" + config_.did + "\"}");
                 }
@@ -613,10 +626,7 @@ void P2pClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
         if (!session_ready_) {
             session_ready_ = true;
             std::cout << "[P2P-Native] 0x1003 Session Ready for " << config_.did << std::endl;
-            // Send 0x101C Stream Start on Channel 3
-            auto stream_frame = PpcsCipher::build_lumi_frame(0x101C, nullptr, 0, cmd_seq_++);
-            send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
-
+            session_ready_since_ms_ = current_time_ms();
             set_quality(config_.p2p_quality_channel);
             request_keyframe();
 
@@ -658,14 +668,25 @@ void P2pClient::watchdog_loop() {
                     send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
                 }
             } else if (session_ready_) {
-                // Stream heartbeat on channel 3 every 5 seconds
-                if (tick % 5 == 0) {
+                const int64_t now = current_time_ms();
+                const int64_t media_at = last_media_traffic_ms_.load();
+                const int64_t ready_at = session_ready_since_ms_.load();
+
+                if (media_at == 0 && ready_at > 0 && now - ready_at > 3000 &&
+                    now - last_stream_retry_ms_.load() > 5000) {
+                    last_stream_retry_ms_ = now;
+                    std::cout << "[P2P-Native] No media after session ready for " << config_.did
+                              << ", retrying stream start" << std::endl;
                     auto stream_frame = PpcsCipher::build_lumi_frame(0x101C, nullptr, 0, cmd_seq_++);
                     send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
+                    auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
+                    send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
+                    request_keyframe();
+                } else if (media_at > 0 && now - media_at > 5000) {
+                    request_keyframe();
                 }
 
-                // Check traffic timeout (10s)
-                int64_t elapsed = current_time_ms() - last_p2p_traffic_ms_;
+                const int64_t elapsed = now - last_p2p_traffic_ms_;
                 if (elapsed > 10000) {
                     request_keyframe();
                 }

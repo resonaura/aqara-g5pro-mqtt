@@ -78,6 +78,9 @@ private:
     std::atomic<bool> session_ready_{false};
     std::atomic<bool> connected_notified_{false};
     std::atomic<int64_t> last_login_sent_ms_{0};
+    std::atomic<int64_t> session_ready_since_ms_{0};
+    std::atomic<int64_t> last_media_traffic_ms_{0};
+    std::atomic<int64_t> last_stream_retry_ms_{0};
 
     sockaddr_in camera_addr_{};
     std::vector<sockaddr_in> endpoints_;

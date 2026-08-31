@@ -125,6 +125,8 @@ void RtspServer::hold_for_new_idr() {
     {
         std::lock_guard<std::mutex> lock(keyframe_mutex_);
         cached_keyframe_ = VideoFrame{};
+        cached_gop_.clear();
+        cached_gop_bytes_ = 0;
     }
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
     for (auto& pair : clients_) {
@@ -296,9 +298,6 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
         client.is_playing = true;
         client.received_keyframe = false;
         client.wait_idr = true;
-        if (kf_req_cb_) {
-            kf_req_cb_();
-        }
 
         resp << "RTSP/1.0 200 OK\r\n"
              << "CSeq: " << cseq << "\r\n"
@@ -310,6 +309,27 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
 
         std::string str = resp.str();
         send(client.socket_fd, str.data(), str.length(), 0);
+
+        // Replaying one cached IDR followed by live P-frames is invalid because
+        // those P-frames can reference intermediate pictures the client missed.
+        // Replay the complete current GOP instead; only force a fresh IDR when
+        // no complete GOP is available yet.
+        std::vector<VideoFrame> gop;
+        {
+            std::lock_guard<std::mutex> key_lock(keyframe_mutex_);
+            gop = cached_gop_;
+        }
+        if (!gop.empty() && gop.front().is_keyframe) {
+            std::lock_guard<std::recursive_mutex> clients_lock(clients_mutex_);
+            client.wait_idr = false;
+            client.received_keyframe = true;
+            for (const auto& frame : gop) {
+                client.video_rtp_timestamp += 4500;
+                send_video_to_client(client, frame);
+            }
+        } else if (kf_req_cb_) {
+            kf_req_cb_();
+        }
         return;
     } else if (method == "TEARDOWN") {
         client.is_playing = false;
@@ -567,9 +587,22 @@ void RtspServer::broadcast_video(const VideoFrame& vf) {
         return;
     is_hevc_ = (vf.codec_id == 0x004F);
 
-    if (vf.is_keyframe) {
+    {
         std::lock_guard<std::mutex> lock(keyframe_mutex_);
-        cached_keyframe_ = vf;
+        if (vf.is_keyframe) {
+            cached_keyframe_ = vf;
+            cached_gop_.clear();
+            cached_gop_bytes_ = 0;
+        }
+        if (!cached_gop_.empty() || vf.is_keyframe) {
+            cached_gop_.push_back(vf);
+            cached_gop_bytes_ += vf.annex_b_data.size();
+            // Bound memory while retaining a useful current GOP.
+            if (cached_gop_.size() > 300 || cached_gop_bytes_ > 24 * 1024 * 1024) {
+                cached_gop_.clear();
+                cached_gop_bytes_ = 0;
+            }
+        }
     }
 
     // Harvest SPS/PPS/VPS

@@ -78,18 +78,40 @@ export function ensureNativeBinary(): string {
   const needsRebuild = !binaryExists || storedHash !== currentHash;
 
   if (needsRebuild) {
-    const reason = !binaryExists
-      ? "Binary missing"
-      : `Source code modified (${storedHash.substring(0, 8)} -> ${currentHash.substring(0, 8)})`;
-    console.log(`🔨 [NativeEngine] ${reason}. Building C++ native engine (aqara-streamer)...`);
-
-    const startTime = Date.now();
-    try {
-      if (!fs.existsSync(buildDir)) {
-        fs.mkdirSync(buildDir, { recursive: true });
+    fs.mkdirSync(buildDir, { recursive: true });
+    const lockDir = path.join(buildDir, ".build_lock");
+    const lockDeadline = Date.now() + 120_000;
+    let ownsLock = false;
+    while (!ownsLock) {
+      try {
+        fs.mkdirSync(lockDir);
+        ownsLock = true;
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") throw err;
+        // Recover from a process that died while compiling.
+        try {
+          if (Date.now() - fs.statSync(lockDir).mtimeMs > 120_000) {
+            fs.rmSync(lockDir, { recursive: true, force: true });
+            continue;
+          }
+        } catch {}
+        if (Date.now() >= lockDeadline) throw new Error("Timed out waiting for native build lock");
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
       }
+    }
 
-      // Configure & Build with all available CPU cores
+    try {
+      // Another process may have completed the exact build while we waited.
+      const latestHash = computeSourceHash(nativeDir);
+      const latestStored = fs.existsSync(hashFile) ? fs.readFileSync(hashFile, "utf8").trim() : "";
+      if (fs.existsSync(binPath) && latestStored === latestHash) return binPath;
+
+      const reason = !fs.existsSync(binPath)
+        ? "Binary missing"
+        : `Source code modified (${latestStored.substring(0, 8)} -> ${latestHash.substring(0, 8)})`;
+      console.log(`🔨 [NativeEngine] ${reason}. Building C++ native engine (aqara-streamer)...`);
+      const startTime = Date.now();
+
       execSync(`cmake -B "${buildDir}" "${nativeDir}"`, {
         stdio: process.env.DEBUG ? "inherit" : "pipe",
       });
@@ -97,12 +119,14 @@ export function ensureNativeBinary(): string {
         stdio: process.env.DEBUG ? "inherit" : "pipe",
       });
 
-      fs.writeFileSync(hashFile, currentHash, "utf8");
+      fs.writeFileSync(hashFile, latestHash, "utf8");
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
       console.log(`✅ [NativeEngine] Build completed successfully in ${elapsed}s -> ${binPath}`);
     } catch (err: any) {
       console.error(`❌ [NativeEngine] Build failed:\n`, err.stderr?.toString() || err.message);
       throw err;
+    } finally {
+      fs.rmSync(lockDir, { recursive: true, force: true });
     }
   }
 

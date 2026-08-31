@@ -15,7 +15,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 
 export interface FrameSnapshotterOptions {
@@ -73,8 +73,8 @@ export class FrameSnapshotter extends EventEmitter {
 
   /**
    * Spawn a single ffmpeg process that grabs one full frame and exits.
-   * Uses `-ss 1` to skip the initial probe, `-vframes 1` for a single
-   * complete picture, and `-q:v 2` for a high-quality JPEG.
+   * Allows RTSP probing to receive SPS/PPS, captures one complete frame,
+   * and writes a high-quality JPEG atomically.
    */
   private grabOnce(): Promise<boolean> {
     return new Promise((resolve) => {
@@ -82,17 +82,23 @@ export class FrameSnapshotter extends EventEmitter {
         resolve(false);
         return;
       }
+      const tempPath = `${this.currentPath}.tmp`;
+      try {
+        rmSync(tempPath, { force: true });
+      } catch {}
       const args = [
         "-hide_banner",
         "-loglevel",
         "error",
         "-rtsp_transport",
         "tcp",
-        "-stimeout",
+        "-timeout",
         "5000000", // 5s RTSP connect timeout (microseconds)
         "-y",
-        "-ss",
-        "1",
+        "-analyzeduration",
+        "5000000",
+        "-probesize",
+        "5000000",
         "-i",
         this.rtspUrl,
         "-frames:v",
@@ -101,7 +107,9 @@ export class FrameSnapshotter extends EventEmitter {
         "2",
         "-f",
         "image2",
-        this.currentPath,
+        "-update",
+        "1",
+        tempPath,
       ];
 
       let proc: ChildProcess;
@@ -113,6 +121,7 @@ export class FrameSnapshotter extends EventEmitter {
         return;
       }
 
+      this.proc = proc;
       let stderrBuf = "";
       proc.stderr?.on("data", (d: Buffer) => {
         stderrBuf += d.toString();
@@ -124,11 +133,21 @@ export class FrameSnapshotter extends EventEmitter {
         resolve(false);
       });
       proc.on("exit", (code) => {
+        if (this.proc === proc) this.proc = null;
         if (this.stopped) {
           resolve(false);
           return;
         }
-        if (code === 0 && this.hasFrame()) {
+        let completed = false;
+        if (code === 0) {
+          try {
+            if (statSync(tempPath).size > 0) {
+              renameSync(tempPath, this.currentPath);
+              completed = true;
+            }
+          } catch {}
+        }
+        if (completed && this.hasFrame()) {
           this.emit("frame", {
             slug: this.slug,
             did: this.did,
