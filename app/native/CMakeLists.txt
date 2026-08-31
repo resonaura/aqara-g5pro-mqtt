@@ -30,3 +30,12 @@ set(SOURCES
 add_executable(aqara-streamer ${SOURCES})
 
 target_link_libraries(aqara-streamer PRIVATE pthread)
+
+enable_testing()
+add_executable(aqara-reassembler-test
+    tests/reassembler_test.cpp
+    src/crypto/chacha20.cpp
+    src/media/reassembler.cpp
+)
+target_link_libraries(aqara-reassembler-test PRIVATE pthread)
+add_test(NAME aqara-reassembler-test COMMAND aqara-reassembler-test)

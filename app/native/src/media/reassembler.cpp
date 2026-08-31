@@ -1,6 +1,7 @@
 #include "reassembler.hpp"
 #include "../crypto/chacha20.hpp"
 #include <cstring>
+#include <iostream>
 
 namespace aqara {
 
@@ -35,167 +36,182 @@ void AvioReassembler::set_callbacks(VideoCallback video_cb, AudioCallback audio_
 }
 
 void AvioReassembler::reset() {
-    expected_seq_ = -1;
-    reorder_buf_.clear();
-    current_frame_buf_.clear();
-    current_expected_len_ = 0;
-    assembling_ = false;
-}
-
-void AvioReassembler::push_packet(uint16_t seq, const uint8_t* data, size_t len) {
-    if (len == 0)
-        return;
-
-    if (expected_seq_ == -1) {
-        expected_seq_ = seq;
-    }
-
-    int16_t diff = static_cast<int16_t>(seq - static_cast<uint16_t>(expected_seq_));
-
-    if (diff == 0) {
-        handle_packet_immediate(seq, data, len);
-        expected_seq_ = (seq + 1) & 0xffff;
-
-        while (!reorder_buf_.empty()) {
-            auto it = reorder_buf_.find(static_cast<uint16_t>(expected_seq_));
-            if (it == reorder_buf_.end())
-                break;
-
-            handle_packet_immediate(it->first, it->second.data(), it->second.size());
-            reorder_buf_.erase(it);
-            expected_seq_ = (expected_seq_ + 1) & 0xffff;
-        }
-    } else if (diff > 0 && diff < 64) {
-        reorder_buf_[seq] = std::vector<uint8_t>(data, data + len);
-        if (reorder_buf_.size() >= 16) {
-            // Buffer backlog limit reached, drain in sequence order
-            for (auto& pair : reorder_buf_) {
-                handle_packet_immediate(pair.first, pair.second.data(), pair.second.size());
-                expected_seq_ = (pair.first + 1) & 0xffff;
-            }
-            reorder_buf_.clear();
-        }
-    } else if (diff < 0) {
-        // Late duplicate packet, discard
-        return;
-    } else {
-        // Large jump / reset
-        for (auto& pair : reorder_buf_) {
-            handle_packet_immediate(pair.first, pair.second.data(), pair.second.size());
-        }
-        reorder_buf_.clear();
-        expected_seq_ = seq;
-        handle_packet_immediate(seq, data, len);
-        expected_seq_ = (seq + 1) & 0xffff;
-    }
+    channels_.clear();
 }
 
 static inline bool is_avio_video_header_safe(const uint8_t* data, size_t len) {
     if (len < 32)
         return false;
-    uint16_t codec = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
-    if (codec != 0x004E && codec != 0x004F)
+    const uint16_t codec = read_u16_le(data);
+    if (codec != 0x004E && codec != 0x004F && codec != 0x0050)
         return false;
-    uint16_t flags = static_cast<uint16_t>(data[2]) | (static_cast<uint16_t>(data[3]) << 8);
-    if (flags > 1)
-        return false;
-    uint32_t payload_len = read_u32_le(data + 28);
-    return (payload_len >= 16 && payload_len <= 2000000);
+    const uint32_t payload_len = read_u32_le(data + 28);
+    return payload_len >= 16 && payload_len <= 2 * 1024 * 1024;
 }
 
 static inline bool is_avio_audio_header_safe(const uint8_t* data, size_t len) {
-    if (len < 40)
+    if (len < 32 || read_u16_le(data) != 0x0088)
         return false;
-    uint16_t codec = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
-    if (codec != 0x0088)
-        return false;
-    uint32_t payload_len = read_u32_le(data + 28);
-    return (payload_len > 0 && payload_len <= 4096);
+    const uint32_t payload_len = read_u32_le(data + 28);
+    return payload_len > 0 && payload_len <= 64 * 1024;
 }
 
-void AvioReassembler::handle_packet_immediate(uint16_t seq, const uint8_t* data, size_t len) {
-    if (len < 4)
+void AvioReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& state, uint16_t next_seq) {
+    sequence_gaps_++;
+    discarded_bytes_ += state.stream_buf.size();
+    state.stream_buf.clear();
+    state.expected_seq = next_seq;
+    std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " sequence gap, resync at seq=" << next_seq
+              << " gaps=" << sequence_gaps_ << std::endl;
+    if (kf_req_cb_)
+        kf_req_cb_();
+}
+
+void AvioReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
+    if (!data || len == 0)
         return;
+    packets_received_++;
+    ChannelState& state = channels_[channel];
 
-    const uint8_t* cur = data;
-    size_t cur_len = len;
+    if (state.expected_seq == -1)
+        state.expected_seq = seq;
 
-    // Peel all leading AVIO Audio (0x0088) frames
-    while (cur_len >= 40 && is_avio_audio_header_safe(cur, cur_len)) {
-        uint32_t audio_len = read_u32_le(cur + 28);
-        size_t frame_len = 40 + audio_len;
-        if (frame_len > cur_len)
-            break;
+    const int16_t diff = static_cast<int16_t>(seq - static_cast<uint16_t>(state.expected_seq));
+    if (diff == 0) {
+        handle_packet_immediate(channel, state, seq, data, len);
+        state.expected_seq = static_cast<uint16_t>(seq + 1);
 
-        std::vector<uint8_t> audio_frame(cur, cur + frame_len);
-        if (ChaCha20::decrypt_audio_payload(audio_frame.data(), audio_frame.size(), audio_key_)) {
-            if (audio_cb_) {
-                AudioFrame af;
-                af.aac_adts_data.assign(audio_frame.data() + 40, audio_frame.data() + 40 + audio_len);
-                audio_cb_(af);
-            }
+        while (true) {
+            auto it = state.reorder_buf.find(static_cast<uint16_t>(state.expected_seq));
+            if (it == state.reorder_buf.end())
+                break;
+            handle_packet_immediate(channel, state, it->first, it->second.data(), it->second.size());
+            state.reorder_buf.erase(it);
+            state.expected_seq = static_cast<uint16_t>(state.expected_seq + 1);
         }
-
-        cur += frame_len;
-        cur_len -= frame_len;
+        return;
     }
 
-    if (cur_len == 0)
+    if (diff < 0) {
+        packets_duplicate_++;
         return;
+    }
 
-    if (assembling_) {
-        if (current_frame_buf_.size() + cur_len >= current_expected_len_) {
-            size_t take = current_expected_len_ > current_frame_buf_.size()
-                              ? (current_expected_len_ - current_frame_buf_.size())
-                              : 0;
-            if (take > 0 && take <= cur_len) {
-                current_frame_buf_.insert(current_frame_buf_.end(), cur, cur + take);
-                flush_current_frame();
-                const uint8_t* rem = cur + take;
-                size_t rem_len = cur_len - take;
-                if (rem_len >= 32 && is_avio_video_header_safe(rem, rem_len)) {
-                    assembling_ = true;
-                    frame_start_seq_ = seq;
-                    current_expected_len_ = 32 + read_u32_le(rem + 28);
-                    current_frame_buf_.assign(rem, rem + rem_len);
-                    if (current_frame_buf_.size() >= current_expected_len_) {
-                        flush_current_frame();
-                    }
-                }
-            } else {
-                current_frame_buf_.insert(current_frame_buf_.end(), cur, cur + cur_len);
-                if (current_frame_buf_.size() >= current_expected_len_) {
-                    flush_current_frame();
-                }
-            }
-        } else {
-            current_frame_buf_.insert(current_frame_buf_.end(), cur, cur + cur_len);
-        }
-    } else {
-        if (is_avio_video_header_safe(cur, cur_len)) {
-            assembling_ = true;
-            frame_start_seq_ = seq;
-            current_expected_len_ = 32 + read_u32_le(cur + 28);
-            current_frame_buf_.assign(cur, cur + cur_len);
-            if (current_frame_buf_.size() >= current_expected_len_) {
-                flush_current_frame();
+    if (diff < 64) {
+        state.reorder_buf.try_emplace(seq, data, data + len);
+        if (state.reorder_buf.size() < 16)
+            return;
+
+        // The missing datagram did not arrive within the jitter window. Never
+        // concatenate later fragments onto a damaged frame: discard residue,
+        // request an IDR, then resume at the nearest buffered sequence.
+        auto nearest = state.reorder_buf.begin();
+        uint16_t best_distance = 0xffff;
+        const uint16_t expected = static_cast<uint16_t>(state.expected_seq);
+        for (auto it = state.reorder_buf.begin(); it != state.reorder_buf.end(); ++it) {
+            const uint16_t distance = static_cast<uint16_t>(it->first - expected);
+            if (distance < best_distance) {
+                best_distance = distance;
+                nearest = it;
             }
         }
+        const uint16_t restart_seq = nearest->first;
+        recover_from_sequence_gap(channel, state, restart_seq);
+
+        while (true) {
+            auto it = state.reorder_buf.find(static_cast<uint16_t>(state.expected_seq));
+            if (it == state.reorder_buf.end())
+                break;
+            handle_packet_immediate(channel, state, it->first, it->second.data(), it->second.size());
+            state.reorder_buf.erase(it);
+            state.expected_seq = static_cast<uint16_t>(state.expected_seq + 1);
+        }
+        return;
+    }
+
+    // Session reset or a jump larger than the reorder window.
+    state.reorder_buf.clear();
+    recover_from_sequence_gap(channel, state, seq);
+    handle_packet_immediate(channel, state, seq, data, len);
+    state.expected_seq = static_cast<uint16_t>(seq + 1);
+}
+
+void AvioReassembler::handle_packet_immediate(uint8_t channel, ChannelState& state, uint16_t, const uint8_t* data, size_t len) {
+    static constexpr size_t MAX_STREAM_BUFFER = 4 * 1024 * 1024;
+    if (state.stream_buf.size() + len > MAX_STREAM_BUFFER) {
+        discarded_bytes_ += state.stream_buf.size();
+        state.stream_buf.clear();
+        if (kf_req_cb_)
+            kf_req_cb_();
+    }
+    state.stream_buf.insert(state.stream_buf.end(), data, data + len);
+    parse_stream_buffer(channel, state);
+}
+
+void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) {
+    (void)channel;
+    while (state.stream_buf.size() >= 32) {
+        const uint8_t* data = state.stream_buf.data();
+
+        if (is_avio_audio_header_safe(data, state.stream_buf.size())) {
+            const size_t frame_len = 32ULL + read_u32_le(data + 28); // dataLen includes 8-byte nonce + AAC
+            if (frame_len > state.stream_buf.size())
+                return;
+            process_completed_audio(data, frame_len);
+            state.stream_buf.erase(state.stream_buf.begin(), state.stream_buf.begin() + static_cast<std::ptrdiff_t>(frame_len));
+            continue;
+        }
+
+        if (is_avio_video_header_safe(data, state.stream_buf.size())) {
+            const size_t frame_len = 32ULL + read_u32_le(data + 28);
+            if (frame_len > state.stream_buf.size())
+                return;
+            process_completed_avio(data, frame_len);
+            state.stream_buf.erase(state.stream_buf.begin(), state.stream_buf.begin() + static_cast<std::ptrdiff_t>(frame_len));
+            continue;
+        }
+
+        // We may be resuming after a lost UDP datagram. Search for the next
+        // complete header, but retain 31 trailing bytes so split headers survive.
+        size_t next = 1;
+        for (; next + 32 <= state.stream_buf.size(); ++next) {
+            if (is_avio_audio_header_safe(data + next, state.stream_buf.size() - next) ||
+                is_avio_video_header_safe(data + next, state.stream_buf.size() - next)) {
+                break;
+            }
+        }
+        if (next + 32 > state.stream_buf.size()) {
+            const size_t drop = state.stream_buf.size() - 31;
+            discarded_bytes_ += drop;
+            state.stream_buf.erase(state.stream_buf.begin(), state.stream_buf.begin() + static_cast<std::ptrdiff_t>(drop));
+            return;
+        }
+        discarded_bytes_ += next;
+        state.stream_buf.erase(state.stream_buf.begin(), state.stream_buf.begin() + static_cast<std::ptrdiff_t>(next));
     }
 }
 
-void AvioReassembler::flush_current_frame() {
-    if (!assembling_ || current_frame_buf_.size() < 32) {
-        assembling_ = false;
-        current_frame_buf_.clear();
-        current_expected_len_ = 0;
+void AvioReassembler::process_completed_audio(const uint8_t* data, size_t len) {
+    std::vector<uint8_t> frame(data, data + len);
+    if (!ChaCha20::decrypt_audio_payload(frame.data(), frame.size(), audio_key_))
         return;
-    }
 
-    process_completed_avio(current_frame_buf_.data(), current_frame_buf_.size());
-    assembling_ = false;
-    current_frame_buf_.clear();
-    current_expected_len_ = 0;
+    const uint32_t payload_len = read_u32_le(frame.data() + 28);
+    if (payload_len <= 8 || 32ULL + payload_len > frame.size())
+        return;
+    const size_t audio_len = payload_len - 8;
+
+    AudioFrame af;
+    af.aac_adts_data.assign(frame.begin() + 40, frame.begin() + 40 + audio_len);
+    audio_frames_++;
+    if (audio_frames_ == 1 || audio_frames_ % 250 == 0) {
+        const bool adts = af.aac_adts_data.size() >= 2 && af.aac_adts_data[0] == 0xff &&
+                          (af.aac_adts_data[1] & 0xf0) == 0xf0;
+        std::cout << "[AVIO] audio frames=" << audio_frames_ << " bytes=" << audio_len
+                  << " adts=" << (adts ? "yes" : "no") << std::endl;
+    }
+    if (audio_cb_)
+        audio_cb_(af);
 }
 
 void AvioReassembler::process_completed_avio(const uint8_t* data, size_t len) {
@@ -314,6 +330,7 @@ void AvioReassembler::process_completed_avio(const uint8_t* data, size_t len) {
     }
 
     if (video_cb_) {
+        video_frames_++;
         VideoFrame vf;
         vf.annex_b_data = std::move(annex_b);
         vf.is_keyframe = found_idr;

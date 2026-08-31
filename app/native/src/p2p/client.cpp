@@ -525,10 +525,10 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
                 }
             }
             if (reassembler_)
-                reassembler_->push_packet(seq, chan_data, chan_len);
+                reassembler_->push_packet(channel, seq, chan_data, chan_len);
         } else if (channel == 2) {
             if (reassembler_)
-                reassembler_->push_packet(seq, chan_data, chan_len);
+                reassembler_->push_packet(channel, seq, chan_data, chan_len);
         }
     }
 }

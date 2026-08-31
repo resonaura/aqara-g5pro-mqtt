@@ -29,7 +29,11 @@ StreamSession::StreamSession(const SessionConfig& config, std::function<void(con
 
     reassembler_ = std::make_shared<AvioReassembler>(vk, ak);
     rtsp_server_ = std::make_unique<RtspServer>(config_.rtsp_port, config_.rtsp_path, [this]() {
-        request_keyframe();
+request_keyframe();
+      // RTSP PLAY may request an IDR, but it must not reset the shared P2P
+        // reassembly state. Home Assistant often opens/probes multiple clients.
+        if (p2p_client_)
+            p2p_client_->request_keyframe();
     });
 
     reassembler_->set_callbacks(

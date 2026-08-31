@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -255,9 +256,8 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
              << "CSeq: " << cseq << "\r\n"
              << "Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER\r\n\r\n";
     } else if (method == "DESCRIBE") {
-        if (kf_req_cb_) {
-            kf_req_cb_();
-        }
+        // DESCRIBE is a metadata probe, not a media subscription. Requesting
+        // an IDR here causes needless bitrate spikes during HA polling.
         std::string sdp = generate_sdp("0.0.0.0");
         resp << "RTSP/1.0 200 OK\r\n"
              << "CSeq: " << cseq << "\r\n"
@@ -304,9 +304,9 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
              << "CSeq: " << cseq << "\r\n"
              << "Session: " << client.session_id << "\r\n"
              << "Range: npt=0.000-\r\n"
-             << "RTP-Info: url=" << content_base << "track0;seq=" << video_rtp_seq_
-             << ";rtptime=" << video_rtp_timestamp_ << ",url=" << content_base
-             << "track1;seq=" << audio_rtp_seq_ << ";rtptime=" << audio_rtp_timestamp_ << "\r\n\r\n";
+             << "RTP-Info: url=" << content_base << "track0;seq=" << client.video_rtp_seq
+             << ";rtptime=" << client.video_rtp_timestamp << ",url=" << content_base
+             << "track1;seq=" << client.audio_rtp_seq << ";rtptime=" << client.audio_rtp_timestamp << "\r\n\r\n";
 
         std::string str = resp.str();
         send(client.socket_fd, str.data(), str.length(), 0);
@@ -380,25 +380,40 @@ std::string RtspServer::generate_sdp(const std::string& host_ip) {
 }
 
 void RtspServer::send_interleaved_rtp(RtspClient& client, int channel, const uint8_t* rtp_pkt, size_t len) {
-    if (channel < 0 || len == 0)
+    if (channel < 0 || !rtp_pkt || len == 0 || len > 0xffff)
         return;
-    uint8_t header[4];
-    header[0] = 0x24;  // '$'
-    header[1] = static_cast<uint8_t>(channel & 0xff);
-    header[2] = static_cast<uint8_t>((len >> 8) & 0xff);
-    header[3] = static_cast<uint8_t>(len & 0xff);
 
-    struct iovec iov[2];
-    iov[0].iov_base = header;
-    iov[0].iov_len = 4;
-    iov[1].iov_base = const_cast<uint8_t*>(rtp_pkt);
-    iov[1].iov_len = len;
+    // sendmsg() is allowed to return a short write. That happens most often on
+    // high-motion frames because their bitrate and number of RTP fragments grow.
+    // Treating a short write as success truncates RTP packets and produces exactly
+    // the moving-block corruption seen by clients. Serialize and send all bytes.
+    std::vector<uint8_t> framed(4 + len);
+    framed[0] = 0x24;  // '$'
+    framed[1] = static_cast<uint8_t>(channel & 0xff);
+    framed[2] = static_cast<uint8_t>((len >> 8) & 0xff);
+    framed[3] = static_cast<uint8_t>(len & 0xff);
+    std::memcpy(framed.data() + 4, rtp_pkt, len);
 
-    struct msghdr msg {};
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 2;
-
-    sendmsg(client.socket_fd, &msg, 0);
+    size_t offset = 0;
+    while (offset < framed.size()) {
+#ifdef MSG_NOSIGNAL
+        const int flags = MSG_NOSIGNAL;
+#else
+        const int flags = 0;
+#endif
+        const ssize_t written = send(client.socket_fd, framed.data() + offset, framed.size() - offset, flags);
+        if (written > 0) {
+            offset += static_cast<size_t>(written);
+            continue;
+        }
+        if (written < 0 && errno == EINTR)
+            continue;
+        client.is_playing = false;
+        std::cerr << "[RTSP-Native] RTP send failed for " << client.ip << ":" << client.port
+                  << " sent=" << offset << "/" << framed.size()
+                  << " err=" << (written < 0 ? std::strerror(errno) : "peer closed") << std::endl;
+        return;
+    }
 }
 
 void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) {
@@ -449,17 +464,17 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
             uint8_t rtp_pkt[12 + MAX_PAYLOAD];
             rtp_pkt[0] = 0x80;
             rtp_pkt[1] = (is_last_nal ? 0x80 : 0x00) | 96;
-            rtp_pkt[2] = static_cast<uint8_t>((video_rtp_seq_ >> 8) & 0xff);
-            rtp_pkt[3] = static_cast<uint8_t>(video_rtp_seq_ & 0xff);
-            rtp_pkt[4] = static_cast<uint8_t>((video_rtp_timestamp_ >> 24) & 0xff);
-            rtp_pkt[5] = static_cast<uint8_t>((video_rtp_timestamp_ >> 16) & 0xff);
-            rtp_pkt[6] = static_cast<uint8_t>((video_rtp_timestamp_ >> 8) & 0xff);
-            rtp_pkt[7] = static_cast<uint8_t>(video_rtp_timestamp_ & 0xff);
-            rtp_pkt[8] = static_cast<uint8_t>((video_ssrc_ >> 24) & 0xff);
-            rtp_pkt[9] = static_cast<uint8_t>((video_ssrc_ >> 16) & 0xff);
-            rtp_pkt[10] = static_cast<uint8_t>((video_ssrc_ >> 8) & 0xff);
-            rtp_pkt[11] = static_cast<uint8_t>(video_ssrc_ & 0xff);
-            video_rtp_seq_++;
+            rtp_pkt[2] = static_cast<uint8_t>((client.video_rtp_seq >> 8) & 0xff);
+            rtp_pkt[3] = static_cast<uint8_t>(client.video_rtp_seq & 0xff);
+            rtp_pkt[4] = static_cast<uint8_t>((client.video_rtp_timestamp >> 24) & 0xff);
+            rtp_pkt[5] = static_cast<uint8_t>((client.video_rtp_timestamp >> 16) & 0xff);
+            rtp_pkt[6] = static_cast<uint8_t>((client.video_rtp_timestamp >> 8) & 0xff);
+            rtp_pkt[7] = static_cast<uint8_t>(client.video_rtp_timestamp & 0xff);
+            rtp_pkt[8] = static_cast<uint8_t>((client.video_ssrc >> 24) & 0xff);
+            rtp_pkt[9] = static_cast<uint8_t>((client.video_ssrc >> 16) & 0xff);
+            rtp_pkt[10] = static_cast<uint8_t>((client.video_ssrc >> 8) & 0xff);
+            rtp_pkt[11] = static_cast<uint8_t>(client.video_ssrc & 0xff);
+            client.video_rtp_seq++;
 
             std::memcpy(rtp_pkt + 12, nal, nal_len);
             send_interleaved_rtp(client, ch, rtp_pkt, 12 + nal_len);
@@ -477,17 +492,17 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
                 uint8_t rtp_pkt[15 + MAX_PAYLOAD];
                 rtp_pkt[0] = 0x80;
                 rtp_pkt[1] = (is_last_nal && is_end ? 0x80 : 0x00) | 96;
-                rtp_pkt[2] = static_cast<uint8_t>((video_rtp_seq_ >> 8) & 0xff);
-                rtp_pkt[3] = static_cast<uint8_t>(video_rtp_seq_ & 0xff);
-                rtp_pkt[4] = static_cast<uint8_t>((video_rtp_timestamp_ >> 24) & 0xff);
-                rtp_pkt[5] = static_cast<uint8_t>((video_rtp_timestamp_ >> 16) & 0xff);
-                rtp_pkt[6] = static_cast<uint8_t>((video_rtp_timestamp_ >> 8) & 0xff);
-                rtp_pkt[7] = static_cast<uint8_t>(video_rtp_timestamp_ & 0xff);
-                rtp_pkt[8] = static_cast<uint8_t>((video_ssrc_ >> 24) & 0xff);
-                rtp_pkt[9] = static_cast<uint8_t>((video_ssrc_ >> 16) & 0xff);
-                rtp_pkt[10] = static_cast<uint8_t>((video_ssrc_ >> 8) & 0xff);
-                rtp_pkt[11] = static_cast<uint8_t>(video_ssrc_ & 0xff);
-                video_rtp_seq_++;
+                rtp_pkt[2] = static_cast<uint8_t>((client.video_rtp_seq >> 8) & 0xff);
+                rtp_pkt[3] = static_cast<uint8_t>(client.video_rtp_seq & 0xff);
+                rtp_pkt[4] = static_cast<uint8_t>((client.video_rtp_timestamp >> 24) & 0xff);
+                rtp_pkt[5] = static_cast<uint8_t>((client.video_rtp_timestamp >> 16) & 0xff);
+                rtp_pkt[6] = static_cast<uint8_t>((client.video_rtp_timestamp >> 8) & 0xff);
+                rtp_pkt[7] = static_cast<uint8_t>(client.video_rtp_timestamp & 0xff);
+                rtp_pkt[8] = static_cast<uint8_t>((client.video_ssrc >> 24) & 0xff);
+                rtp_pkt[9] = static_cast<uint8_t>((client.video_ssrc >> 16) & 0xff);
+                rtp_pkt[10] = static_cast<uint8_t>((client.video_ssrc >> 8) & 0xff);
+                rtp_pkt[11] = static_cast<uint8_t>(client.video_ssrc & 0xff);
+                client.video_rtp_seq++;
 
                 uint8_t fu_header = nal_type;
                 if (is_start)
@@ -517,17 +532,17 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
                 uint8_t rtp_pkt[14 + MAX_PAYLOAD];
                 rtp_pkt[0] = 0x80;
                 rtp_pkt[1] = (is_last_nal && is_end ? 0x80 : 0x00) | 96;
-                rtp_pkt[2] = static_cast<uint8_t>((video_rtp_seq_ >> 8) & 0xff);
-                rtp_pkt[3] = static_cast<uint8_t>(video_rtp_seq_ & 0xff);
-                rtp_pkt[4] = static_cast<uint8_t>((video_rtp_timestamp_ >> 24) & 0xff);
-                rtp_pkt[5] = static_cast<uint8_t>((video_rtp_timestamp_ >> 16) & 0xff);
-                rtp_pkt[6] = static_cast<uint8_t>((video_rtp_timestamp_ >> 8) & 0xff);
-                rtp_pkt[7] = static_cast<uint8_t>(video_rtp_timestamp_ & 0xff);
-                rtp_pkt[8] = static_cast<uint8_t>((video_ssrc_ >> 24) & 0xff);
-                rtp_pkt[9] = static_cast<uint8_t>((video_ssrc_ >> 16) & 0xff);
-                rtp_pkt[10] = static_cast<uint8_t>((video_ssrc_ >> 8) & 0xff);
-                rtp_pkt[11] = static_cast<uint8_t>(video_ssrc_ & 0xff);
-                video_rtp_seq_++;
+                rtp_pkt[2] = static_cast<uint8_t>((client.video_rtp_seq >> 8) & 0xff);
+                rtp_pkt[3] = static_cast<uint8_t>(client.video_rtp_seq & 0xff);
+                rtp_pkt[4] = static_cast<uint8_t>((client.video_rtp_timestamp >> 24) & 0xff);
+                rtp_pkt[5] = static_cast<uint8_t>((client.video_rtp_timestamp >> 16) & 0xff);
+                rtp_pkt[6] = static_cast<uint8_t>((client.video_rtp_timestamp >> 8) & 0xff);
+                rtp_pkt[7] = static_cast<uint8_t>(client.video_rtp_timestamp & 0xff);
+                rtp_pkt[8] = static_cast<uint8_t>((client.video_ssrc >> 24) & 0xff);
+                rtp_pkt[9] = static_cast<uint8_t>((client.video_ssrc >> 16) & 0xff);
+                rtp_pkt[10] = static_cast<uint8_t>((client.video_ssrc >> 8) & 0xff);
+                rtp_pkt[11] = static_cast<uint8_t>(client.video_ssrc & 0xff);
+                client.video_rtp_seq++;
 
                 uint8_t fu_indicator = nal_nri | 28;
                 uint8_t fu_header = nal_type;
@@ -603,9 +618,6 @@ void RtspServer::broadcast_video(const VideoFrame& vf) {
         }
     }
 
-    // Smooth monotonic 90 kHz timestamp increment for 20fps camera stream
-    video_rtp_timestamp_ += 4500;
-
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
     for (auto& pair : clients_) {
         RtspClient& client = *(pair.second);
@@ -621,6 +633,7 @@ void RtspServer::broadcast_video(const VideoFrame& vf) {
             }
         }
 
+        client.video_rtp_timestamp += 4500;
         send_video_to_client(client, vf);
     }
 }
@@ -656,8 +669,6 @@ void RtspServer::broadcast_audio(const AudioFrame& af) {
     if (raw_len == 0)
         return;
 
-    audio_rtp_timestamp_ += 1024;  // 1024 samples per AAC frame at 16000 Hz
-
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
     for (auto& pair : clients_) {
         RtspClient& client = *(pair.second);
@@ -667,20 +678,22 @@ void RtspServer::broadcast_audio(const AudioFrame& af) {
         if (ch < 0)
             continue;
 
+        client.audio_rtp_timestamp += 1024;  // 1024 samples per AAC frame at 16000 Hz
+
         uint8_t rtp_pkt[16 + 2048];
         rtp_pkt[0] = 0x80;
         rtp_pkt[1] = 0x80 | 97;
-        rtp_pkt[2] = static_cast<uint8_t>((audio_rtp_seq_ >> 8) & 0xff);
-        rtp_pkt[3] = static_cast<uint8_t>(audio_rtp_seq_ & 0xff);
-        rtp_pkt[4] = static_cast<uint8_t>((audio_rtp_timestamp_ >> 24) & 0xff);
-        rtp_pkt[5] = static_cast<uint8_t>((audio_rtp_timestamp_ >> 16) & 0xff);
-        rtp_pkt[6] = static_cast<uint8_t>((audio_rtp_timestamp_ >> 8) & 0xff);
-        rtp_pkt[7] = static_cast<uint8_t>(audio_rtp_timestamp_ & 0xff);
-        rtp_pkt[8] = static_cast<uint8_t>((audio_ssrc_ >> 24) & 0xff);
-        rtp_pkt[9] = static_cast<uint8_t>((audio_ssrc_ >> 16) & 0xff);
-        rtp_pkt[10] = static_cast<uint8_t>((audio_ssrc_ >> 8) & 0xff);
-        rtp_pkt[11] = static_cast<uint8_t>(audio_ssrc_ & 0xff);
-        audio_rtp_seq_++;
+        rtp_pkt[2] = static_cast<uint8_t>((client.audio_rtp_seq >> 8) & 0xff);
+        rtp_pkt[3] = static_cast<uint8_t>(client.audio_rtp_seq & 0xff);
+        rtp_pkt[4] = static_cast<uint8_t>((client.audio_rtp_timestamp >> 24) & 0xff);
+        rtp_pkt[5] = static_cast<uint8_t>((client.audio_rtp_timestamp >> 16) & 0xff);
+        rtp_pkt[6] = static_cast<uint8_t>((client.audio_rtp_timestamp >> 8) & 0xff);
+        rtp_pkt[7] = static_cast<uint8_t>(client.audio_rtp_timestamp & 0xff);
+        rtp_pkt[8] = static_cast<uint8_t>((client.audio_ssrc >> 24) & 0xff);
+        rtp_pkt[9] = static_cast<uint8_t>((client.audio_ssrc >> 16) & 0xff);
+        rtp_pkt[10] = static_cast<uint8_t>((client.audio_ssrc >> 8) & 0xff);
+        rtp_pkt[11] = static_cast<uint8_t>(client.audio_ssrc & 0xff);
+        client.audio_rtp_seq++;
 
         // RFC 3640 AU-header: 16-bit header section length (16), followed by (size << 3)
         uint16_t au_hdr = static_cast<uint16_t>((raw_len << 3) & 0xffff);

@@ -121,13 +121,14 @@ bool ChaCha20::decrypt_video_payload(uint8_t* payload, size_t len, const uint8_t
 
 bool ChaCha20::decrypt_audio_payload(uint8_t* payload, size_t len, const uint8_t key[32]) {
     if (len < 40)
-        return false;  // 32 byte AVIO header + 8 byte nonce
-    const uint8_t* nonce = payload + 32;
-    uint32_t audio_len = read_u32_le(payload + 28);
-    if (audio_len == 0 || 40 + audio_len > len)
+        return false;  // 32-byte AVIO header + 8-byte nonce
+    const uint32_t payload_len = read_u32_le(payload + 28);
+    if (payload_len <= 8 || 32ULL + payload_len > len)
         return false;
 
+    const uint8_t* nonce = payload + 32;
     uint8_t* audio_data = payload + 40;
+    const size_t audio_len = payload_len - 8;
     xor_stream(key, nonce, 0, audio_data, audio_data, audio_len);
     return true;
 }
