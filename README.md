@@ -1,6 +1,6 @@
 # 🎥 Aqara Cameras Universal RTSP, 2-Way Talkback & MQTT Integration
 
-[![Version](https://img.shields.io/badge/version-1.5.3-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.5.4-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20Discovery-orange.svg)](https://www.home-assistant.io/)
 [![C++17 Engine](https://img.shields.io/badge/Native%20Engine-C%2B%2B17-00599C.svg)](app/native)

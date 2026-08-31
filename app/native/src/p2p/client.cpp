@@ -560,6 +560,11 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         if (channel != 0) {
             last_media_traffic_ms_ = current_time_ms();
         }
+        if (channel == 1 || channel == 4 || channel == 5) {
+            last_video_traffic_ms_ = current_time_ms();
+        } else if (channel == 2) {
+            last_audio_traffic_ms_ = current_time_ms();
+        }
         const uint8_t* chan_data = payload + 4;
         size_t chan_len = payload_len - 4;
 
@@ -668,26 +673,39 @@ void P2pClient::watchdog_loop() {
                 }
             } else if (session_ready_) {
                 const int64_t now = current_time_ms();
-                const int64_t media_at = last_media_traffic_ms_.load();
+                const int64_t video_at = last_video_traffic_ms_.load();
                 const int64_t ready_at = session_ready_since_ms_.load();
 
-                // Only retry if no media traffic has arrived at all, or if stream stopped for > 5s
-                if (media_at == 0 && ready_at > 0 && now - ready_at > 4000 &&
+                // Only retry if no video traffic has arrived within 4s of session ready, or if video stopped for > 6s
+                if (video_at == 0 && ready_at > 0 && now - ready_at > 4000 &&
                     now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
-                    std::cout << "[P2P-Native] No media after session ready for " << config_.did
+                    std::cout << "[P2P-Native] No video after session ready for " << config_.did
                               << ", retrying stream start" << std::endl;
                     auto stream_frame = PpcsCipher::build_lumi_frame(0x101C, nullptr, 0, cmd_seq_++);
                     send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
                     auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
                     send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
                     request_keyframe();
-                } else if (media_at > 0 && now - media_at > 6000 &&
+                } else if (video_at > 0 && now - video_at > 6000 &&
                            now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
-                    std::cout << "[P2P-Native] Media traffic stalled for " << config_.did
-                              << ", requesting keyframe" << std::endl;
+                    std::cout << "[P2P-Native] Video stream stalled (" << (now - video_at) / 1000 << "s) for "
+                              << config_.did << ", requesting keyframe" << std::endl;
                     request_keyframe();
+
+                    if (now - video_at > 12000) {
+                        auto stream_frame = PpcsCipher::build_lumi_frame(0x101C, nullptr, 0, cmd_seq_++);
+                        send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
+                        auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
+                        send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
+                    }
+
+                    if (now - video_at > 20000 && event_cb_) {
+                        std::cout << "[P2P-Native] Video stream unresponsive for " << config_.did
+                                  << ", emitting unhealthy event" << std::endl;
+                        event_cb_("{\"event\":\"unhealthy\",\"did\":\"" + config_.did + "\"}");
+                    }
                 }
             }
         }

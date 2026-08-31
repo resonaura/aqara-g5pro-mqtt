@@ -13,7 +13,7 @@ import {
 import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
 import "./config.js";
 import { promises as fs } from "node:fs";
-import { getCameraStreamQualities, pickMaxStreamQuality } from "./aqara.js";
+import { getCameraStreamQualities, pickMaxStreamQuality, jsonQualityChannel } from "./aqara.js";
 import {
   publishCameraDiscovery,
   publishDiscovery,
@@ -216,19 +216,25 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
     const idx = cameraData.indexOf(cameraInfo);
     const rtspPort = rtspPorts[idx];
     const deviceId = cameraInfo.mqttDevice.id;
-    const bridge = new AqaraCameraBridge({
-      did: cameraInfo.device.did,
-      token: process.env.TOKEN || "",
-      rtspPort,
-      videoKey: process.env.VIDEO_KEY,
-    });
-    cameraInfo.bridge = bridge;
-
     const host = process.env.BRIDGE_HOST || getLocalIpv4();
     const slug = slugMap[cameraInfo.device.did];
     const streamUrl = `rtsp://${host}:${rtspPort}/live/${slug}`;
     const rtmpTalkUrl = `rtmp://${host}:${rtmpServer.listenPort}/talk/${slug}`;
     const snapshotUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${slug}/snapshot`;
+
+    const bridge = new AqaraCameraBridge({
+      did: cameraInfo.device.did,
+      token: process.env.TOKEN || "",
+      cameraIp: cameraInfo.device.ip,
+      cameraPort: 32108,
+      rtspPort,
+      rtspPath: `live/${slug}`,
+      model: cameraInfo.device.model,
+      p2pQualityChannel: jsonQualityChannel(null, cameraInfo.device.model),
+      videoKey: process.env.VIDEO_KEY,
+      deviceName: cameraInfo.device.deviceName,
+    });
+    cameraInfo.bridge = bridge;
 
     const updateStreamEntities = () => {
       client.publish(`homeassistant/switch/${deviceId}/p2p_stream/state`, "ON", { retain: true });
@@ -265,6 +271,10 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
         cameraInfo.snapshotter = snap;
       }
     };
+
+    bridge.on("unhealthy", () => {
+      void restartCameraStream(cameraInfo, "Native P2P engine reported video stream stall");
+    });
 
     bridge.on("rtsp_ready", (url) => {
       console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
@@ -617,6 +627,8 @@ client.on("message", async (topic, msg) => {
 // === RTSP STREAM URLS (Официальный / облачный RTSP URL) ===
 const QUALITY_ORDER = ["1520p", "1080p", "720p", "360p"];
 
+const lastPublishedValues = new Map<string, string>();
+
 async function publishRtspState(subjectId: string, cameraInfo: (typeof cameraData)[0]) {
   const res = await queryAttrs(["rtsp_url"], subjectId);
   const raw = res.result?.[0]?.value;
@@ -630,7 +642,12 @@ async function publishRtspState(subjectId: string, cameraInfo: (typeof cameraDat
       urls[best],
       { retain: true },
     );
-    console.log(`📹 ${cameraInfo.device.deviceName} Official RTSP=${urls[best]}`);
+    const rtspKey = `${cameraInfo.device.did}:official_rtsp`;
+    const prevRtsp = lastPublishedValues.get(rtspKey);
+    if (prevRtsp !== urls[best]) {
+      lastPublishedValues.set(rtspKey, urls[best]);
+      console.log(`📹 ${cameraInfo.device.deviceName} Official RTSP=${urls[best]}`);
+    }
   } catch {
     console.error("❌ Failed to parse rtsp_url:", raw);
   }
@@ -679,6 +696,7 @@ async function publishAttr(
   refreshed = false,
 ) {
   const { mqttDevice, device } = cameraInfo;
+  const isDebug = process.env.LOG_LEVEL === "debug";
 
   if (["white_light_enable", "white_light_level"].includes(attr)) {
     const [power, level] = await Promise.all([
@@ -694,9 +712,15 @@ async function publishAttr(
       JSON.stringify(lightState),
       { retain: true },
     );
-    console.log(
-      `${refreshed ? "🔄" : "💡"} ${device.deviceName} Spotlight=${state}, ${brightness}`,
-    );
+    const spotKey = `${device.did}:spotlight`;
+    const spotStr = `${state}, ${brightness}`;
+    const prevSpot = lastPublishedValues.get(spotKey);
+    if (prevSpot !== spotStr || refreshed) {
+      lastPublishedValues.set(spotKey, spotStr);
+      console.log(
+        `${refreshed ? "🔄" : "💡"} ${device.deviceName} Spotlight=${state}, ${brightness}`,
+      );
+    }
     return;
   }
 
@@ -738,7 +762,20 @@ async function publishAttr(
   const topic = `homeassistant/${entity.domain}/${mqttDevice.id}/${attr}/state`;
   const value = normalizeValue(entity.domain, attr, rawValue);
   client.publish(topic, String(value), { retain: true });
-  console.log(`📊 ${device.deviceName} ${attr}=${value}`);
+
+  const stateKey = `${device.did}:${attr}`;
+  const strVal = String(value);
+  const prevVal = lastPublishedValues.get(stateKey);
+
+  if (prevVal === undefined) {
+    lastPublishedValues.set(stateKey, strVal);
+    if (isDebug) {
+      console.log(`📊 ${device.deviceName} ${attr}=${strVal}`);
+    }
+  } else if (prevVal !== strVal || refreshed) {
+    lastPublishedValues.set(stateKey, strVal);
+    console.log(`📊 ${device.deviceName} ${attr}: ${prevVal} ➔ ${strVal}`);
+  }
 }
 
 // === START ===

@@ -286,10 +286,10 @@ void AvioReassembler::process_completed_audio(const uint8_t* data, size_t len) {
     af.aac_adts_data.assign(frame.begin() + 40, frame.begin() + 40 + audio_len);
     af.timestamp_ms = ts_ms;
     audio_frames_++;
-    if (audio_frames_ == 1 || audio_frames_ % 250 == 0) {
+    if (audio_frames_ == 1) {
         const bool adts = af.aac_adts_data.size() >= 2 && af.aac_adts_data[0] == 0xff &&
                           (af.aac_adts_data[1] & 0xf0) == 0xf0;
-        std::cout << "[AVIO] audio frames=" << audio_frames_ << " bytes=" << audio_len
+        std::cout << "[AVIO] audio initialized: bytes=" << audio_len
                   << " ts_ms=" << ts_ms << " adts=" << (adts ? "yes" : "no") << std::endl;
     }
     if (audio_cb_)

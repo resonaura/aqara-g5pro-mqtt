@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.4 — Dedicated Video Stream Watchdog, Direct LAN Routing & Polling Log Deduplication
+
+### 📹 Dedicated Video Stream Watchdog & Recovery
+- **Independent Video Traffic Tracking**: `P2pClient` now tracks `last_video_traffic_ms_` separately from audio traffic. Continuous audio streams (e.g. on E1 cameras) no longer mask frozen/stalled video frames.
+- **Progressive Stream Recovery**: If video traffic pauses for >6s, the native engine requests a new IDR keyframe and resends `0x101C`/`0x1002` stream start commands; after 20s of silence, it emits an `unhealthy` event to trigger full tunnel reconnect.
+- **Direct LAN IP Routing**: Automatically binds `cameraIp` and port `32108` in `ensureCameraBridge`, ensuring direct low-latency LAN communication and eliminating WAN/relay disconnects.
+- **Accurate RTSP Slug Mapping**: Bridges now explicitly set `rtspPath: live/${slug}` matching the Home Assistant entity and snapshot endpoints.
+
+### 🧹 Polling Log Deduplication
+- Sensor and switch polling logs now output to the console only when attribute values change (`📊 Camera attr: oldVal ➔ newVal`), completely eliminating terminal spam during steady-state operation.
+- Reassembler periodic audio logs silenced in non-debug mode.
+
 ## v1.5.3 — Stream Health Watchdog & Home Assistant Persistent `/data` Volume
 
 ### 🩺 Stream Health Watchdog & Auto-Recovery

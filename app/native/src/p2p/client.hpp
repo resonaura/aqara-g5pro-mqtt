@@ -80,6 +80,8 @@ private:
     std::atomic<int64_t> last_login_sent_ms_{0};
     std::atomic<int64_t> session_ready_since_ms_{0};
     std::atomic<int64_t> last_media_traffic_ms_{0};
+    std::atomic<int64_t> last_video_traffic_ms_{0};
+    std::atomic<int64_t> last_audio_traffic_ms_{0};
     std::atomic<int64_t> last_stream_retry_ms_{0};
 
     sockaddr_in camera_addr_{};
