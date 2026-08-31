@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.3 — Stream Health Watchdog & Home Assistant Persistent `/data` Volume
+
+### 🩺 Stream Health Watchdog & Auto-Recovery
+- **Snapshot-Driven Stream Health**: `FrameSnapshotter` continuously monitors video frame capture. If 3 consecutive snapshot attempts fail (30s without valid frames) or the stream freezes, it flags the stream as unhealthy.
+- **Smart Auto-Reconnect**: Automatically restarts the P2P tunnel and RTSP pipeline for degraded cameras with intelligent cooldowns (20s backoff) to prevent thrashing.
+- **Immediate State Recovery**: Resets error counts and confirms health as soon as fresh frames arrive.
+
+### 💾 Home Assistant OS Persistent Volume (`/data`)
+- **Docker / Add-on Persistence**: Dynamic data directory resolution prioritizes Home Assistant's mounted `/data` volume for `app_state.json`, `rtsp_ports.json`, and `frames/`. State is completely preserved across add-on updates and host reboots.
+- **Instant Boot Restoration**: Saved camera P2P streams are auto-restored immediately on add-on startup in parallel with MQTT connection.
+
 ## v1.5.2 — P2P State Persistence Across Reboots & Instant Stream Entities Update
 
 ### 💾 P2P Stream State Persistence

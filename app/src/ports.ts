@@ -1,6 +1,7 @@
 import fs from "fs";
 import * as net from "net";
 import path from "path";
+import { getDataDir } from "./state.js";
 
 /**
  * RTSP port allocation helpers.
@@ -103,7 +104,7 @@ export interface RtspPortMap {
 }
 
 function rtspPortMapPath(): string {
-  return path.join(process.cwd(), "data", "rtsp_ports.json");
+  return path.join(getDataDir(), "rtsp_ports.json");
 }
 
 export function writeRtspPortMap(base: number, entries: RtspPortEntry[]): void {

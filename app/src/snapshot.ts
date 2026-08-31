@@ -3,20 +3,17 @@
  * at a fixed cadence (default: every 10 seconds) and writes it to a file
  * that the HTTP server can serve.
  *
- * Spawns a dedicated `ffmpeg` process that reads the local RTSP URL produced
- * by the AqaraCameraBridge and writes a single, full-frame JPEG to
- * `data/frames/<slug>.jpg`. Re-spawns every `intervalMs` so that the cached
- * file is always fresh.
- *
- * Lifecycle:
- *   - Call `start()` when P2P Stream is turned ON.
- *   - Call `stop()` when P2P Stream is turned OFF.
+ * Also acts as a Stream Health Indicator:
+ * If 3 consecutive snapshot attempts fail (e.g. RTSP frozen, decryption failed,
+ * or camera P2P connection dropped), it emits 'unhealthy' so the bridge can
+ * automatically restart the camera connection with appropriate cooldown.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
+import { getDataDir } from "./state.js";
 
 export interface FrameSnapshotterOptions {
   slug: string;
@@ -24,6 +21,7 @@ export interface FrameSnapshotterOptions {
   rtspUrl: string;
   dataDir?: string;
   intervalMs?: number;
+  maxConsecutiveFailures?: number;
 }
 
 export class FrameSnapshotter extends EventEmitter {
@@ -32,20 +30,25 @@ export class FrameSnapshotter extends EventEmitter {
   private inFlight = false;
   private stopped = false;
   private currentPath: string;
+  private consecutiveFailures = 0;
+  private lastSuccessTime = 0;
+  private startTime = 0;
 
   private readonly slug: string;
   private readonly did: string;
   private readonly rtspUrl: string;
   private readonly dataDir: string;
   private readonly intervalMs: number;
+  private readonly maxConsecutiveFailures: number;
 
   constructor(options: FrameSnapshotterOptions) {
     super();
     this.slug = options.slug;
     this.did = options.did;
     this.rtspUrl = options.rtspUrl;
-    this.dataDir = options.dataDir || path.resolve(process.cwd(), "data");
+    this.dataDir = options.dataDir || getDataDir();
     this.intervalMs = options.intervalMs ?? 10_000;
+    this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 3;
 
     if (!existsSync(this.dataDir)) {
       mkdirSync(this.dataDir, { recursive: true });
@@ -62,6 +65,11 @@ export class FrameSnapshotter extends EventEmitter {
     return this.currentPath;
   }
 
+  /** Number of consecutive failed snapshot captures. */
+  public get failureCount(): number {
+    return this.consecutiveFailures;
+  }
+
   /** True if the cached file exists and is non-empty. */
   public hasFrame(): boolean {
     try {
@@ -73,8 +81,6 @@ export class FrameSnapshotter extends EventEmitter {
 
   /**
    * Spawn a single ffmpeg process that grabs one full frame and exits.
-   * Allows RTSP probing to receive SPS/PPS, captures one complete frame,
-   * and writes a high-quality JPEG atomically.
    */
   private grabOnce(): Promise<boolean> {
     return new Promise((resolve) => {
@@ -117,6 +123,7 @@ export class FrameSnapshotter extends EventEmitter {
         proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
       } catch (err: any) {
         console.warn(`⚠️ [Snapshot:${this.slug}] ffmpeg spawn failed: ${err.message}`);
+        this.handleFailure();
         resolve(false);
         return;
       }
@@ -130,6 +137,7 @@ export class FrameSnapshotter extends EventEmitter {
         if (!this.stopped) {
           console.warn(`⚠️ [Snapshot:${this.slug}] ffmpeg error: ${err.message}`);
         }
+        this.handleFailure();
         resolve(false);
       });
       proc.on("exit", (code) => {
@@ -148,6 +156,8 @@ export class FrameSnapshotter extends EventEmitter {
           } catch {}
         }
         if (completed && this.hasFrame()) {
+          this.consecutiveFailures = 0;
+          this.lastSuccessTime = Date.now();
           this.emit("frame", {
             slug: this.slug,
             did: this.did,
@@ -160,19 +170,38 @@ export class FrameSnapshotter extends EventEmitter {
               `⚠️ [Snapshot:${this.slug}] ffmpeg exited (code=${code}): ${stderrBuf.trim().split("\n").pop()}`,
             );
           }
+          this.handleFailure();
           resolve(false);
         }
       });
     });
   }
 
-  /**
-   * Start the periodic snapshot loop. Triggers an immediate first attempt
-   * and then runs every `intervalMs`.
-   */
+  private handleFailure(): void {
+    if (this.stopped) return;
+    this.consecutiveFailures++;
+    this.emit("failed", {
+      slug: this.slug,
+      did: this.did,
+      consecutiveFailures: this.consecutiveFailures,
+    });
+
+    if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+      const durationMs = Date.now() - (this.lastSuccessTime || this.startTime);
+      this.emit("unhealthy", {
+        slug: this.slug,
+        did: this.did,
+        consecutiveFailures: this.consecutiveFailures,
+        durationMs,
+      });
+    }
+  }
+
   /** Start periodic snapshot loop. One file per slug (overwritten), 10s interval. */
   public start(): void {
     if (this.timer || this.stopped) return;
+    this.startTime = Date.now();
+    this.consecutiveFailures = 0;
     if (!process.env.DEBUG)
       console.log(`📸 [Snapshot:${this.slug}] ON (${this.intervalMs}ms cache, single file)`);
     const tick = async () => {
@@ -204,6 +233,5 @@ export class FrameSnapshotter extends EventEmitter {
       }
       this.proc = null;
     }
-    // Do NOT delete the cached file — it serves as the last-known good frame.
   }
 }

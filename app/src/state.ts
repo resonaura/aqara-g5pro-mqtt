@@ -17,9 +17,31 @@ export interface AppPersistentState {
   global: Record<string, any>;
 }
 
-const STATE_FILE = path.resolve(process.cwd(), "data", "app_state.json");
-const LEGACY_P2P_STATE_FILE = path.resolve(process.cwd(), "data", "p2p_state.json");
-const LOCK_DIR = path.resolve(process.cwd(), "data", "app_state.lock");
+// Dynamic data directory resolver: Home Assistant Add-on persistent /data volume or local ./data
+export function getDataDir(): string {
+  if (process.env.DATA_DIR) {
+    return path.resolve(process.env.DATA_DIR);
+  }
+  try {
+    if (fs.existsSync("/data")) {
+      fs.accessSync("/data", fs.constants.W_OK);
+      return "/data";
+    }
+  } catch {}
+  return path.resolve(process.cwd(), "data");
+}
+
+export function getStateFilePath(): string {
+  return path.join(getDataDir(), "app_state.json");
+}
+
+export function getLegacyP2pFilePath(): string {
+  return path.join(getDataDir(), "p2p_state.json");
+}
+
+export function getLockDirPath(): string {
+  return path.join(getDataDir(), "app_state.lock");
+}
 
 // In-process serialized Promise queue
 let saveQueue = Promise.resolve();
@@ -37,7 +59,8 @@ function createDefaultState(): AppPersistentState {
  * Acquire an inter-process directory lock with stale-lock recovery.
  */
 function acquireLock(timeoutMs = 5000): () => void {
-  const dir = path.dirname(LOCK_DIR);
+  const lockDir = getLockDirPath();
+  const dir = path.dirname(lockDir);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -45,10 +68,10 @@ function acquireLock(timeoutMs = 5000): () => void {
   const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
-      fs.mkdirSync(LOCK_DIR);
+      fs.mkdirSync(lockDir);
       return () => {
         try {
-          fs.rmdirSync(LOCK_DIR);
+          fs.rmdirSync(lockDir);
         } catch {}
       };
     } catch (err: any) {
@@ -56,10 +79,10 @@ function acquireLock(timeoutMs = 5000): () => void {
 
       // Check for stale lock (> 10s old) from a crashed process
       try {
-        const stats = fs.statSync(LOCK_DIR);
+        const stats = fs.statSync(lockDir);
         if (Date.now() - stats.mtimeMs > 10_000) {
           try {
-            fs.rmdirSync(LOCK_DIR);
+            fs.rmdirSync(lockDir);
             continue;
           } catch {}
         }
@@ -80,47 +103,46 @@ function acquireLock(timeoutMs = 5000): () => void {
  * Load complete application persistent state safely with automatic schema migration.
  */
 export function loadAppState(): AppPersistentState {
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      const raw = fs.readFileSync(STATE_FILE, "utf8").trim();
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        // Schema validation / migration
-        if (parsed && typeof parsed === "object") {
-          if (parsed.cameras && typeof parsed.cameras === "object") {
-            return {
-              version: parsed.version || 1,
-              updatedAt: parsed.updatedAt || Date.now(),
-              cameras: parsed.cameras,
-              global: parsed.global || {},
-            };
-          }
-          // Legacy flat { [did]: boolean } migration
-          const state = createDefaultState();
-          for (const [key, val] of Object.entries(parsed)) {
-            if (typeof val === "boolean") {
-              state.cameras[key] = { p2p_stream: val };
+  const stateFile = getStateFilePath();
+  const legacyFile = getLegacyP2pFilePath();
+  const fallbackLocalFile = path.resolve(process.cwd(), "data", "app_state.json");
+  const fallbackLegacyLocal = path.resolve(process.cwd(), "data", "p2p_state.json");
+
+  const candidateFiles = [stateFile, legacyFile, fallbackLocalFile, fallbackLegacyLocal];
+
+  for (const file of candidateFiles) {
+    try {
+      if (fs.existsSync(file)) {
+        const raw = fs.readFileSync(file, "utf8").trim();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            if (parsed.cameras && typeof parsed.cameras === "object") {
+              return {
+                version: parsed.version || 1,
+                updatedAt: parsed.updatedAt || Date.now(),
+                cameras: parsed.cameras,
+                global: parsed.global || {},
+              };
             }
+            // Legacy flat { [did]: boolean } migration
+            const state = createDefaultState();
+            for (const [key, val] of Object.entries(parsed)) {
+              if (typeof val === "boolean") {
+                state.cameras[key] = { p2p_stream: val };
+              } else if (val && typeof val === "object") {
+                state.cameras[key] = val as CameraPersistentState;
+              }
+            }
+            return state;
           }
-          return state;
         }
       }
-    } else if (fs.existsSync(LEGACY_P2P_STATE_FILE)) {
-      const raw = fs.readFileSync(LEGACY_P2P_STATE_FILE, "utf8").trim();
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        const state = createDefaultState();
-        if (parsed && typeof parsed === "object") {
-          for (const [key, val] of Object.entries(parsed)) {
-            state.cameras[key] = typeof val === "boolean" ? { p2p_stream: val } : (val as any);
-          }
-          return state;
-        }
-      }
+    } catch (err: any) {
+      console.warn(`⚠️ Failed to read candidate state file ${file}: ${err.message}`);
     }
-  } catch (err: any) {
-    console.warn(`⚠️ Failed to read app state file: ${err.message}`);
   }
+
   return createDefaultState();
 }
 
@@ -129,25 +151,26 @@ export function loadAppState(): AppPersistentState {
  */
 function updateAppStateSync(updater: (draft: AppPersistentState) => void): AppPersistentState {
   const release = acquireLock();
+  const stateFile = getStateFilePath();
   try {
     const state = loadAppState();
     updater(state);
     state.updatedAt = Date.now();
 
-    const dir = path.dirname(STATE_FILE);
+    const dir = path.dirname(stateFile);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
 
     // Atomic write via PID-tagged temp file + fsync + rename
-    const tmpFile = `${STATE_FILE}.tmp.${process.pid}.${Date.now()}`;
+    const tmpFile = `${stateFile}.tmp.${process.pid}.${Date.now()}`;
     const data = JSON.stringify(state, null, 2);
     const fd = fs.openSync(tmpFile, "w");
     fs.writeFileSync(fd, data, "utf8");
     fs.fsyncSync(fd);
     fs.closeSync(fd);
 
-    fs.renameSync(tmpFile, STATE_FILE);
+    fs.renameSync(tmpFile, stateFile);
     return state;
   } catch (err: any) {
     console.warn(`⚠️ Failed to persist app state: ${err.message}`);

@@ -134,18 +134,77 @@ console.log(`🎙️ Talkback RTMP ingest listening on port ${rtmpServer.listenP
 
 // HTTP server for serving cached JPEG snapshots — only used while a P2P
 // stream is active for a given camera. Bound to process.env.HTTP_PORT || 8580 (auto-allocated).
-const framesDir = path.resolve(process.cwd(), "data", "frames");
+import { getDataDir, loadP2pState, saveP2pState } from "./state.js";
+
+const framesDir = path.join(getDataDir(), "frames");
 const httpServer = new FrameHttpServer(framesDir);
 await httpServer.start();
-
-import { loadP2pState, saveP2pState } from "./state.js";
 
 const client = createMqttClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
 const talkbackFeeds = new Map<string, { ready: boolean; queue: Buffer[] }>();
+const reconnectAttempts = new Map<string, { count: number; lastAttempt: number }>();
 
 function cameraBySlug(name: string) {
   return cameraData.find((c) => slugMap[c.device.did] === name);
+}
+
+async function restartCameraStream(
+  cameraInfo: (typeof cameraData)[number],
+  reason: string,
+): Promise<void> {
+  const did = cameraInfo.device.did;
+  const now = Date.now();
+  const state = reconnectAttempts.get(did) || { count: 0, lastAttempt: 0 };
+
+  // Cooldown: at least 20s between restarts to avoid infinite rapid loops
+  if (now - state.lastAttempt < 20_000) {
+    console.log(
+      `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnect on cooldown (${Math.round((20_000 - (now - state.lastAttempt)) / 1000)}s remaining)...`,
+    );
+    return;
+  }
+
+  state.count++;
+  state.lastAttempt = now;
+  reconnectAttempts.set(did, state);
+
+  console.warn(
+    `⚠️ [Watchdog:${cameraInfo.device.deviceName}] ${reason}. Reconnecting P2P stream (attempt #${state.count})...`,
+  );
+
+  if (cameraInfo.bridge) {
+    cameraInfo.bridge.stop();
+    cameraInfo.bridge = undefined;
+  }
+  if (cameraInfo.snapshotter) {
+    cameraInfo.snapshotter.stop();
+    cameraInfo.snapshotter = undefined;
+  }
+
+  // Wait 2s for ports & tunnels to cleanly close
+  await new Promise((r) => setTimeout(r, 2000));
+
+  // Check if still wanted ON in state
+  const p2pState = loadP2pState();
+  if (p2pState[did] === false) {
+    console.log(
+      `ℹ️ [Watchdog:${cameraInfo.device.deviceName}] P2P stream was turned OFF, skipping reconnect.`,
+    );
+    return;
+  }
+
+  try {
+    await ensureCameraBridge(cameraInfo);
+    console.log(
+      `✅ [Watchdog:${cameraInfo.device.deviceName}] P2P stream reconnected and restored successfully!`,
+    );
+    reconnectAttempts.delete(did);
+  } catch (err: any) {
+    console.warn(
+      `❌ [Watchdog:${cameraInfo.device.deviceName}] Reconnection attempt failed: ${err?.message || err}`,
+    );
+  }
 }
 
 async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Promise<AqaraCameraBridge> {
@@ -181,14 +240,26 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
     const startSnapshotter = () => {
       if (!cameraInfo.snapshotter) {
         const localRtspUrl = `rtsp://127.0.0.1:${rtspPort}/live/${slug}`;
-        const snap = new FrameSnapshotter({ slug, did: cameraInfo.device.did, rtspUrl: localRtspUrl });
+        const snap = new FrameSnapshotter({
+          slug,
+          did: cameraInfo.device.did,
+          rtspUrl: localRtspUrl,
+          dataDir: getDataDir(),
+        });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
+          reconnectAttempts.delete(cameraInfo.device.did);
           const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
           client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, frameUrl, { retain: true });
           try {
             const imgBuf = await fs.readFile(framePath);
             client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
           } catch {}
+        });
+        snap.on("unhealthy", ({ consecutiveFailures, durationMs }) => {
+          void restartCameraStream(
+            cameraInfo,
+            `Snapshot capture failed ${consecutiveFailures} consecutive times (${Math.round(durationMs / 1000)}s without a valid frame)`,
+          );
         });
         snap.start();
         cameraInfo.snapshotter = snap;
@@ -234,6 +305,22 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
     bridgeStartPromises.delete(cameraInfo.device.did);
   }
 }
+
+// Auto-restore saved P2P streams immediately on app boot
+const initialSavedP2pState = loadP2pState();
+console.log(
+  `💾 Loaded persistent state for ${Object.keys(initialSavedP2pState).length} camera(s) from ${getDataDir()}`,
+);
+cameraData.forEach((cam) => {
+  if (initialSavedP2pState[cam.device.did]) {
+    console.log(`🔄 [P2P Stream] Auto-restoring saved P2P stream (ON) for ${cam.device.deviceName}...`);
+    ensureCameraBridge(cam).catch((err) => {
+      console.warn(
+        `⚠️ [P2P Stream] Failed to restore stream on startup for ${cam.device.deviceName}: ${err?.message || err}`,
+      );
+    });
+  }
+});
 
 rtmpServer.on("publish", async ({ name }: { name: string }) => {
   const cam = cameraBySlug(name);
@@ -485,6 +572,7 @@ client.on("message", async (topic, msg) => {
     } else {
       console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
       saveP2pState(cameraInfo.device.did, false);
+      reconnectAttempts.delete(cameraInfo.device.did);
       if (cameraInfo.bridge) {
         cameraInfo.bridge.stop();
         cameraInfo.bridge = undefined;
