@@ -245,12 +245,13 @@ void P2pClient::send_login_if_due(int64_t min_interval_ms) {
     if (!last_login_sent_ms_.compare_exchange_strong(previous, now))
         return;
 
-    std::string login_json = "{\"app_public_key\":\"" + config_.app_pub_hex + "\",\"app_sign\":\"" +
-                             config_.app_sign + "\",\"device_id\":\"" + config_.did + "\",\"timestamp\":\"" +
-                             (config_.sign_time.empty() ? std::to_string(now) : config_.sign_time) + "\"}";
+    std::string login_json = "{\"timestamp\":\"" +
+                             (config_.sign_time.empty() ? std::to_string(now) : config_.sign_time) +
+                             "\",\"app_sign\":\"" + config_.app_sign +
+                             "\",\"app_public_key\":\"" + config_.app_pub_hex + "\"}";
     std::cout << "[P2P-Native] Sending 0x1000 Login for " << config_.did << std::endl;
     auto login_frame = PpcsCipher::build_lumi_frame(0x1000, reinterpret_cast<const uint8_t*>(login_json.data()),
-                                                    login_json.length(), cmd_seq_++);
+                                                     login_json.length(), cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, login_frame.data(), login_frame.size());
 }
 
@@ -544,7 +545,7 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         auto ack = PpcsCipher::build_pppp(0xE1);
         PpcsCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), ack.data(), ack.size());
         send_raw_packet(ack.data(), ack.size(), src);
-    } else if ((msg_type == 0xD0 || msg_type == 0xD8) && payload_len >= 4 && payload[0] == 0xD1) {
+    } else if ((msg_type == 0xD0 || msg_type == 0xD8 || msg_type == 0x82) && payload_len >= 4 && payload[0] == 0xD1) {
         // flush_acks() targets camera_addr_. Reject data from a late candidate,
         // otherwise ACKs go to a different peer and the camera retries forever.
         if (is_connected_ && !same_endpoint(src, camera_addr_)) {
@@ -612,22 +613,20 @@ void P2pClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
         if (!session_started_.exchange(true)) {
             std::cout << "[P2P-Native] 0x1001 Login OK for " << config_.did
                       << ", sending 0x101C stream start & 0x1002 session start" << std::endl;
-            // Match the official client ordering observed with Frida: channel 3
-            // stream/record-list request first, then the empty live-session start.
+            // Match official client ordering from Frida: channel 3
+            // stream/record-list request first (0x101C), then channel 0 live-session start (0x1002).
             auto stream_frame = PpcsCipher::build_lumi_frame(0x101C, nullptr, 0, cmd_seq_++);
             send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
 
             auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
             send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
-
-            set_quality(config_.p2p_quality_channel);
         }
     } else if (type == 0x1003) {
         if (!session_ready_) {
             session_ready_ = true;
-            std::cout << "[P2P-Native] 0x1003 Session Ready for " << config_.did << std::endl;
+            std::cout << "[P2P-Native] 0x1003 Session Ready for " << config_.did
+                      << ", requesting keyframe (0x1018)" << std::endl;
             session_ready_since_ms_ = current_time_ms();
-            set_quality(config_.p2p_quality_channel);
             request_keyframe();
 
             if (event_cb_) {
@@ -668,11 +667,18 @@ void P2pClient::watchdog_loop() {
                     send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
                 }
             } else if (session_ready_) {
+                // Match official app periodic refresh: send 0x1002 and 0x1018 every 20 seconds
+                if (tick % 20 == 0) {
+                    auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
+                    send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
+                    request_keyframe();
+                }
+
                 const int64_t now = current_time_ms();
                 const int64_t media_at = last_media_traffic_ms_.load();
                 const int64_t ready_at = session_ready_since_ms_.load();
 
-                if (media_at == 0 && ready_at > 0 && now - ready_at > 3000 &&
+                if (media_at == 0 && ready_at > 0 && now - ready_at > 4000 &&
                     now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
                     std::cout << "[P2P-Native] No media after session ready for " << config_.did
@@ -681,13 +687,6 @@ void P2pClient::watchdog_loop() {
                     send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
                     auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
                     send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
-                    request_keyframe();
-                } else if (media_at > 0 && now - media_at > 5000) {
-                    request_keyframe();
-                }
-
-                const int64_t elapsed = now - last_p2p_traffic_ms_;
-                if (elapsed > 10000) {
                     request_keyframe();
                 }
             }

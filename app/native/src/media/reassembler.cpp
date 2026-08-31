@@ -38,6 +38,7 @@ void AvioReassembler::set_callbacks(VideoCallback video_cb, AudioCallback audio_
 
 void AvioReassembler::reset() {
     channels_.clear();
+    last_audio_ts_ms_ = 0;
 }
 
 static inline bool is_avio_video_header_safe(const uint8_t* data, size_t len) {
@@ -53,12 +54,13 @@ static inline bool is_avio_video_header_safe(const uint8_t* data, size_t len) {
 static inline bool is_avio_audio_header_safe(const uint8_t* data, size_t len) {
     if (len < 32 || read_u16_le(data) != 0x0088)
         return false;
-    // Observed Aqara AAC AVIO frames use flags 0x000e. Requiring it makes
-    // scanning inside encrypted video payloads safe enough to avoid false hits.
+    // Observed Aqara AAC AVIO frames use flags 0x000e.
     if (read_u16_le(data + 2) != 0x000e)
         return false;
     const uint32_t payload_len = read_u32_le(data + 28);
-    return payload_len > 0 && payload_len <= 64 * 1024;
+    if (payload_len <= 8 || payload_len > 4096)
+        return false;
+    return true;
 }
 
 void AvioReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& state, uint16_t next_seq) {
@@ -259,6 +261,18 @@ void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) 
 }
 
 void AvioReassembler::process_completed_audio(const uint8_t* data, size_t len) {
+    if (len < 32)
+        return;
+    const uint32_t ms_part = read_u32_le(data + 8);
+    const uint32_t s_part = read_u32_le(data + 12);
+    const uint64_t ts_ms = static_cast<uint64_t>(s_part) * 1000 + ms_part;
+
+    // Deduplicate retransmitted / redundant audio frames
+    if (ts_ms != 0 && ts_ms == last_audio_ts_ms_) {
+        return;
+    }
+    last_audio_ts_ms_ = ts_ms;
+
     std::vector<uint8_t> frame(data, data + len);
     if (!ChaCha20::decrypt_audio_payload(frame.data(), frame.size(), audio_key_))
         return;
@@ -270,12 +284,13 @@ void AvioReassembler::process_completed_audio(const uint8_t* data, size_t len) {
 
     AudioFrame af;
     af.aac_adts_data.assign(frame.begin() + 40, frame.begin() + 40 + audio_len);
+    af.timestamp_ms = ts_ms;
     audio_frames_++;
     if (audio_frames_ == 1 || audio_frames_ % 250 == 0) {
         const bool adts = af.aac_adts_data.size() >= 2 && af.aac_adts_data[0] == 0xff &&
                           (af.aac_adts_data[1] & 0xf0) == 0xf0;
         std::cout << "[AVIO] audio frames=" << audio_frames_ << " bytes=" << audio_len
-                  << " adts=" << (adts ? "yes" : "no") << std::endl;
+                  << " ts_ms=" << ts_ms << " adts=" << (adts ? "yes" : "no") << std::endl;
     }
     if (audio_cb_)
         audio_cb_(af);
@@ -287,6 +302,9 @@ void AvioReassembler::process_completed_avio(const uint8_t* data, size_t len) {
 
     uint16_t codec_id = read_u16_le(data);
     bool avio_keyframe = (read_u16_le(data + 2) & 0x0001) != 0;
+    const uint32_t ms_part = read_u32_le(data + 8);
+    const uint32_t s_part = read_u32_le(data + 12);
+    const uint64_t ts_ms = static_cast<uint64_t>(s_part) * 1000 + ms_part;
     uint16_t width = read_u16_le(data + 16);
     uint16_t height = read_u16_le(data + 20);
     uint32_t payload_len = read_u32_le(data + 28);
@@ -404,6 +422,7 @@ void AvioReassembler::process_completed_avio(const uint8_t* data, size_t len) {
         vf.width = width;
         vf.height = height;
         vf.codec_id = codec_id;
+        vf.timestamp_ms = ts_ms;
         video_cb_(vf);
     }
 }

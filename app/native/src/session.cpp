@@ -42,6 +42,46 @@ request_keyframe();
                 seen_first_keyframe_ = true;
                 if (event_cb_) event_cb_("{\"event\":\"keyframe\",\"did\":\"" + config_.did + "\"}");
             }
+
+            if (vf.height > 0) {
+                current_height_ = vf.height;
+                // Switch quality ONLY if current camera resolution differs from target
+                if (!quality_switched_ && seen_first_keyframe_) {
+                    bool needs_switch = false;
+                    const bool is_g5 = (config_.did.find("agl004") != std::string::npos || config_.did.find("lumi3") != std::string::npos);
+
+                    if (is_g5) {
+                        // G5 Pro: channel 3=1520p (max), channel 0=1080p (mid), channel 2=360p (low)
+                        if (config_.p2p_quality_channel == 3 && vf.height < 1400) {
+                            needs_switch = true;
+                        } else if (config_.p2p_quality_channel == 0 && (vf.height < 1000 || vf.height > 1200)) {
+                            needs_switch = true;
+                        } else if (config_.p2p_quality_channel == 2 && vf.height > 500) {
+                            needs_switch = true;
+                        }
+                    } else {
+                        // Standard cameras / E1: channel 0=1296p (max), channel 1=1080p (mid), channel 2=360p (low)
+                        if (config_.p2p_quality_channel == 0 && vf.height < 1200) {
+                            needs_switch = true;
+                        } else if (config_.p2p_quality_channel == 1 && (vf.height < 900 || vf.height > 1150)) {
+                            needs_switch = true;
+                        } else if (config_.p2p_quality_channel == 2 && vf.height > 500) {
+                            needs_switch = true;
+                        }
+                    }
+
+                    if (needs_switch) {
+                        quality_switched_ = true;
+                        std::cout << "[NativeSession] Camera " << config_.did << " running at "
+                                  << vf.width << "x" << vf.height << " (desired channel "
+                                  << config_.p2p_quality_channel << "), upgrading resolution via 0x100E" << std::endl;
+                        if (p2p_client_) {
+                            p2p_client_->set_quality(config_.p2p_quality_channel);
+                        }
+                    }
+                }
+            }
+
             if (rtsp_server_) rtsp_server_->broadcast_video(vf);
         },
         [this](const AudioFrame& af) {

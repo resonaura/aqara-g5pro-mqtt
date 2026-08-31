@@ -32,11 +32,15 @@ struct RtspClient {
     // RTP state is per RTSP client. Global sequence counters make every client
     // observe artificial packet loss when Home Assistant opens multiple readers.
     uint16_t video_rtp_seq = 0;
-    uint32_t video_rtp_timestamp = 0;
+    uint32_t video_rtp_timestamp = 0x10000000;
     uint32_t video_ssrc = 0x12345678;
     uint16_t audio_rtp_seq = 0;
-    uint32_t audio_rtp_timestamp = 0;
+    uint32_t audio_rtp_timestamp = 0x20000000;
     uint32_t audio_ssrc = 0x87654321;
+
+    uint64_t base_timestamp_ms = 0;
+    uint32_t base_video_rtp_ts = 0x10000000;
+    uint32_t base_audio_rtp_ts = 0x20000000;
 };
 
 class RtspServer {

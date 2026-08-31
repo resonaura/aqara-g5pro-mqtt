@@ -14,10 +14,12 @@ struct VideoFrame {
     uint16_t width;
     uint16_t height;
     uint32_t codec_id;
+    uint64_t timestamp_ms = 0;
 };
 
 struct AudioFrame {
     std::vector<uint8_t> aac_adts_data;
+    uint64_t timestamp_ms = 0;
 };
 
 using VideoCallback = std::function<void(const VideoFrame&)>;
@@ -68,6 +70,7 @@ private:
     uint64_t video_frames_ = 0;
     uint64_t audio_frames_ = 0;
     uint64_t discarded_bytes_ = 0;
+    uint64_t last_audio_ts_ms_ = 0;
 };
 
 }  // namespace aqara

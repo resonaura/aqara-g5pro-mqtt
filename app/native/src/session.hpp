@@ -51,6 +51,8 @@ private:
     std::unique_ptr<RtspServer> rtsp_server_;
     std::unique_ptr<P2pClient> p2p_client_;
     bool seen_first_keyframe_ = false;
+    bool quality_switched_ = false;
+    int current_height_ = 0;
 };
 
 } // namespace aqara

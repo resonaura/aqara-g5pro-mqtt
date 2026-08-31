@@ -42,8 +42,15 @@ int main() {
     assert(decoded == plaintext);
 
     // Independent PPCS channels have independent 16-bit sequence spaces.
+    // Different timestamps pass through.
+    put_u32_le(frame, 8, 100);  // ms_part = 100
+    put_u32_le(frame, 12, 1);  // s_part = 1 -> ts_ms = 1100
     reassembler.push_packet(1, 400, frame.data(), frame.size());
     assert(audio_frames == 2);
+
+    // Duplicate timestamp frame is dropped
+    reassembler.push_packet(1, 401, frame.data(), frame.size());
+    assert(audio_frames == 2); // Still 2, duplicate dropped!
 
     // Mic audio may be inserted between two UDP fragments of one video AVIO
     // frame. It must be peeled out instead of becoming part of the video bytes.

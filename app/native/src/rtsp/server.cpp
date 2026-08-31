@@ -255,8 +255,11 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
 
     if (method == "OPTIONS") {
         resp << "RTSP/1.0 200 OK\r\n"
-             << "CSeq: " << cseq << "\r\n"
-             << "Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER\r\n\r\n";
+             << "CSeq: " << cseq << "\r\n";
+        if (!client.session_id.empty()) {
+            resp << "Session: " << client.session_id << "\r\n";
+        }
+        resp << "Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER\r\n\r\n";
     } else if (method == "DESCRIBE") {
         // DESCRIBE is a metadata probe, not a media subscription. Requesting
         // an IDR here causes needless bitrate spikes during HA polling.
@@ -298,6 +301,7 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
         client.is_playing = true;
         client.received_keyframe = false;
         client.wait_idr = true;
+        client.base_timestamp_ms = 0;
 
         resp << "RTSP/1.0 200 OK\r\n"
              << "CSeq: " << cseq << "\r\n"
@@ -324,15 +328,30 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
             client.wait_idr = false;
             client.received_keyframe = true;
             for (const auto& frame : gop) {
-                client.video_rtp_timestamp += 4500;
+                if (frame.timestamp_ms > 0) {
+                    if (client.base_timestamp_ms == 0) client.base_timestamp_ms = frame.timestamp_ms;
+                    const uint64_t delta_ms = frame.timestamp_ms >= client.base_timestamp_ms ? (frame.timestamp_ms - client.base_timestamp_ms) : 0;
+                    client.video_rtp_timestamp = client.base_video_rtp_ts + static_cast<uint32_t>(delta_ms * 90);
+                } else {
+                    client.video_rtp_timestamp += 4500;
+                }
                 send_video_to_client(client, frame);
             }
         } else if (kf_req_cb_) {
             kf_req_cb_();
         }
         return;
+    } else if (method == "PAUSE") {
+        client.is_playing = false;
+        resp << "RTSP/1.0 200 OK\r\n"
+             << "CSeq: " << cseq << "\r\n"
+             << "Session: " << client.session_id << "\r\n\r\n";
     } else if (method == "TEARDOWN") {
         client.is_playing = false;
+        resp << "RTSP/1.0 200 OK\r\n"
+             << "CSeq: " << cseq << "\r\n"
+             << "Session: " << client.session_id << "\r\n\r\n";
+    } else if (method == "GET_PARAMETER" || method == "SET_PARAMETER") {
         resp << "RTSP/1.0 200 OK\r\n"
              << "CSeq: " << cseq << "\r\n"
              << "Session: " << client.session_id << "\r\n\r\n";
@@ -666,7 +685,17 @@ void RtspServer::broadcast_video(const VideoFrame& vf) {
             }
         }
 
-        client.video_rtp_timestamp += 4500;
+        if (vf.timestamp_ms > 0) {
+            if (client.base_timestamp_ms == 0) {
+                client.base_timestamp_ms = vf.timestamp_ms;
+            }
+            const uint64_t delta_ms = vf.timestamp_ms >= client.base_timestamp_ms
+                ? (vf.timestamp_ms - client.base_timestamp_ms)
+                : 0;
+            client.video_rtp_timestamp = client.base_video_rtp_ts + static_cast<uint32_t>(delta_ms * 90);
+        } else {
+            client.video_rtp_timestamp += 4500;
+        }
         send_video_to_client(client, vf);
     }
 }
@@ -711,7 +740,17 @@ void RtspServer::broadcast_audio(const AudioFrame& af) {
         if (ch < 0)
             continue;
 
-        client.audio_rtp_timestamp += 1024;  // 1024 samples per AAC frame at 16000 Hz
+        if (af.timestamp_ms > 0) {
+            if (client.base_timestamp_ms == 0) {
+                client.base_timestamp_ms = af.timestamp_ms;
+            }
+            const uint64_t delta_ms = af.timestamp_ms >= client.base_timestamp_ms
+                ? (af.timestamp_ms - client.base_timestamp_ms)
+                : 0;
+            client.audio_rtp_timestamp = client.base_audio_rtp_ts + static_cast<uint32_t>(delta_ms * 16);
+        } else {
+            client.audio_rtp_timestamp += 1024;
+        }
 
         uint8_t rtp_pkt[16 + 2048];
         rtp_pkt[0] = 0x80;
