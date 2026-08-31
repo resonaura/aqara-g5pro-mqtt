@@ -143,7 +143,6 @@ void StreamSession::stop() {
 
 void StreamSession::request_keyframe() {
     if (rtsp_server_) rtsp_server_->hold_for_new_idr();
-    if (reassembler_) reassembler_->reset();
     if (p2p_client_) p2p_client_->request_keyframe();
 }
 

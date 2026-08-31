@@ -667,17 +667,11 @@ void P2pClient::watchdog_loop() {
                     send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
                 }
             } else if (session_ready_) {
-                // Match official app periodic refresh: send 0x1002 and 0x1018 every 20 seconds
-                if (tick % 20 == 0) {
-                    auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
-                    send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
-                    request_keyframe();
-                }
-
                 const int64_t now = current_time_ms();
                 const int64_t media_at = last_media_traffic_ms_.load();
                 const int64_t ready_at = session_ready_since_ms_.load();
 
+                // Only retry if no media traffic has arrived at all, or if stream stopped for > 5s
                 if (media_at == 0 && ready_at > 0 && now - ready_at > 4000 &&
                     now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
@@ -687,6 +681,12 @@ void P2pClient::watchdog_loop() {
                     send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
                     auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
                     send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
+                    request_keyframe();
+                } else if (media_at > 0 && now - media_at > 6000 &&
+                           now - last_stream_retry_ms_.load() > 5000) {
+                    last_stream_retry_ms_ = now;
+                    std::cout << "[P2P-Native] Media traffic stalled for " << config_.did
+                              << ", requesting keyframe" << std::endl;
                     request_keyframe();
                 }
             }
