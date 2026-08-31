@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.5.0 — Native C++ Streaming Engine, Zero-Drift Audio & Stream Stability
+
+### 🚀 High-Performance Native C++ Engine (`aqara-streamer`)
+- **Native Pipeline**: Replaced Node.js AVIO packet reassembly, ChaCha20 decryption, and RTSP serving with a high-performance native C++17 engine (`app/native`). Zero external dependencies, pure POSIX sockets, and multi-threaded IPC.
+- **Dynamic Auto-Build**: Built-in build guard (`build-guard.ts`) automatically compiles and hashes native sources across platforms with zero configuration.
+
+### 🔊 Zero-Drift Audio & RTSP Stability
+- **Audio RTP Timing Fix**: Strict RFC 3640 / RFC 6416 audio clock progression (+1024 samples per AAC frame at 16 kHz), completely resolving the 24 ms/sec drift and eliminating periodic 15–20s audio dropouts.
+- **Audio Deduplication**: Exact hardware timestamp deduplication in `AvioReassembler::process_completed_audio` to discard retransmitted PPCS audio datagrams.
+- **RTSP Parameter Keepalive**: Added `GET_PARAMETER`, `SET_PARAMETER`, and `OPTIONS` with `Session:` header to keep go2rtc, WebRTC, VLC, and FFmpeg connections alive indefinitely.
+
+### 📹 Stream Startup & Protocol Alignment (Frida Reverse-Engineering)
+- **Official Handshake Sequence**: Aligned P2P handshake with official Aqara Home app captures:
+  - `0x1000` (Login): Clean JSON payload with `timestamp`, `app_sign`, `app_public_key`.
+  - `0x1001` (Login OK): Immediately dispatches `0x101C` (channel 3) and `0x1002` (channel 0).
+  - `0x1003` (Session Ready): Sets target quality and requests live IDR keyframe `0x1018`.
+  - Added support for `0x82` PPCS RDT data datagrams.
+- **Watchdog Stream Stabilization**: Removed periodic `0x1002`/`0x1024` watchdog commands during active streaming (which were causing camera encoder resets and audio dropouts). Kept alive via standard `0xE0` ALIVE pings.
+
+### 🔑 Security & Key Management
+- **Ephemeral X25519 Keys**: Removed static disk-cached keys (`data/keys`). Every session generates fresh ephemeral X25519 ECDH keypairs and signs them on-the-fly via cloud API.
+
+### 🧹 Stream Cleanliness & Artifact Elimination
+- **Live Edge PLAY**: Removed stale 10-second GOP dumps on `PLAY`. Connecting clients immediately receive a fresh live IDR keyframe with in-band SPS/PPS, eliminating the 10-second grey macroblock smear on connect.
+
+### 🏠 Home Assistant & Docker Support
+- **Multi-Arch Docker Builds**: Full support for `amd64`, `aarch64`, `armv7`, `armhf`, and `i386` architectures.
+- **Full HA Integration**: Host networking, sequential multi-camera RTSP port allocation (8555+), RTMP talkback, PTZ controls, spotlight, and motion sensors.
+
 ## v1.4.6 — Fix: dotenv import hoisting
 
 - **Root cause**: ES module `import` hoisting caused `aqara.ts` to load and capture `process.env.TOKEN = ""` before `dotenv.config()` ran. The `TOKEN` and `USER_ID` module-level variables were frozen at empty strings, so API requests lacked the `Token` and `Userid` headers.

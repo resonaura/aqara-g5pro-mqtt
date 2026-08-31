@@ -27,6 +27,7 @@ RUN pnpm install --frozen-lockfile --prod
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/native/build/aqara-streamer ./native/build/aqara-streamer
+COPY --from=build /app/native/build/.source_hash ./native/build/.source_hash
 COPY --from=build /app/package.json ./
 
 CMD ["node", "dist/index.js"]
