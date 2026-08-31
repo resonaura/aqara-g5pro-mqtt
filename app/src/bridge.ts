@@ -348,6 +348,9 @@ export class AqaraCameraBridge extends EventEmitter {
       if (did === this.did) {
         this.isConnected = true;
         this.emit("connected", { port });
+        const host = getLocalIpv4();
+        const path = this.rtspPath || `live/${this.did}`;
+        this.emit("rtsp_ready", `rtsp://${host}:${port}/${path}`);
       }
     });
 
@@ -355,6 +358,9 @@ export class AqaraCameraBridge extends EventEmitter {
       if (did === this.did) {
         this.p2pSessionReady = true;
         this.isConnected = true;
+        const host = getLocalIpv4();
+        const path = this.rtspPath || `live/${this.did}`;
+        this.emit("rtsp_ready", `rtsp://${host}:${this.rtspPort}/${path}`);
         this.emit("p2p_session_ready");
         this.emit("stream_started");
         this.emit("keyframe");

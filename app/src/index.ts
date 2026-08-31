@@ -80,10 +80,18 @@ const cameraData: Array<{
 
 const rtspBasePort = parseInt(process.env.RTSP_PORT || "8555", 10);
 
-// PTZ-capable Aqara models (pan/tilt cameras). G5 Pro (agl004) is fixed.
+// PTZ-capable Aqara models (pan/tilt cameras: G3, E1, etc.). G5 Pro (agl004) / G2H / G4 are fixed.
 function supportsPtz(model: string): boolean {
   const m = (model || "").toLowerCase();
-  return m.includes("acn") || m.includes("e1") || m.includes("g3") || m.includes("ptz");
+  return (
+    m.includes("acn001") ||
+    m.includes("acn006") ||
+    m.includes("e1") ||
+    m.includes("g3") ||
+    m.includes("ptz") ||
+    m.includes("pan") ||
+    m.includes("tilt")
+  );
 }
 
 for (let i = 0; i < cameras.length; i++) {
@@ -130,6 +138,8 @@ const framesDir = path.resolve(process.cwd(), "data", "frames");
 const httpServer = new FrameHttpServer(framesDir);
 await httpServer.start();
 
+import { loadP2pState, saveP2pState } from "./state.js";
+
 const client = createMqttClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
 const talkbackFeeds = new Map<string, { ready: boolean; queue: Buffer[] }>();
@@ -155,26 +165,22 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
     });
     cameraInfo.bridge = bridge;
 
-    bridge.on("rtsp_ready", (url) => {
-      console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
-      const actualPort = Number(url.match(/:(\d+)\//)?.[1] || rtspPort);
-      const entry = rtspPortEntries.get(cameraInfo.device.did);
-      if (entry && entry.port !== actualPort) {
-        entry.port = actualPort;
-        writeRtspPortMap(rtspBasePort, [...rtspPortEntries.values()]);
-      }
-      const host = process.env.BRIDGE_HOST || getLocalIpv4();
-      const slug = slugMap[cameraInfo.device.did];
-      const streamUrl = `rtsp://${host}:${actualPort}/live/${slug}`;
-      const rtmpTalkUrl = `rtmp://${host}:${rtmpServer.listenPort}/talk/${slug}`;
-      const snapshotUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${slug}/snapshot`;
+    const host = process.env.BRIDGE_HOST || getLocalIpv4();
+    const slug = slugMap[cameraInfo.device.did];
+    const streamUrl = `rtsp://${host}:${rtspPort}/live/${slug}`;
+    const rtmpTalkUrl = `rtmp://${host}:${rtmpServer.listenPort}/talk/${slug}`;
+    const snapshotUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${slug}/snapshot`;
 
+    const updateStreamEntities = () => {
+      client.publish(`homeassistant/switch/${deviceId}/p2p_stream/state`, "ON", { retain: true });
       client.publish(`homeassistant/sensor/${deviceId}/p2p_rtsp_stream/state`, streamUrl, { retain: true });
       client.publish(`homeassistant/sensor/${deviceId}/talkback_rtmp/state`, rtmpTalkUrl, { retain: true });
       client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, snapshotUrl, { retain: true });
+    };
 
+    const startSnapshotter = () => {
       if (!cameraInfo.snapshotter) {
-        const localRtspUrl = `rtsp://127.0.0.1:${actualPort}/live/${slug}`;
+        const localRtspUrl = `rtsp://127.0.0.1:${rtspPort}/live/${slug}`;
         const snap = new FrameSnapshotter({ slug, did: cameraInfo.device.did, rtspUrl: localRtspUrl });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
           const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
@@ -187,7 +193,19 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
         snap.start();
         cameraInfo.snapshotter = snap;
       }
+    };
+
+    bridge.on("rtsp_ready", (url) => {
+      console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
+      updateStreamEntities();
+      startSnapshotter();
     });
+
+    bridge.on("keyframe", () => {
+      updateStreamEntities();
+      startSnapshotter();
+    });
+
     bridge.on("connected", ({ ip, port }) =>
       console.log(`🔌 [P2P Tunnel] ${cameraInfo.device.deviceName} connected to ${ip}:${port}`),
     );
@@ -199,7 +217,8 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
 
     try {
       await bridge.start();
-      client.publish(`homeassistant/switch/${deviceId}/p2p_stream/state`, "ON", { retain: true });
+      updateStreamEntities();
+      startSnapshotter();
       return bridge;
     } catch (err) {
       bridge.stop();
@@ -265,11 +284,13 @@ const interval = Number(process.env.POLL_INTERVAL || 1) * 1000;
 client.on("connect", () => {
   console.log("🚀 MQTT connected, publishing discovery...");
 
+  const savedP2pState = loadP2pState();
+
   // Публикуем discovery для всех камер
   cameraData.forEach(async ({ mqttDevice, hasSpotlight, device }, idx) => {
     const slug = slugMap[device.did];
     const bridgeHost = process.env.BRIDGE_HOST || getLocalIpv4();
-    const httpPort = parseInt(process.env.HTTP_PORT || "8080", 10);
+    const httpPort = httpServer.listenPort;
     const p2pRtspUrl = `rtsp://${bridgeHost}:${rtspPorts[idx]}/live/${slug}`;
     const rtmpTalkUrl = `rtmp://${bridgeHost}:${rtmpServer.listenPort}/talk/${slug}`;
     const snapshotUrl = `http://${bridgeHost}:${httpPort}/api/cameras/${slug}/snapshot`;
@@ -291,8 +312,8 @@ client.on("connect", () => {
     // Remove the old retained manual switch; RTMP now owns talkback lifecycle.
     client.publish(`homeassistant/switch/${mqttDevice.id}/talkback/config`, "", { retain: true });
 
-    // Initial state: P2P Stream OFF by default
-    const isP2pOn = !!cameraData[idx].bridge;
+    // Initial state from persisted disk state or active bridge
+    const isP2pOn = savedP2pState[device.did] || !!cameraData[idx].bridge;
     client.publish(
       `homeassistant/switch/${mqttDevice.id}/p2p_stream/state`,
       isP2pOn ? "ON" : "OFF",
@@ -335,6 +356,16 @@ client.on("connect", () => {
     }
 
     publishCameraDiscovery(client, mqttDevice, p2pRtspUrl);
+  });
+
+  // Auto-restore P2P streams that were saved as ON before restart
+  cameraData.forEach((cam) => {
+    if (savedP2pState[cam.device.did]) {
+      console.log(`🔄 [P2P Stream] Restoring saved P2P stream (ON) for ${cam.device.deviceName}...`);
+      ensureCameraBridge(cam).catch((err) => {
+        console.warn(`⚠️ [P2P Stream] Failed to restore stream for ${cam.device.deviceName}: ${err?.message || err}`);
+      });
+    }
   });
 
   // Подписываемся на команды для всех камер
@@ -437,6 +468,7 @@ client.on("message", async (topic, msg) => {
     const talkbackRtmpTopic = `homeassistant/sensor/${deviceId}/talkback_rtmp/state`;
     if (value === "ON") {
       console.log(`🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`);
+      saveP2pState(cameraInfo.device.did, true);
       try {
         await ensureCameraBridge(cameraInfo);
         client.publish(p2pSwitchTopic, "ON", { retain: true });
@@ -444,6 +476,7 @@ client.on("message", async (topic, msg) => {
         console.warn(
           `⚠️ [P2P Bridge] Could not start P2P stream for ${cameraInfo.device.deviceName}: ${err?.message || err}`,
         );
+        saveP2pState(cameraInfo.device.did, false);
         client.publish(p2pSwitchTopic, "OFF", { retain: true });
         client.publish(p2pRtspTopic, "null", { retain: true });
         client.publish(snapshotUrlTopic, "null", { retain: true });
@@ -451,6 +484,7 @@ client.on("message", async (topic, msg) => {
       }
     } else {
       console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
+      saveP2pState(cameraInfo.device.did, false);
       if (cameraInfo.bridge) {
         cameraInfo.bridge.stop();
         cameraInfo.bridge = undefined;

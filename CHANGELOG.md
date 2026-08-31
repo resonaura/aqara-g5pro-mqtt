@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.2 — P2P State Persistence Across Reboots & Instant Stream Entities Update
+
+### 💾 P2P Stream State Persistence
+- **Persistent State across Reboots**: P2P stream switch state is now stored to disk (`data/p2p_state.json`). When the Home Assistant add-on or Docker container reboots, all cameras that had P2P active automatically resume streaming without manual intervention.
+- **No Overwriting on Discovery**: Add-on boot no longer forces `OFF` over retained MQTT topics on reconnect.
+
+### 🖼️ Real-Time Snapshot & Sensor Entity Updates
+- **Bridge Event Alignment**: Added missing `rtsp_ready` event dispatching in `AqaraCameraBridge` when native session starts, ensuring immediate snapshotter startup.
+- **Immediate State Synchronization**: Upon enabling P2P stream, `p2p_rtsp_stream`, `talkback_rtmp`, and `snapshot_url` sensors are immediately published to MQTT with active URLs.
+- **Immediate Snapshot Capture**: `FrameSnapshotter` captures and serves snapshots immediately as soon as the stream starts.
+
 ## v1.5.1 — Clean Inactive Entity States & Auto-Allocated HTTP Snapshot Port
 
 ### 🖼️ HTTP Snapshot Port (Default 8580 & Auto-Correction)
