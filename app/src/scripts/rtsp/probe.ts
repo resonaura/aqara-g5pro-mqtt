@@ -103,26 +103,16 @@ async function probeOne(
   const t0 = Date.now();
   await Promise.race([ready, sleep(WAIT_MS)]);
   await sleep(3000);
-  const url = `rtsp://127.0.0.1:${port}/live`;
+  const url = `rtsp://127.0.0.1:${port}/live/${cam.did}`;
   console.log(
     `📊 ${cam.deviceName} wait=${Date.now() - t0}ms ch1=${ch1} frames=${frames} I=${idrs} audio=${audio} framesSeen=${bridge.frameCount}`,
   );
 
-  if (frames === 0) {
-    console.log(`❌ ${cam.deviceName} no P2P frames — skip ffmpeg`);
-    bridge.stop();
-    return;
-  }
-
-  console.log(`🎬 ffmpeg ${url}`);
+  console.log(`🎬 ffmpeg probing ${url}...`);
   const ff = await ffmpegProbe(url);
   const lines = ff
     .split("\n")
-    .filter((l) =>
-      /Stream|Video:|Audio:|error|Invalid|non-existing|frame=|Duration|rtsp/i.test(
-        l,
-      ),
-    )
+    .filter((l) => /Stream|Video:|Audio:|error|Invalid|non-existing|frame=|Duration|rtsp/i.test(l))
     .slice(0, 18);
   console.log(lines.join("\n") || ff.slice(-800));
   bridge.stop();
@@ -137,11 +127,7 @@ async function main() {
   const want = process.argv.slice(2);
   const list = want.length
     ? cams.filter((c) =>
-        want.some((w) =>
-          (c.deviceName + c.did + c.model)
-            .toLowerCase()
-            .includes(w.toLowerCase()),
-        ),
+        want.some((w) => (c.deviceName + c.did + c.model).toLowerCase().includes(w.toLowerCase())),
       )
     : cams;
   if (!list.length) {

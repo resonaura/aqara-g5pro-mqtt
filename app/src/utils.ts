@@ -33,8 +33,7 @@ function unwrapType(schema: ZodTypeAny): UnwrappedTypeInfo {
     const def = current._def;
     if (typeof def.defaultValue === "function") {
       const rawDefault = (def.defaultValue as () => unknown)();
-      defaultValue =
-        rawDefault !== undefined ? String(rawDefault as any) : undefined;
+      defaultValue = rawDefault !== undefined ? String(rawDefault as any) : undefined;
     }
     if ("innerType" in def && def.innerType) {
       current = def.innerType;
@@ -46,11 +45,7 @@ function unwrapType(schema: ZodTypeAny): UnwrappedTypeInfo {
     current = current.unwrap();
   }
 
-  if (
-    isZodEnum(current) &&
-    Array.isArray(current.options) &&
-    current.options.length > 0
-  ) {
+  if (isZodEnum(current) && Array.isArray(current.options) && current.options.length > 0) {
     enumValues = current.options as unknown as EnumValues;
   }
 
@@ -64,11 +59,7 @@ export async function generateEnvExample(path = ".env.example") {
   const optional: string[] = [];
 
   for (const [key, schema] of Object.entries(shape)) {
-    const {
-      optional: isOptional,
-      defaultValue,
-      enumValues,
-    } = unwrapType(schema);
+    const { optional: isOptional, defaultValue, enumValues } = unwrapType(schema);
 
     const lines: string[] = [];
 

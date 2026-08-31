@@ -267,18 +267,10 @@ class RtmpConnection extends EventEmitter {
       } else if (cmd === "publish") {
         this.streamName = String(args[3] || args[4] || "stream");
         this.sendUserControl(0, 1);
-        this.sendOnStatus(
-          streamId,
-          "NetStream.Publish.Start",
-          `Publishing ${this.streamName}`,
-        );
+        this.sendOnStatus(streamId, "NetStream.Publish.Start", `Publishing ${this.streamName}`);
         this.published = true;
         this.emit("publish", { name: this.streamName, app: this.app });
-      } else if (
-        cmd === "FCUnpublish" ||
-        cmd === "deleteStream" ||
-        cmd === "closeStream"
-      ) {
+      } else if (cmd === "FCUnpublish" || cmd === "deleteStream" || cmd === "closeStream") {
         this.teardown();
       }
       return;
@@ -308,10 +300,7 @@ class RtmpConnection extends EventEmitter {
     }
 
     const adts = forceMpeg2Adts(
-      wrapRawAacToAdts(
-        body,
-        this.aacCfg || { objectType: 2, sampleRate: 16000, channels: 1 },
-      ),
+      wrapRawAacToAdts(body, this.aacCfg || { objectType: 2, sampleRate: 16000, channels: 1 }),
     );
     if (!this.streamName) return;
     this.emit("audio", { name: this.streamName, adts });
@@ -407,26 +396,12 @@ class RtmpConnection extends EventEmitter {
     this.sendMessage(3, MSG_COMMAND, 0, payload);
   }
 
-  private sendOnStatus(
-    streamId: number,
-    code: string,
-    description: string,
-  ): void {
-    const payload = encodeAmf0List([
-      "onStatus",
-      0,
-      null,
-      { level: "status", code, description },
-    ]);
+  private sendOnStatus(streamId: number, code: string, description: string): void {
+    const payload = encodeAmf0List(["onStatus", 0, null, { level: "status", code, description }]);
     this.sendMessage(4, MSG_COMMAND, streamId, payload);
   }
 
-  private sendMessage(
-    csId: number,
-    type: number,
-    streamId: number,
-    payload: Buffer,
-  ): void {
+  private sendMessage(csId: number, type: number, streamId: number, payload: Buffer): void {
     const hdr = Buffer.alloc(12);
     hdr[0] = csId & 0x3f; // fmt 0
     hdr[3] = 0;
@@ -501,10 +476,7 @@ function decodeAmf0List(buf: Buffer): unknown[] {
   return out;
 }
 
-function decodeAmf0(
-  buf: Buffer,
-  off: number,
-): { value: unknown; off: number } | null {
+function decodeAmf0(buf: Buffer, off: number): { value: unknown; off: number } | null {
   if (off >= buf.length) return null;
   const t = buf[off++];
   if (t === 0x00) {

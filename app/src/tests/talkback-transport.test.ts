@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  AqaraCameraBridge,
-  buildTalkbackPpcsBody,
-  TALKBACK_LEAD_FRAME,
-} from "../bridge.js";
+import { AqaraCameraBridge, buildTalkbackPpcsBody, TALKBACK_LEAD_FRAME } from "../bridge.js";
 
 function createReadyBridge(): {
   bridge: AqaraCameraBridge;
@@ -16,8 +12,7 @@ function createReadyBridge(): {
     token: "test",
   });
   const internal = bridge as any;
-  const sent: Array<{ channel: number; sequence: number; payload: Buffer }> =
-    [];
+  const sent: Array<{ channel: number; sequence: number; payload: Buffer }> = [];
 
   internal.isConnected = true;
   internal.talkbackActive = true;
@@ -26,11 +21,7 @@ function createReadyBridge(): {
   internal.cameraPort = 32108;
   internal.talkSeq = 0;
   internal.talkFramesSent = 0;
-  internal.sendEncDrw = (
-    channel: number,
-    sequence: number,
-    payload: Buffer,
-  ) => {
+  internal.sendEncDrw = (channel: number, sequence: number, payload: Buffer) => {
     sent.push({ channel, sequence, payload: Buffer.from(payload) });
   };
 

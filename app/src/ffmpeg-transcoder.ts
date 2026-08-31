@@ -36,7 +36,18 @@ export function detectH264Encoder(): EncoderConfig {
     // If ffmpeg is not available in PATH, default to libx264
     cachedEncoderConfig = {
       name: "libx264",
-      args: ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-bf", "0", "-pix_fmt", "yuv420p"],
+      args: [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-bf",
+        "0",
+        "-pix_fmt",
+        "yuv420p",
+      ],
     };
     return cachedEncoderConfig;
   }
@@ -45,7 +56,18 @@ export function detectH264Encoder(): EncoderConfig {
   if (encodersOutput.includes("h264_videotoolbox")) {
     cachedEncoderConfig = {
       name: "h264_videotoolbox",
-      args: ["-c:v", "h264_videotoolbox", "-b:v", "4500k", "-realtime", "1", "-bf", "0", "-pix_fmt", "nv12"],
+      args: [
+        "-c:v",
+        "h264_videotoolbox",
+        "-b:v",
+        "4500k",
+        "-realtime",
+        "1",
+        "-bf",
+        "0",
+        "-pix_fmt",
+        "nv12",
+      ],
     };
     return cachedEncoderConfig;
   }
@@ -54,7 +76,20 @@ export function detectH264Encoder(): EncoderConfig {
   if (encodersOutput.includes("h264_nvenc")) {
     cachedEncoderConfig = {
       name: "h264_nvenc",
-      args: ["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll", "-b:v", "4500k", "-bf", "0", "-pix_fmt", "yuv420p"],
+      args: [
+        "-c:v",
+        "h264_nvenc",
+        "-preset",
+        "p1",
+        "-tune",
+        "ll",
+        "-b:v",
+        "4500k",
+        "-bf",
+        "0",
+        "-pix_fmt",
+        "yuv420p",
+      ],
     };
     return cachedEncoderConfig;
   }
@@ -63,7 +98,18 @@ export function detectH264Encoder(): EncoderConfig {
   if (encodersOutput.includes("h264_qsv")) {
     cachedEncoderConfig = {
       name: "h264_qsv",
-      args: ["-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "4500k", "-bf", "0", "-pix_fmt", "nv12"],
+      args: [
+        "-c:v",
+        "h264_qsv",
+        "-preset",
+        "veryfast",
+        "-b:v",
+        "4500k",
+        "-bf",
+        "0",
+        "-pix_fmt",
+        "nv12",
+      ],
     };
     return cachedEncoderConfig;
   }
@@ -80,7 +126,20 @@ export function detectH264Encoder(): EncoderConfig {
   // 5. Universal CPU fallback (Docker, Raspberry Pi without V4L2, general Linux)
   cachedEncoderConfig = {
     name: "libx264",
-    args: ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "19", "-bf", "0", "-pix_fmt", "yuv420p"],
+    args: [
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-tune",
+      "zerolatency",
+      "-crf",
+      "19",
+      "-bf",
+      "0",
+      "-pix_fmt",
+      "yuv420p",
+    ],
   };
   return cachedEncoderConfig;
 }
@@ -134,63 +193,74 @@ export class FfmpegTranscoder extends EventEmitter {
 
     const args = [
       "-hide_banner",
-      "-loglevel", "warning",
-      "-fflags", "nobuffer+discardcorrupt",
-      "-flags", "low_delay",
-      "-avioflags", "direct",
-      "-probesize", "32",
-      "-analyzeduration", "0",
-      "-err_detect", "+ignore_err",
-      "-ec", "+guess_mvs+deblock",
-      "-flags2", "+showall",
-      "-r", String(this.fps),
-      "-f", "h264",
-      "-i", "pipe:0",
-      "-vf", filterChain,
+      "-loglevel",
+      "warning",
+      "-fflags",
+      "nobuffer+discardcorrupt",
+      "-flags",
+      "low_delay",
+      "-avioflags",
+      "direct",
+      "-probesize",
+      "32",
+      "-analyzeduration",
+      "0",
+      "-err_detect",
+      "+ignore_err",
+      "-ec",
+      "+guess_mvs+deblock",
+      "-flags2",
+      "+showall",
+      "-r",
+      String(this.fps),
+      "-f",
+      "h264",
+      "-i",
+      "pipe:0",
+      "-vf",
+      filterChain,
       ...this.encoderConfig.args,
-      "-g", String(this.fps * 2), // 2-second strict keyframe interval
-      "-f", "h264",
+      "-g",
+      String(this.fps * 2), // 2-second strict keyframe interval
+      "-f",
+      "h264",
       "pipe:1",
     ];
 
-    console.log(
-      `⚙️  [${this.did}] FFmpeg transcoder active: [${this.encoderConfig.name}] (EC + smartblur + atadenoise + unsharp + motion-blend, ${this.fps}fps, GOP=2s)`,
-    );
-
     try {
-      this.proc = spawn("ffmpeg", args, {
-        stdio: ["pipe", "pipe", "pipe"],
+      this.proc = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
+      const label = this.name ? `${this.name} (${this.did})` : this.did;
+      console.log(
+        `⚙️  [${label}] FFmpeg transcoder active: [${this.encoderConfig.name}] (EC + smartblur + atadenoise + unsharp + motion-blend, ${this.fps}fps, GOP=2s)`,
+      );
+
+      this.proc.stdout!.on("data", (chunk: Buffer) => {
+        this.handleTranscodedChunk(chunk);
+      });
+
+      this.proc.stderr!.on("data", (data: Buffer) => {
+        const msg = data.toString().trim();
+        if (msg && process.env.DEBUG) {
+          console.log(`[FFmpeg:${label}] ${msg}`);
+        }
+      });
+
+      this.proc.on("exit", (code, signal) => {
+        this.proc = null;
+        if (!this.stopped) {
+          console.warn(`[FFmpeg:${label}] exited (code=${code} sig=${signal}) — restarting`);
+          setTimeout(() => this.start(), 1000);
+        }
+      });
+
+      this.proc.on("error", (err) => {
+        console.warn(`[FFmpeg:${label}] process error: ${err.message}`);
+        this.proc = null;
       });
     } catch (err: any) {
-      console.warn(`⚠️ [${this.did}] Failed to spawn ffmpeg: ${err.message}. Using passthrough.`);
-      this.proc = null;
-      return;
+      const label = this.name ? `${this.name} (${this.did})` : this.did;
+      console.warn(`⚠️ [${label}] Failed to spawn ffmpeg: ${err.message}. Using passthrough.`);
     }
-
-    this.proc.stdout?.on("data", (chunk: Buffer) => {
-      this.handleTranscodedChunk(chunk);
-    });
-
-    this.proc.stderr?.on("data", (d: Buffer) => {
-      const msg = d.toString().trim();
-      if (process.env.DEBUG && msg) {
-        console.log(`[FFmpeg:${this.did}] ${msg}`);
-      }
-    });
-
-    this.proc.on("exit", (code, signal) => {
-      this.proc = null;
-      if (!this.stopped) {
-        if (process.env.DEBUG) {
-          console.warn(`[FFmpeg:${this.did}] exited (code=${code} sig=${signal}) — restarting`);
-        }
-        setTimeout(() => this.start(), 1000);
-      }
-    });
-
-    this.proc.on("error", (err) => {
-      console.warn(`[FFmpeg:${this.did}] process error: ${err.message}`);
-    });
   }
 
   /** Write a raw Annex-B frame (SPS/PPS/IDR/P-frame) into FFmpeg stdin. */

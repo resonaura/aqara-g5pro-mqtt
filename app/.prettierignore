@@ -1,0 +1,13 @@
+dist/
+node_modules/
+native/build/
+data/
+captures/
+snapshots/
+*.pcap
+*.pcapng
+*.wav
+*.aac
+*.h264
+*.hevc
+.DS_Store

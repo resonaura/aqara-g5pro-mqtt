@@ -139,10 +139,20 @@ export function isEntitySupported(model: string, attr: string): boolean {
   }
 
   // Outdoor G5 Pro / Advanced AI & PIR specific attributes
-  if (attr === "pir_enable" || attr === "lens_hide_enable" || attr === "white_light_enable" || attr === "white_light_level") {
+  if (
+    attr === "pir_enable" ||
+    attr === "lens_hide_enable" ||
+    attr === "white_light_enable" ||
+    attr === "white_light_level"
+  ) {
     return isG5Pro;
   }
-  if (attr === "face_detect_enable" || attr === "pets_detect_enable" || attr === "vehicle_detect_enable" || attr === "package_detect_enable") {
+  if (
+    attr === "face_detect_enable" ||
+    attr === "pets_detect_enable" ||
+    attr === "vehicle_detect_enable" ||
+    attr === "package_detect_enable"
+  ) {
     return isG5Pro || m.includes("g3");
   }
 

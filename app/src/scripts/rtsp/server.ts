@@ -9,20 +9,14 @@ import {
   queryAttrs,
 } from "../../aqara.js";
 import { AqaraCameraBridge, getLocalIpv4 } from "../../bridge.js";
-import {
-  findFreePortRange,
-  writeRtspPortMap,
-  type RtspPortEntry,
-} from "../../ports.js";
+import { findFreePortRange, writeRtspPortMap, type RtspPortEntry } from "../../ports.js";
 import { assignUniqueSlugs } from "../../slug.js";
 
 config();
 
 async function main() {
   console.log("====================================================");
-  console.log(
-    "🎥 Aqara Cameras — High-Performance Pure TypeScript RTSP Server",
-  );
+  console.log("🎥 Aqara Cameras — High-Performance Pure TypeScript RTSP Server");
   console.log("====================================================\n");
 
   if (process.env.AQARA_USER && process.env.AQARA_PASS) {
@@ -48,9 +42,7 @@ async function main() {
   // port and is a fully standalone RTSP stream served directly by the bridge.
   const rtspPortBase = parseInt(process.env.RTSP_PORT || "8555", 10);
   const rtspPorts = await findFreePortRange(cameras.length, rtspPortBase);
-  const slugMap = assignUniqueSlugs(
-    cameras.map((c) => ({ did: c.did, name: c.deviceName })),
-  );
+  const slugMap = assignUniqueSlugs(cameras.map((c) => ({ did: c.did, name: c.deviceName })));
   let camIdx = 0;
   const rtspPortEntries: RtspPortEntry[] = [];
   const activeBridges: Array<{
@@ -120,9 +112,7 @@ async function main() {
               `   📺 ${cam.deviceName}: ${qualities.map((q) => q.title).join(", ")} → 0x100E {"channel":${p2pQualityChannel}} (${best.title})`,
             );
           } else {
-            console.log(
-              `   📺 ${cam.deviceName}: no cloud list — 0x100E {"channel":0} (max)`,
-            );
+            console.log(`   📺 ${cam.deviceName}: no cloud list — 0x100E {"channel":0} (max)`);
           }
         } catch (err: any) {
           console.log(
@@ -139,6 +129,7 @@ async function main() {
           appId: process.env.AQARA_APP_ID || "",
           appKey: process.env.AQARA_APP_KEY || "",
           rtspPort: rtspPort,
+          rtspPath: `live/${streamSlug}`,
           model: cam.model,
           p2pQualityChannel,
           deviceName: cam.deviceName,
@@ -179,10 +170,7 @@ async function main() {
             port: rtspPort,
           });
         } catch (err: any) {
-          console.error(
-            `   ❌ Failed to start bridge for ${cam.deviceName}:`,
-            err.message,
-          );
+          console.error(`   ❌ Failed to start bridge for ${cam.deviceName}:`, err.message);
         }
       })(),
     );
@@ -191,9 +179,7 @@ async function main() {
   await Promise.all(starters);
 
   writeRtspPortMap(rtspPortBase, rtspPortEntries);
-  console.log(
-    `\n🎚️  RTSP ports: ${rtspPorts.join(", ")} (base ${rtspPortBase})`,
-  );
+  console.log(`\n🎚️  RTSP ports: ${rtspPorts.join(", ")} (base ${rtspPortBase})`);
 
   // Live status telemetry ticker
   setInterval(() => {
@@ -205,9 +191,7 @@ async function main() {
       const namePad = state.deviceName.padEnd(20, " ");
       const gaps = item.bridge.droppedGapFrames;
       const gapStr = gaps > 0 ? ` | ⚠️ gap-drops=${gaps}` : "";
-      console.log(
-        ` [${icon}] ${namePad} | Status: ${keyIcon}${gapStr} | 🔗 ${state.rtspUrl}`,
-      );
+      console.log(` [${icon}] ${namePad} | Status: ${keyIcon}${gapStr} | 🔗 ${state.rtspUrl}`);
     }
   }, 3000);
 

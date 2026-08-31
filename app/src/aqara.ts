@@ -1,12 +1,7 @@
 import axios from "axios";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
-import {
-  AqaraPullDevicesResponse,
-  AqaraResponse,
-  Device,
-  MQTTDevice,
-} from "./types.js";
+import { AqaraPullDevicesResponse, AqaraResponse, Device, MQTTDevice } from "./types.js";
 
 const PHONE_ID = uuidv4().toUpperCase();
 
@@ -26,12 +21,7 @@ function md5(s: string): string {
   return crypto.createHash("md5").update(s).digest("hex");
 }
 
-function aqaraSign(opts: {
-  nonce: string;
-  time: string;
-  token?: string;
-  body?: string;
-}): string {
+function aqaraSign(opts: { nonce: string; time: string; token?: string; body?: string }): string {
   let pre = `Appid=${APP_ID}&Nonce=${opts.nonce}&Time=${opts.time}`;
   if (opts.token) pre += `&Token=${opts.token}`;
   if (opts.body) pre += `&${opts.body}`;
@@ -61,11 +51,7 @@ api.interceptors.request.use((config) => {
     body = Object.entries(config.params)
       .map(([k, v]) => `${k}=${v}`)
       .join("&");
-  } else if (
-    config.data &&
-    typeof config.data === "string" &&
-    config.data.length > 0
-  ) {
+  } else if (config.data && typeof config.data === "string" && config.data.length > 0) {
     body = config.data;
   } else if (config.data && typeof config.data === "object") {
     // axios сериализует объект позже — для подписи нужна точная строка запроса
@@ -113,18 +99,13 @@ rZzBHsMuBwA4LQdxBwIDAQAB
     },
   });
   if (res.data?.code !== 0) {
-    throw new Error(
-      `Aqara login failed: code=${res.data?.code} ${res.data?.message}`,
-    );
+    throw new Error(`Aqara login failed: code=${res.data?.code} ${res.data?.message}`);
   }
   process.env.TOKEN = res.data.result.token;
   process.env.USER_ID = res.data.result.userId;
 }
 
-export async function queryAttrs(
-  attrs: string[],
-  subjectId: string,
-): Promise<AqaraResponse> {
+export async function queryAttrs(attrs: string[], subjectId: string): Promise<AqaraResponse> {
   const res = await api.post("/app/v1.0/lumi/res/query", {
     data: [{ options: attrs, subjectId }],
   });
@@ -162,20 +143,14 @@ export async function checkDeviceCapabilities(
 ): Promise<{ hasSpotlight: boolean }> {
   try {
     // Проверяем наличие spotlight через попытку получить атрибуты
-    const res = await queryAttrs(
-      ["white_light_enable", "white_light_level"],
-      subjectId,
-    );
+    const res = await queryAttrs(["white_light_enable", "white_light_level"], subjectId);
     const hasSpotlight =
       res.result &&
       res.result.length > 0 &&
       res.result.some((r) => r.attr === "white_light_enable");
     return { hasSpotlight };
   } catch (error) {
-    console.log(
-      `⚠️ Could not check spotlight capabilities for ${subjectId}:`,
-      error.message,
-    );
+    console.log(`⚠️ Could not check spotlight capabilities for ${subjectId}:`, error.message);
     return { hasSpotlight: false };
   }
 }
@@ -190,11 +165,7 @@ export function aqaraDeviceToMQTT(device: Device): MQTTDevice {
   };
 }
 
-export async function writeAttr(
-  attr: string,
-  value: any,
-  subjectId: string,
-): Promise<void> {
+export async function writeAttr(attr: string, value: any, subjectId: string): Promise<void> {
   const res = await api.post("/app/v1.0/lumi/res/write", {
     subjectId,
     data: { [attr]: value },
@@ -242,9 +213,7 @@ export function parseCloudStreamQualities(raw: unknown): CameraStreamQuality[] {
   return out.sort((a, b) => b.height - a.height);
 }
 
-export function pickMaxStreamQuality(
-  list: CameraStreamQuality[],
-): CameraStreamQuality | null {
+export function pickMaxStreamQuality(list: CameraStreamQuality[]): CameraStreamQuality | null {
   return list[0] ?? null;
 }
 
@@ -262,10 +231,7 @@ export function videoStreamIndex(q: CameraStreamQuality | null): number {
  * → 2304x1296 I-frame, stream does not stop. 0=max, 1=mid, 2=low.
  * Cloud `/chN` is NOT this field.
  */
-export function jsonQualityChannel(
-  q: CameraStreamQuality | null,
-  model = "",
-): number {
+export function jsonQualityChannel(q: CameraStreamQuality | null, model = ""): number {
   const m = (model || "").toLowerCase();
   const isG5 = m.includes("agl004") || m.includes("g5");
   if (q) {
@@ -287,11 +253,38 @@ export function jsonQualityChannel(
 }
 
 /** Cloud catalogue for one camera. Empty if the model has no `rtsp_url` attr (E1). */
-export async function getCameraStreamQualities(
-  did: string,
-): Promise<CameraStreamQuality[]> {
+export async function getCameraStreamQualities(did: string): Promise<CameraStreamQuality[]> {
   const res = await queryAttrs(["rtsp_url"], did);
   const raw = res.result?.find((a) => a.attr === "rtsp_url")?.value;
   if (!raw) return [];
   return parseCloudStreamQualities(raw);
+}
+
+export async function getP2PInfo(did: string): Promise<{
+  p2pId: string;
+  devP2pPublicKey: string;
+  initStringApp: string;
+}> {
+  const res = await api.get("/app/v1.0/lumi/devex/camera/p2p/info", {
+    params: { did },
+  });
+  if (res.data?.code !== 0 || !res.data?.result) {
+    throw new Error(`Failed to get P2P info for ${did}: ${JSON.stringify(res.data)}`);
+  }
+  return res.data.result;
+}
+
+export async function signP2PKey(
+  did: string,
+  appPublicKey: string,
+): Promise<{ sign: string; p2pDevPublicKey?: string; time: string }> {
+  const res = await api.post("/app/v1.0/lumi/devex/camera/p2p/sign", {
+    did,
+    p2pAppPublicKey: appPublicKey,
+    app_public_key: appPublicKey,
+  });
+  if (res.data?.code !== 0 || !res.data?.result) {
+    throw new Error(`Failed to sign P2P key for ${did}: ${JSON.stringify(res.data)}`);
+  }
+  return res.data.result;
 }

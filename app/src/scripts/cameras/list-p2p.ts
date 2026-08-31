@@ -1,5 +1,5 @@
-import { login, getCameras, api } from '../../aqara.js';
-import { config } from 'dotenv';
+import { login, getCameras, api } from "../../aqara.js";
+import { config } from "dotenv";
 
 config();
 
@@ -9,7 +9,9 @@ async function main() {
   }
   const cams = await getCameras();
   for (const c of cams) {
-    const infoResp = await api.get('/app/v1.0/lumi/devex/camera/p2p/info', { params: { did: c.did } });
+    const infoResp = await api.get("/app/v1.0/lumi/devex/camera/p2p/info", {
+      params: { did: c.did },
+    });
     const info = infoResp.data.result;
     console.log(`📷 Camera: "${c.deviceName}"`);
     console.log(`   did:     ${c.did}`);

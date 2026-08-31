@@ -37,11 +37,7 @@ function publishDiscoveryEntity(
   });
 }
 
-export function publishDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-  entity: EntityConfig,
-) {
+export function publishDiscovery(client: MqttClient, mqttDevice: MQTTDevice, entity: EntityConfig) {
   publishDiscoveryEntity(client, mqttDevice, entity);
 }
 
@@ -51,9 +47,7 @@ export function publishLightDiscovery(
   hasSpotlight: boolean = true,
 ) {
   if (!hasSpotlight) {
-    console.log(
-      `⚠️ Skipping spotlight discovery for ${mqttDevice.name} - not supported`,
-    );
+    console.log(`⚠️ Skipping spotlight discovery for ${mqttDevice.name} - not supported`);
     return;
   }
 
@@ -76,10 +70,7 @@ export function publishLightDiscovery(
   console.log(`💡 Published discovery for Spotlight on ${mqttDevice.name}`);
 }
 
-export function publishSdCardDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-) {
+export function publishSdCardDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
   const sensors = [
     { id: "sdcard_total", name: "SD Card Total", unit: "MB" },
     { id: "sdcard_free", name: "SD Card Free", unit: "MB" },
@@ -99,10 +90,7 @@ export function publishSdCardDiscovery(
   console.log("💾 Published discovery for SD Card sensors");
 }
 
-export function publishRtspDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-) {
+export function publishRtspDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
   publishDiscoveryEntity(
     client,
     mqttDevice,
@@ -119,10 +107,7 @@ export function publishRtspDiscovery(
   console.log(`📹 Published discovery for RTSP Stream on ${mqttDevice.name}`);
 }
 
-export function publishP2pStreamSwitchDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-) {
+export function publishP2pStreamSwitchDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
   publishDiscoveryEntity(client, mqttDevice, {
     domain: "switch",
     name: "P2P Stream",
@@ -130,24 +115,37 @@ export function publishP2pStreamSwitchDiscovery(
     icon: "mdi:video-wireless",
     command: true,
   });
-  console.log(
-    `🔀 Published discovery for P2P Stream Switch on ${mqttDevice.name}`,
-  );
+  console.log(`🔀 Published discovery for P2P Stream Switch on ${mqttDevice.name}`);
 }
 
-export function publishP2pRtspDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-) {
+export function publishP2pRtspDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
   publishDiscoveryEntity(client, mqttDevice, {
     domain: "sensor",
     name: "P2P RTSP Stream",
     attr: "p2p_rtsp_stream",
     icon: "mdi:video-wireless-outline",
   });
-  console.log(
-    `📹 Published discovery for P2P RTSP Stream on ${mqttDevice.name}`,
-  );
+  console.log(`📹 Published discovery for P2P RTSP Stream on ${mqttDevice.name}`);
+}
+
+export function publishNativeRtspDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
+  publishDiscoveryEntity(client, mqttDevice, {
+    domain: "sensor",
+    name: "Native RTSP Stream",
+    attr: "native_rtsp_stream",
+    icon: "mdi:cctv",
+  });
+  console.log(`📹 Published discovery for Native Camera RTSP Stream on ${mqttDevice.name}`);
+}
+
+export function publishSnapshotUrlDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
+  publishDiscoveryEntity(client, mqttDevice, {
+    domain: "sensor",
+    name: "Live Snapshot URL",
+    attr: "snapshot_url",
+    icon: "mdi:image-frame",
+  });
+  console.log(`🖼️ Published discovery for Snapshot URL on ${mqttDevice.name}`);
 }
 
 export function publishCameraDiscovery(
@@ -175,10 +173,7 @@ export function publishCameraDiscovery(
   console.log(`🎥 Published discovery for Camera entity on ${mqttDevice.name}`);
 }
 
-export function publishPtzDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-) {
+export function publishPtzDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
   const directions: Array<{
     attr: string;
     name: string;
@@ -219,10 +214,7 @@ export function publishPtzDiscovery(
   console.log(`🕹️ Published PTZ button discovery on ${mqttDevice.name}`);
 }
 
-export function publishTalkbackDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-) {
+export function publishTalkbackDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
   const base = `homeassistant/switch/${mqttDevice.id}/talkback`;
   client.publish(
     `${base}/config`,
@@ -244,10 +236,7 @@ export function publishTalkbackDiscovery(
   console.log(`🎙️ Published Talkback switch discovery on ${mqttDevice.name}`);
 }
 
-export function publishTalkbackRtmpDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice,
-) {
+export function publishTalkbackRtmpDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
   publishDiscoveryEntity(client, mqttDevice, {
     domain: "sensor",
     name: "Talkback RTMP",

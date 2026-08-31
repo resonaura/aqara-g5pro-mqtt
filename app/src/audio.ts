@@ -1,6 +1,5 @@
 const AAC_SAMPLE_RATES = [
-  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025,
-  8000, 7350,
+  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
 ];
 
 export interface AacConfig {
@@ -27,10 +26,7 @@ export function parseAudioSpecificConfig(asc: Buffer): AacConfig | null {
  * Wrap a raw AAC access unit in an MPEG-2 ADTS header.
  * The camera's talk decoder expects MPEG-2 ADTS (sync 0xfff9), AAC-LC, 16 kHz, mono.
  */
-export function wrapRawAacToAdts(
-  raw: Buffer,
-  cfg: Partial<AacConfig> = {},
-): Buffer {
+export function wrapRawAacToAdts(raw: Buffer, cfg: Partial<AacConfig> = {}): Buffer {
   const objectType = cfg.objectType ?? 2;
   const sampleRate = cfg.sampleRate ?? 16000;
   const channels = cfg.channels ?? 1;
@@ -41,10 +37,7 @@ export function wrapRawAacToAdts(
   const hdr = Buffer.alloc(7);
   hdr[0] = 0xff;
   hdr[1] = 0xf9; // MPEG-2, layer 0, no CRC
-  hdr[2] =
-    ((profile & 0x03) << 6) |
-    ((srIndex & 0x0f) << 2) |
-    ((channels >> 2) & 0x01);
+  hdr[2] = ((profile & 0x03) << 6) | ((srIndex & 0x0f) << 2) | ((channels >> 2) & 0x01);
   hdr[3] = ((channels & 0x03) << 6) | ((frameLen >> 11) & 0x03);
   hdr[4] = (frameLen >> 3) & 0xff;
   hdr[5] = ((frameLen & 0x07) << 5) | 0x1f;
@@ -63,12 +56,7 @@ export function forceMpeg2Adts(frame: Buffer): Buffer {
 
 /** True when this AAC config can be sent to the camera without resampling. */
 export function isTalkbackNativeAac(cfg: AacConfig | null): boolean {
-  return (
-    !!cfg &&
-    cfg.objectType === 2 &&
-    cfg.sampleRate === 16000 &&
-    cfg.channels === 1
-  );
+  return !!cfg && cfg.objectType === 2 && cfg.sampleRate === 16000 && cfg.channels === 1;
 }
 
 /** Split an ADTS AAC byte stream into discrete frames (each with its ADTS header). */
@@ -79,9 +67,7 @@ export function splitAdts(aac: Buffer): Buffer[] {
     // ADTS syncword = 12 bits 0xFFF
     if (aac[off] === 0xff && (aac[off + 1] & 0xf0) === 0xf0) {
       const frameLen =
-        ((aac[off + 3] & 0x03) << 11) |
-        (aac[off + 4] << 3) |
-        ((aac[off + 5] & 0xe0) >> 5);
+        ((aac[off + 3] & 0x03) << 11) | (aac[off + 4] << 3) | ((aac[off + 5] & 0xe0) >> 5);
       if (frameLen < 7 || off + frameLen > aac.length) break;
       frames.push(aac.subarray(off, off + frameLen));
       off += frameLen;

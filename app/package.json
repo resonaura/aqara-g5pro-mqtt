@@ -6,6 +6,13 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:native": "mkdir -p native/build && cd native/build && cmake .. && make -j4",
+    "format": "prettier --write \"src/**/*.{ts,js,json}\"",
+    "format:native": "clang-format -i native/src/**/*.cpp native/src/**/*.hpp",
+    "format:all": "pnpm run format && pnpm run format:native",
+    "lint": "prettier --check \"src/**/*.{ts,js,json}\"",
+    "lint:native": "clang-format --dry-run -Werror native/src/**/*.cpp native/src/**/*.hpp",
+    "lint:all": "pnpm run lint && pnpm run lint:native",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "rtsp": "tsx src/scripts/rtsp/server.ts",
@@ -18,7 +25,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
+    "clang-format": "^1.8.0",
     "inquirer": "^8.2.7",
+    "prettier": "^3.9.6",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"

@@ -65,10 +65,7 @@ function send(s: MockSocket, req: string) {
   s.emit("data", Buffer.from(req + "\r\n\r\n"));
 }
 
-const SPS = Buffer.from(
-  "674d0028e900a00b7e5c0043000057a00000fa40003a980",
-  "hex",
-);
+const SPS = Buffer.from("674d0028e900a00b7e5c0043000057a00000fa40003a980", "hex");
 const PPS = Buffer.from("68ee3c80", "hex");
 
 test("DESCRIBE is immediate even before SPS/PPS exist", () => {
@@ -198,10 +195,7 @@ test("PLAY immediately replays the cached IDR so the client is not gray", () => 
   assert.match(text, /RTP-Info:.*track0;seq=/);
   assert.match(text, /track1;seq=/);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 0);
-  assert.ok(
-    frames.length >= 1,
-    "PLAY must emit the keyframe on first broadcast",
-  );
+  assert.ok(frames.length >= 1, "PLAY must emit the keyframe on first broadcast");
   const types = frames.map((f) => f.payload[12] & 0x1f);
   assert.ok(types.includes(5) || types.includes(7) || types.includes(28));
 });
@@ -223,10 +217,7 @@ test("P-frames after PLAY GOP dump continue the same GOP", () => {
   send(s, "PLAY rtsp://x/d RTSP/1.0\r\nCSeq: 2");
   srv.broadcastFrame(idr, 1000);
   s.writes = [];
-  srv.broadcastFrame(
-    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0xbb])]),
-    1200,
-  );
+  srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0xbb])]), 1200);
   const p = parseInterleaved(s.all).filter((f) => f.channel === 0);
   assert.equal(p.length, 1);
   assert.equal(p[0].payload[12], 0x61);
@@ -254,10 +245,7 @@ test("PLAY enables sending; a non-keyframe NAL produces one RTP packet (M bit se
   );
   s.writes = [];
   const smallNal = Buffer.from([0x61, 0x01, 0x02, 0x03]); // type 1 (non-IDR)
-  srv.broadcastFrame(
-    Buffer.concat([Buffer.from([0, 0, 0, 1]), smallNal]),
-    1000,
-  );
+  srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1]), smallNal]), 1000);
   const frames = parseInterleaved(s.all).filter((f) => f.channel === 0);
   assert.equal(frames.length, 1);
   const last = rtpInfo(frames[0].payload);
@@ -314,10 +302,7 @@ test("HEVC large NAL is packetized into FU and reassembles exactly", () => {
 
   // HEVC FU reassembly: header[0] = (payloadHdr1 & 0x81) | (fuType << 1), header[1] = payloadHdr2
   const fuType = fu[0].payload[14] & 0x3f;
-  const hdr = Buffer.from([
-    (fu[0].payload[12] & 0x81) | (fuType << 1),
-    fu[0].payload[13],
-  ]);
+  const hdr = Buffer.from([(fu[0].payload[12] & 0x81) | (fuType << 1), fu[0].payload[13]]);
   const chunks: Buffer[] = [hdr];
   for (const f of fu) chunks.push(f.payload.subarray(15));
   assert.ok(Buffer.concat(chunks).equals(nal));
@@ -381,21 +366,11 @@ test("video RTP timestamps only move forward", () => {
   ]);
   srv.broadcastFrame(idr, 100);
   s.writes = [];
-  srv.broadcastFrame(
-    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0x02])]),
-    140,
-  );
-  const t1 = rtpInfo(
-    parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload,
-  ).timestamp;
+  srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0x02])]), 140);
+  const t1 = rtpInfo(parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload).timestamp;
   s.writes = [];
-  srv.broadcastFrame(
-    Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0x03])]),
-    180,
-  );
-  const t2 = rtpInfo(
-    parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload,
-  ).timestamp;
+  srv.broadcastFrame(Buffer.concat([Buffer.from([0, 0, 0, 1, 0x61, 0x03])]), 180);
+  const t2 = rtpInfo(parseInterleaved(s.all).filter((f) => f.channel === 0)[0].payload).timestamp;
   // Wall-clock increment: frames sent synchronously → elapsed ≈ 0 ms →
   // clamped to minimum 3000 ticks (33 ms). Assert monotonically increasing
   // within the [3000, 18000] clamp rather than an exact constant.

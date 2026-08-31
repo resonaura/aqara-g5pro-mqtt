@@ -127,12 +127,7 @@ async function main() {
 
   const md5 = (s: string) => crypto.createHash("md5").update(s).digest("hex");
 
-  function aqaraSign(opts: {
-    nonce: string;
-    time: string;
-    token?: string;
-    body?: string;
-  }): string {
+  function aqaraSign(opts: { nonce: string; time: string; token?: string; body?: string }): string {
     let pre = `Appid=${appid}&Nonce=${opts.nonce}&Time=${opts.time}`;
     if (opts.token) pre += `&Token=${opts.token}`;
     if (opts.body) pre += `&${opts.body}`;
@@ -169,30 +164,24 @@ async function main() {
   const loginNonce = crypto.randomBytes(16).toString("hex").toUpperCase();
 
   try {
-    const resp = await axios.post(
-      `${server}/app/v1.0/lumi/user/login`,
-      loginBody,
-      {
-        headers: {
-          ...baseHeaders,
-          Time: loginTime,
-          Nonce: loginNonce,
-          Sign: aqaraSign({
-            nonce: loginNonce,
-            time: loginTime,
-            body: loginBody,
-          }),
-        },
-        timeout: 15000,
+    const resp = await axios.post(`${server}/app/v1.0/lumi/user/login`, loginBody, {
+      headers: {
+        ...baseHeaders,
+        Time: loginTime,
+        Nonce: loginNonce,
+        Sign: aqaraSign({
+          nonce: loginNonce,
+          time: loginTime,
+          body: loginBody,
+        }),
       },
-    );
+      timeout: 15000,
+    });
 
     console.log(`📥 HTTP status:    ${resp.status} ${resp.statusText}`);
 
     if (resp.data.code !== 0) {
-      console.error(
-        `\n❌ Login failed (code=${resp.data.code}): ${resp.data.message}`,
-      );
+      console.error(`\n❌ Login failed (code=${resp.data.code}): ${resp.data.message}`);
       process.exit(1);
     }
 
@@ -205,19 +194,16 @@ async function main() {
     console.log("\n📋 Fetching device list...");
     const devTime = Date.now().toString();
     const devNonce = crypto.randomBytes(16).toString("hex").toUpperCase();
-    const deviceResp = await axios.get(
-      `${server}/app/v1.0/lumi/app/position/device/query`,
-      {
-        headers: {
-          ...baseHeaders,
-          Token: token,
-          Time: devTime,
-          Nonce: devNonce,
-          Sign: aqaraSign({ nonce: devNonce, time: devTime, token }),
-        },
-        timeout: 15000,
+    const deviceResp = await axios.get(`${server}/app/v1.0/lumi/app/position/device/query`, {
+      headers: {
+        ...baseHeaders,
+        Token: token,
+        Time: devTime,
+        Nonce: devNonce,
+        Sign: aqaraSign({ nonce: devNonce, time: devTime, token }),
       },
-    );
+      timeout: 15000,
+    });
 
     console.log(`📥 Devices response (code=${deviceResp.data.code})`);
 
@@ -227,9 +213,7 @@ async function main() {
       console.log(`     • ${d.deviceName} | model=${d.model} | did=${d.did}`),
     );
 
-    const devices = allDevices.filter((d: any) =>
-      d.model?.startsWith("lumi.camera"),
-    );
+    const devices = allDevices.filter((d: any) => d.model?.startsWith("lumi.camera"));
 
     if (!devices.length) {
       console.error("❌ No cameras found for this account");
@@ -260,13 +244,9 @@ LOG_LEVEL=${argv["log-level"]}
       console.error(`   Code:    ${err.code}`);
       console.error(`   Status:  ${err.response?.status}`);
       console.error(`   URL:     ${err.config?.url}`);
-      console.error(
-        `   Request headers: ${JSON.stringify(err.config?.headers, null, 2)}`,
-      );
+      console.error(`   Request headers: ${JSON.stringify(err.config?.headers, null, 2)}`);
       console.error(`   Request body:    ${err.config?.data}`);
-      console.error(
-        `   Response body:   ${JSON.stringify(err.response?.data, null, 2)}`,
-      );
+      console.error(`   Response body:   ${JSON.stringify(err.response?.data, null, 2)}`);
     } else {
       console.error(`\n❌ Error: ${err.message}`);
       console.error(err.stack);

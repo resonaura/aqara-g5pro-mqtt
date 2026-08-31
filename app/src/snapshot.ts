@@ -108,9 +108,7 @@ export class FrameSnapshotter extends EventEmitter {
       try {
         proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
       } catch (err: any) {
-        console.warn(
-          `⚠️ [Snapshot:${this.slug}] ffmpeg spawn failed: ${err.message}`,
-        );
+        console.warn(`⚠️ [Snapshot:${this.slug}] ffmpeg spawn failed: ${err.message}`);
         resolve(false);
         return;
       }
@@ -121,9 +119,7 @@ export class FrameSnapshotter extends EventEmitter {
       });
       proc.on("error", (err) => {
         if (!this.stopped) {
-          console.warn(
-            `⚠️ [Snapshot:${this.slug}] ffmpeg error: ${err.message}`,
-          );
+          console.warn(`⚠️ [Snapshot:${this.slug}] ffmpeg error: ${err.message}`);
         }
         resolve(false);
       });
@@ -158,9 +154,8 @@ export class FrameSnapshotter extends EventEmitter {
   /** Start periodic snapshot loop. One file per slug (overwritten), 10s interval. */
   public start(): void {
     if (this.timer || this.stopped) return;
-    // Minimal log only when actually starting
     if (!process.env.DEBUG)
-      console.log(`📸 [Snapshot:${this.slug}] ON (10s cache, single file)`);
+      console.log(`📸 [Snapshot:${this.slug}] ON (${this.intervalMs}ms cache, single file)`);
     const tick = async () => {
       if (this.stopped || this.inFlight) return;
       this.inFlight = true;
@@ -170,9 +165,8 @@ export class FrameSnapshotter extends EventEmitter {
         this.inFlight = false;
       }
     };
-    // First grab, then every 10s. Only logs when something changes (frame event).
     void tick();
-    this.timer = setInterval(tick, 10000);
+    this.timer = setInterval(tick, this.intervalMs);
   }
 
   public stop(): void {

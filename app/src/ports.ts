@@ -55,10 +55,7 @@ export function probePortFree(port: number): Promise<boolean> {
  * Returns the concrete list of ports, or throws if no such block exists in the
  * allowed range.
  */
-export async function findFreePortRange(
-  count: number,
-  base = 8555,
-): Promise<number[]> {
+export async function findFreePortRange(count: number, base = 8555): Promise<number[]> {
   if (count <= 0) return [];
 
   // Normalize base into the allowed range.

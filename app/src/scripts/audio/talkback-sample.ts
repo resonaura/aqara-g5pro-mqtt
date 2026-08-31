@@ -32,9 +32,7 @@ async function transcode(wavPath: string, sr: number): Promise<Buffer[]> {
   ];
   const resolved = candidates.find((c) => fs.existsSync(c));
   if (!resolved) {
-    console.error(
-      `❌ Audio file not found: ${wavPath} (tried ${candidates.join(", ")})`,
-    );
+    console.error(`❌ Audio file not found: ${wavPath} (tried ${candidates.join(", ")})`);
     process.exit(1);
   }
   const wav16 = "/tmp/aqara_talkback_16k.wav";
@@ -55,17 +53,14 @@ async function transcode(wavPath: string, sr: number): Promise<Buffer[]> {
     );
     process.exit(1);
   }
-  const bitrateBps = String(parseInt(TALK_BITRATE, 10) * 1000 || 16000);
+  const bitrateBps = String(parseInt(TALK_BITRATE, 10) * 1000 || 24000);
   let encoded = false;
   try {
-    execSync(
-      `afconvert -f adts -d aacl@${sr} -c 1 -b ${bitrateBps} -s 0 "${wav16}" "${aacPath}"`,
-      { stdio: ["ignore", "ignore", "pipe"] },
-    );
+    execSync(`afconvert "${wav16}" -f adts -d aac -c 1 -b ${bitrateBps} "${aacPath}"`, {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     encoded = true;
-    console.log(
-      "🎛️ Encoded with afconvert (AudioToolbox AAC-LC, matches Aqara Home)",
-    );
+    console.log("🎛️ Encoded with afconvert (AudioToolbox AAC-LC, matches Aqara Home)");
   } catch {
     /* fall through to ffmpeg */
   }
@@ -78,15 +73,11 @@ async function transcode(wavPath: string, sr: number): Promise<Buffer[]> {
       );
       console.log("🎛️ Encoded with ffmpeg AAC-LC (afconvert unavailable)");
     } catch (e: any) {
-      console.error(
-        `❌ AAC encode failed:\n${e.stderr?.toString() || e.message}`,
-      );
+      console.error(`❌ AAC encode failed:\n${e.stderr?.toString() || e.message}`);
       process.exit(1);
     }
   }
-  let frames = splitAdts(fs.readFileSync(aacPath)).filter(
-    (f) => !f.includes(Buffer.from("Lavc")),
-  );
+  let frames = splitAdts(fs.readFileSync(aacPath)).filter((f) => !f.includes(Buffer.from("Lavc")));
   // Official Aqara Home access units are ~120–220 B (a few up to ~245).
   const typical = frames.filter((f) => f.length <= 280);
   if (typical.length > 0) frames = typical;
@@ -171,15 +162,11 @@ async function main() {
   // Accept one or more .wav files as argv[2..]; default to plop.wav. This lets us
   // compare speech vs non-speech (melody/baby) to detect any speech-only gate
   // (VAD) on the camera's talk/speaker path.
-  const wavArgs = process.argv
-    .slice(2)
-    .filter((a) => a.toLowerCase().endsWith(".wav"));
+  const wavArgs = process.argv.slice(2).filter((a) => a.toLowerCase().endsWith(".wav"));
   const wavList = wavArgs.length
     ? wavArgs
     : [path.resolve(process.cwd(), "..", "audio", "plop.wav")];
-  console.log(
-    `🎵 Clip(s): ${wavList.map((w) => path.basename(w)).join(", ")}\n`,
-  );
+  console.log(`🎵 Clip(s): ${wavList.map((w) => path.basename(w)).join(", ")}\n`);
 
   for (const wav of wavList) {
     console.log(
@@ -199,9 +186,7 @@ async function main() {
     console.log("🔊 Sending lead frame...");
     if (
       !bridge.sendAudioFrame(
-        Buffer.from([
-          0xff, 0xf9, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x00, 0xd0, 0x00, 0x07,
-        ]),
+        Buffer.from([0xff, 0xf9, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x00, 0xd0, 0x00, 0x07]),
       )
     ) {
       throw new Error("Camera rejected the talkback lead frame");
@@ -223,9 +208,7 @@ async function main() {
     await sleep(300);
     bridge.stopTalkback();
     await sleep(600);
-    console.log(
-      `✅ Finished ${path.basename(wav)} (${frames.length} AAC frames)`,
-    );
+    console.log(`✅ Finished ${path.basename(wav)} (${frames.length} AAC frames)`);
   }
 
   bridge.stop();

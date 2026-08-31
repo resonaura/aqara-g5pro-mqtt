@@ -12,31 +12,27 @@ import {
 } from "./aqara.js";
 import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
 import "./config.js";
+import { promises as fs } from "node:fs";
+import { getCameraStreamQualities, pickMaxStreamQuality } from "./aqara.js";
 import {
   publishCameraDiscovery,
   publishDiscovery,
   publishLightDiscovery,
+  publishNativeRtspDiscovery,
   publishP2pRtspDiscovery,
   publishP2pStreamSwitchDiscovery,
   publishPtzDiscovery,
   publishRtspDiscovery,
   publishSdCardDiscovery,
+  publishSnapshotUrlDiscovery,
   publishTalkbackDiscovery,
   publishTalkbackRtmpDiscovery,
 } from "./discovery.js";
 import { ENTITIES } from "./entities.js";
 import { FrameHttpServer } from "./http-server.js";
-import {
-  EVENT_ATTRS,
-  processEventAttrs,
-  publishMotionDiscovery,
-} from "./motion.js";
+import { EVENT_ATTRS, processEventAttrs, publishMotionDiscovery } from "./motion.js";
 import { createMqttClient } from "./mqtt.js";
-import {
-  findFreePortRange,
-  writeRtspPortMap,
-  type RtspPortEntry,
-} from "./ports.js";
+import { findFreePortRange, writeRtspPortMap, type RtspPortEntry } from "./ports.js";
 import { RtmpIngestServer } from "./rtmp.js";
 import { assignUniqueSlugs } from "./slug.js";
 import { FrameSnapshotter } from "./snapshot.js";
@@ -67,9 +63,7 @@ if (cameras.length === 0 && process.env.AQARA_USER && process.env.AQARA_PASS) {
 }
 
 console.log(`🎥 Found ${cameras.length} camera(s):`);
-cameras.forEach((camera) =>
-  console.log(`  - ${camera.deviceName} (${camera.did})`),
-);
+cameras.forEach((camera) => console.log(`  - ${camera.deviceName} (${camera.did})`));
 
 if (cameras.length === 0) {
   console.error("❌ No cameras found!");
@@ -90,12 +84,7 @@ const rtspBasePort = parseInt(process.env.RTSP_PORT || "8555", 10);
 // PTZ-capable Aqara models (pan/tilt cameras). G5 Pro (agl004) is fixed.
 function supportsPtz(model: string): boolean {
   const m = (model || "").toLowerCase();
-  return (
-    m.includes("acn") ||
-    m.includes("e1") ||
-    m.includes("g3") ||
-    m.includes("ptz")
-  );
+  return m.includes("acn") || m.includes("e1") || m.includes("g3") || m.includes("ptz");
 }
 
 for (let i = 0; i < cameras.length; i++) {
@@ -109,9 +98,7 @@ for (let i = 0; i < cameras.length; i++) {
     hasSpotlight: capabilities.hasSpotlight,
     bridge: undefined,
   });
-  console.log(
-    `📋 ${camera.deviceName}: spotlight=${capabilities.hasSpotlight ? "✅" : "❌"}`,
-  );
+  console.log(`📋 ${camera.deviceName}: spotlight=${capabilities.hasSpotlight ? "✅" : "❌"}`);
 }
 
 // Allocate a contiguous block of free RTSP ports (default 8555, walking up if
@@ -136,9 +123,7 @@ console.log(`🎚️  RTSP ports: ${rtspPorts.join(", ")} (base ${rtspBasePort})
 const rtmpPort = parseInt(process.env.RTMP_PORT || "1935", 10);
 const rtmpServer = new RtmpIngestServer(rtmpPort);
 await rtmpServer.start();
-console.log(
-  `🎙️ Talkback RTMP ingest listening on port ${rtmpServer.listenPort}`,
-);
+console.log(`🎙️ Talkback RTMP ingest listening on port ${rtmpServer.listenPort}`);
 
 // HTTP server for serving cached JPEG snapshots — only used while a P2P
 // stream is active for a given camera. Bound to process.env.HTTP_PORT || 8080.
@@ -158,15 +143,11 @@ rtmpServer.on("publish", async ({ name }: { name: string }) => {
     );
     return;
   }
-  console.log(
-    `🎙️ [Talkback RTMP] publisher connected for ${cam.device.deviceName}`,
-  );
+  console.log(`🎙️ [Talkback RTMP] publisher connected for ${cam.device.deviceName}`);
   const ok = await cam.bridge.ensureTalkbackReady();
-  client.publish(
-    `homeassistant/switch/${cam.mqttDevice.id}/talkback/state`,
-    ok ? "ON" : "OFF",
-    { retain: true },
-  );
+  client.publish(`homeassistant/switch/${cam.mqttDevice.id}/talkback/state`, ok ? "ON" : "OFF", {
+    retain: true,
+  });
 });
 
 rtmpServer.on("audio", ({ name, adts }: { name: string; adts: Buffer }) => {
@@ -180,11 +161,9 @@ rtmpServer.on("unpublish", ({ name }: { name: string }) => {
   if (!cam?.bridge) return;
   console.log(`🎙️ [Talkback RTMP] publisher left ${cam.device.deviceName}`);
   cam.bridge.stopTalkback();
-  client.publish(
-    `homeassistant/switch/${cam.mqttDevice.id}/talkback/state`,
-    "OFF",
-    { retain: true },
-  );
+  client.publish(`homeassistant/switch/${cam.mqttDevice.id}/talkback/state`, "OFF", {
+    retain: true,
+  });
 });
 
 const client = createMqttClient();
@@ -195,7 +174,14 @@ client.on("connect", () => {
   console.log("🚀 MQTT connected, publishing discovery...");
 
   // Публикуем discovery для всех камер
-  cameraData.forEach(({ mqttDevice, hasSpotlight, device }, idx) => {
+  cameraData.forEach(async ({ mqttDevice, hasSpotlight, device }, idx) => {
+    const slug = slugMap[device.did];
+    const bridgeHost = process.env.BRIDGE_HOST || getLocalIpv4();
+    const httpPort = parseInt(process.env.HTTP_PORT || "8080", 10);
+    const p2pRtspUrl = `rtsp://${bridgeHost}:${rtspPorts[idx]}/live/${slug}`;
+    const rtmpTalkUrl = `rtmp://${bridgeHost}:${rtmpServer.listenPort}/talk/${slug}`;
+    const snapshotUrl = `http://${bridgeHost}:${httpPort}/api/cameras/${slug}/snapshot`;
+
     ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
     publishLightDiscovery(client, mqttDevice, hasSpotlight);
     publishSdCardDiscovery(client, mqttDevice);
@@ -203,6 +189,8 @@ client.on("connect", () => {
     publishRtspDiscovery(client, mqttDevice);
     publishP2pStreamSwitchDiscovery(client, mqttDevice);
     publishP2pRtspDiscovery(client, mqttDevice);
+    publishNativeRtspDiscovery(client, mqttDevice);
+    publishSnapshotUrlDiscovery(client, mqttDevice);
 
     if (supportsPtz(device.model)) {
       publishPtzDiscovery(client, mqttDevice);
@@ -211,29 +199,41 @@ client.on("connect", () => {
     publishTalkbackRtmpDiscovery(client, mqttDevice);
 
     // Initial state: P2P Stream OFF by default
-    client.publish(
-      `homeassistant/switch/${mqttDevice.id}/p2p_stream/state`,
-      "OFF",
-      { retain: true },
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`,
-      "OFF",
-      { retain: true },
-    );
-    client.publish(
-      `homeassistant/switch/${mqttDevice.id}/talkback/state`,
-      "OFF",
-      { retain: true },
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice.id}/talkback_rtmp/state`,
-      "OFF",
-      { retain: true },
-    );
+    client.publish(`homeassistant/switch/${mqttDevice.id}/p2p_stream/state`, "OFF", {
+      retain: true,
+    });
+    client.publish(`homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`, p2pRtspUrl, {
+      retain: true,
+    });
+    client.publish(`homeassistant/sensor/${mqttDevice.id}/snapshot_url/state`, snapshotUrl, {
+      retain: true,
+    });
+    client.publish(`homeassistant/sensor/${mqttDevice.id}/talkback_rtmp/state`, rtmpTalkUrl, {
+      retain: true,
+    });
+    client.publish(`homeassistant/switch/${mqttDevice.id}/talkback/state`, "OFF", { retain: true });
 
-    const rtspStreamUrl = `rtsp://${process.env.BRIDGE_HOST || getLocalIpv4()}:${rtspPorts[idx]}/live/${slugMap[device.did]}`;
-    publishCameraDiscovery(client, mqttDevice, rtspStreamUrl);
+    // Query Native camera RTSP URL if available
+    try {
+      const qualities = await getCameraStreamQualities(device.did);
+      const best = pickMaxStreamQuality(qualities);
+      const nativeRtspUrl = best
+        ? `rtsp://${device.ip || getLocalIpv4()}:554/live/ch${best.channel}`
+        : "N/A";
+      client.publish(
+        `homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`,
+        nativeRtspUrl,
+        {
+          retain: true,
+        },
+      );
+    } catch {
+      client.publish(`homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`, "N/A", {
+        retain: true,
+      });
+    }
+
+    publishCameraDiscovery(client, mqttDevice, p2pRtspUrl);
   });
 
   // Подписываемся на команды для всех камер
@@ -251,7 +251,7 @@ async function optimistic(
   deviceId: string,
   attr: string,
   value: string,
-  cameraInfo: (typeof cameraData)[0],
+  _cameraInfo: (typeof cameraData)[0],
 ) {
   switch (domain) {
     case "switch":
@@ -260,11 +260,9 @@ async function optimistic(
       });
       break;
     case "number":
-      client.publish(
-        stateTopic("number", deviceId, attr),
-        String(parseInt(value, 10)),
-        { retain: true },
-      );
+      client.publish(stateTopic("number", deviceId, attr), String(parseInt(value, 10)), {
+        retain: true,
+      });
       break;
     case "light":
       if (attr !== "spotlight") return;
@@ -282,11 +280,9 @@ async function optimistic(
               : cur.brightness,
         };
         lastLightState.set(deviceId, next);
-        client.publish(
-          stateTopic("light", deviceId, "spotlight"),
-          JSON.stringify(next),
-          { retain: true },
-        );
+        client.publish(stateTopic("light", deviceId, "spotlight"), JSON.stringify(next), {
+          retain: true,
+        });
       }
       break;
   }
@@ -294,39 +290,29 @@ async function optimistic(
 
 const lastLightState = new Map<string, { state: string; brightness: number }>();
 
-const handlers: Record<
-  string,
-  (attr: string, value: string, subjectId: string) => Promise<void>
-> = {
-  switch: async (attr, value, subjectId) =>
-    writeAttr(attr, value === "ON" ? 1 : 0, subjectId),
-  number: async (attr, value, subjectId) =>
-    writeAttr(attr, parseInt(value, 10), subjectId),
-  light: async (attr, value, subjectId) => {
-    if (attr !== "spotlight") return;
-    const payload = JSON.parse(value);
-    if (payload.state !== undefined) {
-      await writeAttr(
-        "white_light_enable",
-        payload.state === "ON" ? 1 : 0,
-        subjectId,
-      );
-    }
-    if (payload.brightness !== undefined) {
-      const percent = Math.round((payload.brightness / 255) * 100);
-      await writeAttr("white_light_level", percent, subjectId);
-    }
-  },
-};
+const handlers: Record<string, (attr: string, value: string, subjectId: string) => Promise<void>> =
+  {
+    switch: async (attr, value, subjectId) => writeAttr(attr, value === "ON" ? 1 : 0, subjectId),
+    number: async (attr, value, subjectId) => writeAttr(attr, parseInt(value, 10), subjectId),
+    light: async (attr, value, subjectId) => {
+      if (attr !== "spotlight") return;
+      const payload = JSON.parse(value);
+      if (payload.state !== undefined) {
+        await writeAttr("white_light_enable", payload.state === "ON" ? 1 : 0, subjectId);
+      }
+      if (payload.brightness !== undefined) {
+        const percent = Math.round((payload.brightness / 255) * 100);
+        await writeAttr("white_light_level", percent, subjectId);
+      }
+    },
+  };
 
 client.on("message", async (topic, msg) => {
   const [_, domain, deviceId, attr] = topic.split("/");
   const value = msg.toString();
 
   // Находим камеру по ID
-  const cameraInfo = cameraData.find(
-    ({ mqttDevice }) => mqttDevice.id === deviceId,
-  );
+  const cameraInfo = cameraData.find(({ mqttDevice }) => mqttDevice.id === deviceId);
   if (!cameraInfo) {
     console.error(`❌ Unknown device ID: ${deviceId}`);
     return;
@@ -350,9 +336,7 @@ client.on("message", async (topic, msg) => {
     const rtspPort = rtspPorts[idx];
 
     if (value === "ON") {
-      console.log(
-        `🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`,
-      );
+      console.log(`🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`);
       client.publish(p2pSwitchTopic, "ON", { retain: true });
 
       if (!cameraInfo.bridge) {
@@ -364,9 +348,7 @@ client.on("message", async (topic, msg) => {
         });
 
         bridge.on("rtsp_ready", (url) => {
-          console.log(
-            `📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`,
-          );
+          console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
           const actualPort = Number(url.match(/:(\d+)\//)?.[1] || rtspPort);
           // Keep the port map accurate if the server had to shift off the preferred port.
           const entry = rtspPortEntries.get(cameraInfo.device.did);
@@ -390,14 +372,17 @@ client.on("message", async (topic, msg) => {
               did: cameraInfo.device.did,
               rtspUrl: streamUrl,
             });
-            snap.on("frame", ({ slug }) => {
-              const frameUrl = `http://${host}:${process.env.HTTP_PORT || 8080}/frame/${slug}`;
-              client.publish(
-                `homeassistant/sensor/${deviceId}/frame_url/state`,
-                frameUrl,
-                { retain: true },
-              );
-              // Single log line per refresh — quiet by design
+            snap.on("frame", async ({ slug, path: framePath }) => {
+              const frameUrl = `http://${host}:${process.env.HTTP_PORT || 8080}/api/cameras/${slug}/snapshot`;
+              client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, frameUrl, {
+                retain: true,
+              });
+
+              try {
+                const imgBuf = await fs.readFile(framePath);
+                client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
+              } catch {}
+
               if (process.env.DEBUG) {
                 console.log(
                   `📸 [Snapshot] ${cameraInfo.device.deviceName} frame refreshed (${slug})`,
@@ -410,9 +395,7 @@ client.on("message", async (topic, msg) => {
         });
 
         bridge.on("connected", ({ ip, port }) => {
-          console.log(
-            `🔌 [P2P Tunnel] ${cameraInfo.device.deviceName} connected to ${ip}:${port}`,
-          );
+          console.log(`🔌 [P2P Tunnel] ${cameraInfo.device.deviceName} connected to ${ip}:${port}`);
         });
 
         bridge.on("info", (m: string) => {
@@ -422,9 +405,7 @@ client.on("message", async (topic, msg) => {
           console.warn(`⚠️ [${cameraInfo.device.deviceName}] ${m}`);
         });
         bridge.on("error", (e: any) => {
-          console.error(
-            `❌ [${cameraInfo.device.deviceName}] ${e?.message || e}`,
-          );
+          console.error(`❌ [${cameraInfo.device.deviceName}] ${e?.message || e}`);
         });
 
         bridge.start().catch((err) => {
@@ -433,20 +414,16 @@ client.on("message", async (topic, msg) => {
           );
           client.publish(p2pSwitchTopic, "OFF", { retain: true });
           client.publish(p2pRtspTopic, "OFF", { retain: true });
-          client.publish(
-            `homeassistant/sensor/${deviceId}/talkback_rtmp/state`,
-            "OFF",
-            { retain: true },
-          );
+          client.publish(`homeassistant/sensor/${deviceId}/talkback_rtmp/state`, "OFF", {
+            retain: true,
+          });
           cameraInfo.bridge = undefined;
         });
 
         cameraInfo.bridge = bridge;
       }
     } else {
-      console.log(
-        `🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`,
-      );
+      console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
       if (cameraInfo.bridge) {
         cameraInfo.bridge.stop();
         cameraInfo.bridge = undefined;
@@ -457,11 +434,9 @@ client.on("message", async (topic, msg) => {
       }
       client.publish(p2pSwitchTopic, "OFF", { retain: true });
       client.publish(p2pRtspTopic, "OFF", { retain: true });
-      client.publish(
-        `homeassistant/sensor/${deviceId}/talkback_rtmp/state`,
-        "OFF",
-        { retain: true },
-      );
+      client.publish(`homeassistant/sensor/${deviceId}/talkback_rtmp/state`, "OFF", {
+        retain: true,
+      });
       client.publish(`homeassistant/switch/${deviceId}/talkback/state`, "OFF", {
         retain: true,
       });
@@ -480,9 +455,7 @@ client.on("message", async (topic, msg) => {
         client.publish(talkbackStateTopic, "OFF", { retain: true });
         return;
       }
-      console.log(
-        `🎙️ [Talkback] Enabling speaker channel for ${cameraInfo.device.deviceName}...`,
-      );
+      console.log(`🎙️ [Talkback] Enabling speaker channel for ${cameraInfo.device.deviceName}...`);
       client.publish(talkbackStateTopic, "ON", { retain: true });
       cameraInfo.bridge
         .ensureTalkbackReady()
@@ -505,9 +478,7 @@ client.on("message", async (topic, msg) => {
           client.publish(talkbackStateTopic, "OFF", { retain: true });
         });
     } else {
-      console.log(
-        `🎙️ [Talkback] Disabling speaker channel for ${cameraInfo.device.deviceName}...`,
-      );
+      console.log(`🎙️ [Talkback] Disabling speaker channel for ${cameraInfo.device.deviceName}...`);
       client.publish(talkbackStateTopic, "OFF", { retain: true });
       cameraInfo.bridge?.stopTalkback();
     }
@@ -542,10 +513,7 @@ client.on("message", async (topic, msg) => {
 // === RTSP STREAM URLS (Официальный / облачный RTSP URL) ===
 const QUALITY_ORDER = ["1520p", "1080p", "720p", "360p"];
 
-async function publishRtspState(
-  subjectId: string,
-  cameraInfo: (typeof cameraData)[0],
-) {
+async function publishRtspState(subjectId: string, cameraInfo: (typeof cameraData)[0]) {
   const res = await queryAttrs(["rtsp_url"], subjectId);
   const raw = res.result?.[0]?.value;
   if (!raw) return;
@@ -558,9 +526,7 @@ async function publishRtspState(
       urls[best],
       { retain: true },
     );
-    console.log(
-      `📹 ${cameraInfo.device.deviceName} Official RTSP=${urls[best]}`,
-    );
+    console.log(`📹 ${cameraInfo.device.deviceName} Official RTSP=${urls[best]}`);
   } catch {
     console.error("❌ Failed to parse rtsp_url:", raw);
   }
@@ -568,10 +534,7 @@ async function publishRtspState(
 
 // === POLLING ===
 async function poll() {
-  const attrs = ENTITIES.map((e) => e.attr).concat([
-    "white_light_enable",
-    "white_light_level",
-  ]);
+  const attrs = ENTITIES.map((e) => e.attr).concat(["white_light_enable", "white_light_level"]);
 
   for (const cameraInfo of cameraData) {
     try {
@@ -593,11 +556,7 @@ async function poll() {
   }
 }
 
-async function pollSingle(
-  attr: string,
-  subjectId: string,
-  mqttDevice: MQTTDevice,
-) {
+async function pollSingle(attr: string, subjectId: string, _mqttDevice: MQTTDevice) {
   const res = await queryAttrs([attr], subjectId);
   const result = res.result?.[0];
   if (result) {
@@ -623,9 +582,7 @@ async function publishAttr(
       queryAttrs(["white_light_level"], device.did),
     ]);
     const state = power.result?.[0]?.value === "1" ? "ON" : "OFF";
-    const brightness = Math.round(
-      (Number(level.result?.[0]?.value || 0) / 100) * 255,
-    );
+    const brightness = Math.round((Number(level.result?.[0]?.value || 0) / 100) * 255);
     const lightState = { state, brightness };
     lastLightState.set(mqttDevice.id, lightState);
     client.publish(

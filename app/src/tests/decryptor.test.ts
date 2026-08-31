@@ -59,12 +59,7 @@ function refChacha20Block(key: Buffer, nonce: Buffer, counter: number): Buffer {
   return out;
 }
 
-function refChacha20Xor(
-  key: Buffer,
-  nonce: Buffer,
-  data: Buffer,
-  counter: number,
-): Buffer {
+function refChacha20Xor(key: Buffer, nonce: Buffer, data: Buffer, counter: number): Buffer {
   const out = Buffer.from(data);
   for (let off = 0; off < out.length; off += 64) {
     const ks = refChacha20Block(key, nonce, counter + Math.floor(off / 64));

@@ -23,10 +23,7 @@ const lastSeen = new Map<string, { ts: number; value: string }>();
 const motionOn = new Map<CameraKey, boolean>();
 const offTimers = new Map<CameraKey, NodeJS.Timeout>();
 
-export function publishMotionDiscovery(
-  client: MqttClient,
-  mqttDevice: MQTTDevice
-): void {
+export function publishMotionDiscovery(client: MqttClient, mqttDevice: MQTTDevice): void {
   const base = `homeassistant/binary_sensor/${mqttDevice.id}/motion`;
   client.publish(
     `${base}/config`,
@@ -44,14 +41,14 @@ export function publishMotionDiscovery(
         name: mqttDevice.name,
       },
     }),
-    { retain: true }
+    { retain: true },
   );
 }
 
 export function processEventAttrs(
   client: MqttClient,
   mqttDevice: MQTTDevice,
-  rows: Array<{ attr: string; value: any; timeStamp?: number }>
+  rows: Array<{ attr: string; value: any; timeStamp?: number }>,
 ): void {
   let detected = false;
   let changedAttr = "";
@@ -77,11 +74,9 @@ export function processEventAttrs(
 
   if (!wasOn) {
     motionOn.set(mqttDevice.id, true);
-    client.publish(
-      `homeassistant/binary_sensor/${mqttDevice.id}/motion/state`,
-      "ON",
-      { retain: true }
-    );
+    client.publish(`homeassistant/binary_sensor/${mqttDevice.id}/motion/state`, "ON", {
+      retain: true,
+    });
   }
 
   // перезапускаем таймер сброса
@@ -91,12 +86,10 @@ export function processEventAttrs(
     mqttDevice.id,
     setTimeout(() => {
       motionOn.set(mqttDevice.id, false);
-      client.publish(
-        `homeassistant/binary_sensor/${mqttDevice.id}/motion/state`,
-        "OFF",
-        { retain: true }
-      );
+      client.publish(`homeassistant/binary_sensor/${mqttDevice.id}/motion/state`, "OFF", {
+        retain: true,
+      });
       console.log(`🌙 ${mqttDevice.name} Motion=OFF`);
-    }, RESET_SECONDS * 1000)
+    }, RESET_SECONDS * 1000),
   );
 }
