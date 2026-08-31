@@ -38,6 +38,8 @@ private:
         int expected_seq = -1;
         std::map<uint16_t, std::vector<uint8_t>> reorder_buf;
         std::vector<uint8_t> stream_buf;
+        std::vector<uint8_t> pending_audio;
+        size_t pending_audio_expected = 0;
     };
 
     void handle_packet_immediate(uint8_t channel, ChannelState& state, uint16_t seq, const uint8_t* data, size_t len);

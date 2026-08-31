@@ -1,5 +1,6 @@
 #include "reassembler.hpp"
 #include "../crypto/chacha20.hpp"
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 
@@ -52,6 +53,10 @@ static inline bool is_avio_video_header_safe(const uint8_t* data, size_t len) {
 static inline bool is_avio_audio_header_safe(const uint8_t* data, size_t len) {
     if (len < 32 || read_u16_le(data) != 0x0088)
         return false;
+    // Observed Aqara AAC AVIO frames use flags 0x000e. Requiring it makes
+    // scanning inside encrypted video payloads safe enough to avoid false hits.
+    if (read_u16_le(data + 2) != 0x000e)
+        return false;
     const uint32_t payload_len = read_u32_le(data + 28);
     return payload_len > 0 && payload_len <= 64 * 1024;
 }
@@ -60,6 +65,8 @@ void AvioReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
     sequence_gaps_++;
     discarded_bytes_ += state.stream_buf.size();
     state.stream_buf.clear();
+    state.pending_audio.clear();
+    state.pending_audio_expected = 0;
     state.expected_seq = next_seq;
     std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " sequence gap, resync at seq=" << next_seq
               << " gaps=" << sequence_gaps_ << std::endl;
@@ -138,14 +145,66 @@ void AvioReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* 
 
 void AvioReassembler::handle_packet_immediate(uint8_t channel, ChannelState& state, uint16_t, const uint8_t* data, size_t len) {
     static constexpr size_t MAX_STREAM_BUFFER = 4 * 1024 * 1024;
-    if (state.stream_buf.size() + len > MAX_STREAM_BUFFER) {
-        discarded_bytes_ += state.stream_buf.size();
-        state.stream_buf.clear();
-        if (kf_req_cb_)
-            kf_req_cb_();
+
+    auto append_video_bytes = [&](const uint8_t* bytes, size_t count) {
+        if (count == 0)
+            return;
+        if (state.stream_buf.size() + count > MAX_STREAM_BUFFER) {
+            discarded_bytes_ += state.stream_buf.size();
+            state.stream_buf.clear();
+            if (kf_req_cb_)
+                kf_req_cb_();
+        }
+        state.stream_buf.insert(state.stream_buf.end(), bytes, bytes + count);
+        parse_stream_buffer(channel, state);
+    };
+
+    if (!state.pending_audio.empty()) {
+        const size_t needed = state.pending_audio_expected - state.pending_audio.size();
+        const size_t take = std::min(needed, len);
+        state.pending_audio.insert(state.pending_audio.end(), data, data + take);
+        data += take;
+        len -= take;
+        if (state.pending_audio.size() < state.pending_audio_expected)
+            return;
+        process_completed_audio(state.pending_audio.data(), state.pending_audio.size());
+        state.pending_audio.clear();
+        state.pending_audio_expected = 0;
     }
-    state.stream_buf.insert(state.stream_buf.end(), data, data + len);
-    parse_stream_buffer(channel, state);
+
+    // Audio does not necessarily begin at UDP offset zero. Aqara can finish a
+    // video fragment and append a complete 0x0088 frame in the same DRW body,
+    // or place audio between two fragments of one video frame. Peel every
+    // strongly validated audio header before feeding the remaining bytes to
+    // the video stream assembler.
+    while (len > 0) {
+        size_t audio_offset = len;
+        for (size_t i = 0; i + 32 <= len; ++i) {
+            if (is_avio_audio_header_safe(data + i, len - i)) {
+                audio_offset = i;
+                break;
+            }
+        }
+
+        if (audio_offset == len) {
+            append_video_bytes(data, len);
+            return;
+        }
+
+        append_video_bytes(data, audio_offset);
+        data += audio_offset;
+        len -= audio_offset;
+
+        const size_t audio_len = 32ULL + read_u32_le(data + 28);
+        if (audio_len > len) {
+            state.pending_audio.assign(data, data + len);
+            state.pending_audio_expected = audio_len;
+            return;
+        }
+        process_completed_audio(data, audio_len);
+        data += audio_len;
+        len -= audio_len;
+    }
 }
 
 void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) {
@@ -154,7 +213,7 @@ void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) 
         const uint8_t* data = state.stream_buf.data();
 
         if (is_avio_audio_header_safe(data, state.stream_buf.size())) {
-            const size_t frame_len = 32ULL + read_u32_le(data + 28); // dataLen includes 8-byte nonce + AAC
+            const size_t frame_len = 32ULL + read_u32_le(data + 28); // dataLen includes the 8B nonce plus encrypted AAC
             if (frame_len > state.stream_buf.size())
                 return;
             process_completed_audio(data, frame_len);

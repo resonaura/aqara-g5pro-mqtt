@@ -224,6 +224,36 @@ void P2pClient::flush_acks(uint8_t channel) {
     }
 }
 
+void P2pClient::notify_connected(const sockaddr_in& endpoint) {
+    if (connected_notified_.exchange(true))
+        return;
+    char ip[INET_ADDRSTRLEN] = {0};
+    inet_ntop(AF_INET, &endpoint.sin_addr, ip, sizeof(ip));
+    if (event_cb_) {
+        event_cb_("{\"event\":\"p2p_connected\",\"did\":\"" + config_.did + "\",\"ip\":\"" +
+                  std::string(ip) + "\",\"port\":" + std::to_string(ntohs(endpoint.sin_port)) + "}");
+    }
+}
+
+void P2pClient::send_login_if_due(int64_t min_interval_ms) {
+    if (!is_connected_ || session_started_)
+        return;
+    const int64_t now = current_time_ms();
+    int64_t previous = last_login_sent_ms_.load();
+    if (previous != 0 && now - previous < min_interval_ms)
+        return;
+    if (!last_login_sent_ms_.compare_exchange_strong(previous, now))
+        return;
+
+    std::string login_json = "{\"app_public_key\":\"" + config_.app_pub_hex + "\",\"app_sign\":\"" +
+                             config_.app_sign + "\",\"device_id\":\"" + config_.did + "\",\"timestamp\":\"" +
+                             (config_.sign_time.empty() ? std::to_string(now) : config_.sign_time) + "\"}";
+    std::cout << "[P2P-Native] Sending 0x1000 Login for " << config_.did << std::endl;
+    auto login_frame = PpcsCipher::build_lumi_frame(0x1000, reinterpret_cast<const uint8_t*>(login_json.data()),
+                                                    login_json.length(), cmd_seq_++);
+    send_enc_drw(0, ch0_seq_++, login_frame.data(), login_frame.size());
+}
+
 void P2pClient::request_keyframe() {
     auto frame = PpcsCipher::build_lumi_frame(0x1018, nullptr, 0, cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
@@ -384,6 +414,10 @@ static bool is_lan_ip(const sockaddr_in& addr) {
     return false;
 }
 
+static bool same_endpoint(const sockaddr_in& a, const sockaddr_in& b) {
+    return a.sin_family == b.sin_family && a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+}
+
 void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in& src) {
     if (len < 4)
         return;
@@ -442,8 +476,9 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep);
         send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep2);
     } else if (msg_type == 0x41) {
-        // PUNCH (0x41) from camera: reply with punch (0x41) and RDY (0x42)
-        if (is_lan_ip(src) || !is_lan_ip(camera_addr_)) {
+        // PUNCH from a candidate endpoint. Once connected, keep the winning
+        // endpoint pinned instead of letting late LAN discovery steal it.
+        if (!is_connected_ && (is_lan_ip(src) || !is_lan_ip(camera_addr_))) {
             camera_addr_ = src;
         }
 
@@ -455,8 +490,13 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         PpcsCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), rdy_pkt.data(), rdy_pkt.size());
         send_raw_packet(rdy_pkt.data(), rdy_pkt.size(), src);
     } else if (msg_type == 0x42) {
-        // RDY (0x42) from camera: update camera_addr_ to the true endpoint, reply with RDY_ACK (0x43) and trigger Login
-        if (is_lan_ip(src) || !is_lan_ip(camera_addr_)) {
+        // RDY establishes the endpoint. Ignore late RDY packets from other
+        // discovery candidates after a session is already active.
+        const bool already_connected = is_connected_.load();
+        if (already_connected && !same_endpoint(src, camera_addr_)) {
+            return;
+        }
+        if (!already_connected) {
             camera_addr_ = src;
         }
 
@@ -468,45 +508,43 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         PpcsCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), alive.data(), alive.size());
         send_raw_packet(alive.data(), alive.size(), src);
 
-        is_connected_ = true;
-        std::cout << "[P2P-Native] RDY Handshake OK with " << ip_str << ":" << ntohs(src.sin_port) << std::endl;
-
-        // Send 0x1000 Login JSON to true camera address
-        std::string login_json = "{\"app_public_key\":\"" + config_.app_pub_hex + "\",\"app_sign\":\"" +
-                                 config_.app_sign + "\",\"device_id\":\"" + config_.did + "\",\"timestamp\":\"" +
-                                 (config_.sign_time.empty() ? std::to_string(current_time_ms()) : config_.sign_time) +
-                                 "\"}";
-        std::cout << "[P2P-Native] Sending 0x1000 Login JSON: " << login_json << std::endl;
-        auto login_frame = PpcsCipher::build_lumi_frame(0x1000, reinterpret_cast<const uint8_t*>(login_json.data()),
-                                                        login_json.length(), cmd_seq_++);
-        send_enc_drw(0, ch0_seq_++, login_frame.data(), login_frame.size());
+        const bool first_handshake = !is_connected_.exchange(true);
+        if (first_handshake) {
+            std::cout << "[P2P-Native] RDY Handshake OK with " << ip_str << ":" << ntohs(src.sin_port) << std::endl;
+            notify_connected(src);
+        }
+        // Cameras may repeat RDY while our ACK is in flight. Retry auth at most
+        // once per second instead of creating a login storm for every RDY.
+        send_login_if_due();
 
     } else if (msg_type == 0x43) {
-        // RDY_ACK (0x43) from camera
-        if (is_lan_ip(src) || !is_lan_ip(camera_addr_)) {
+        // Ignore late RDY_ACK packets from non-winning endpoints.
+        const bool already_connected = is_connected_.load();
+        if (already_connected && !same_endpoint(src, camera_addr_)) {
+            return;
+        }
+        if (!already_connected) {
             camera_addr_ = src;
         }
-        is_connected_ = true;
-
-        if (!session_started_) {
+        const bool first_handshake = !is_connected_.exchange(true);
+        if (first_handshake) {
+            notify_connected(src);
             auto alive = PpcsCipher::build_pppp(0xE0);
             PpcsCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), alive.data(), alive.size());
             send_raw_packet(alive.data(), alive.size(), camera_addr_);
-
-            std::string login_json = "{\"app_public_key\":\"" + config_.app_pub_hex + "\",\"app_sign\":\"" +
-                                     config_.app_sign + "\",\"device_id\":\"" + config_.did + "\",\"timestamp\":\"" +
-                                     (config_.sign_time.empty() ? std::to_string(current_time_ms()) : config_.sign_time) +
-                                     "\"}";
-            auto login_frame = PpcsCipher::build_lumi_frame(0x1000, reinterpret_cast<const uint8_t*>(login_json.data()),
-                                                            login_json.length(), cmd_seq_++);
-            send_enc_drw(0, ch0_seq_++, login_frame.data(), login_frame.size());
         }
+        send_login_if_due();
     } else if (msg_type == 0xE0) {
         // ALIVE -> reply ALIVE_ACK
         auto ack = PpcsCipher::build_pppp(0xE1);
         PpcsCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), ack.data(), ack.size());
         send_raw_packet(ack.data(), ack.size(), src);
     } else if ((msg_type == 0xD0 || msg_type == 0xD8) && payload_len >= 4 && payload[0] == 0xD1) {
+        // flush_acks() targets camera_addr_. Reject data from a late candidate,
+        // otherwise ACKs go to a different peer and the camera retries forever.
+        if (is_connected_ && !same_endpoint(src, camera_addr_)) {
+            return;
+        }
         uint8_t channel = payload[1];
         uint16_t seq = (static_cast<uint16_t>(payload[2]) << 8) | static_cast<uint16_t>(payload[3]);
         const uint8_t* chan_data = payload + 4;
@@ -556,20 +594,20 @@ void P2pClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
               << " body_len=" << body_len << " body=" << body_str << std::endl;
 
     if (type == 0x1001) {
-        if (!session_ready_) {
-            session_started_ = true;
-            std::cout << "[P2P-Native] 0x1001 Login OK for " << config_.did << ", sending 0x1002 session start & 0x101C stream start"
-                      << std::endl;
-            // Send 0x1002 session start on Channel 0
-            auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
-            send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
-
-            // Send 0x101C stream start on Channel 3
+        // A DRW response may be retransmitted or even batched several times.
+        // Advance the auth state exactly once, independently of session_ready_.
+        if (!session_started_.exchange(true)) {
+            std::cout << "[P2P-Native] 0x1001 Login OK for " << config_.did
+                      << ", sending 0x101C stream start & 0x1002 session start" << std::endl;
+            // Match the official client ordering observed with Frida: channel 3
+            // stream/record-list request first, then the empty live-session start.
             auto stream_frame = PpcsCipher::build_lumi_frame(0x101C, nullptr, 0, cmd_seq_++);
             send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
 
+            auto session_frame = PpcsCipher::build_lumi_frame(0x1002, nullptr, 0, cmd_seq_++);
+            send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
+
             set_quality(config_.p2p_quality_channel);
-            request_keyframe();
         }
     } else if (type == 0x1003) {
         if (!session_ready_) {
@@ -612,13 +650,7 @@ void P2pClient::watchdog_loop() {
 
             if (!session_started_) {
                 if (tick % 3 == 0) {
-                    std::string login_json =
-                        "{\"app_public_key\":\"" + config_.app_pub_hex + "\",\"app_sign\":\"" + config_.app_sign +
-                        "\",\"device_id\":\"" + config_.did + "\",\"timestamp\":\"" +
-                        (config_.sign_time.empty() ? std::to_string(current_time_ms()) : config_.sign_time) + "\"}";
-                    auto login_frame = PpcsCipher::build_lumi_frame(
-                        0x1000, reinterpret_cast<const uint8_t*>(login_json.data()), login_json.length(), cmd_seq_++);
-                    send_enc_drw(0, ch0_seq_++, login_frame.data(), login_frame.size());
+                    send_login_if_due(2500);
                 }
             } else if (!session_ready_) {
                 if (tick % 2 == 0) {

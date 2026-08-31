@@ -54,6 +54,8 @@ private:
     void handle_packet(const uint8_t* data, size_t len, const sockaddr_in& src);
     void handle_channel0_data(const uint8_t* data, size_t len);
     void dispatch_channel0(uint32_t type, const uint8_t* body, size_t body_len);
+    void send_login_if_due(int64_t min_interval_ms = 1000);
+    void notify_connected(const sockaddr_in& endpoint);
 
     void send_enc_drw(uint8_t channel, uint16_t seq, const uint8_t* payload, size_t len);
     void send_raw_packet(const uint8_t* data, size_t len, const sockaddr_in& dest);
@@ -74,6 +76,8 @@ private:
     std::atomic<bool> is_connected_{false};
     std::atomic<bool> session_started_{false};
     std::atomic<bool> session_ready_{false};
+    std::atomic<bool> connected_notified_{false};
+    std::atomic<int64_t> last_login_sent_ms_{0};
 
     sockaddr_in camera_addr_{};
     std::vector<sockaddr_in> endpoints_;

@@ -403,7 +403,11 @@ export class AqaraCameraBridge extends EventEmitter {
     if (!this.isConnected) return false;
     if (!this.p2pSessionReady) {
       console.log("⏳ [Talkback] Waiting for P2P session setup before 0x100A...");
-      await this.waitForSessionReady(10000);
+      const ready = await this.waitForSessionReady(10000);
+      if (!ready) {
+        console.error("❌ [Talkback] P2P media session did not become ready");
+        return false;
+      }
     }
     this.talkbackActive = true;
     this.talkFramesSent = 0;

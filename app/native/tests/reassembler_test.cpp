@@ -28,6 +28,7 @@ int main() {
     const std::vector<uint8_t> plaintext = {0xff, 0xf1, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x11, 0x22};
     std::vector<uint8_t> frame(32 + 8 + plaintext.size(), 0);
     frame[0] = 0x88;
+    frame[2] = 0x0e;
     put_u32_le(frame, 28, static_cast<uint32_t>(8 + plaintext.size()));
     for (int i = 0; i < 8; ++i)
         frame[32 + i] = static_cast<uint8_t>(0xa0 + i);
@@ -43,6 +44,27 @@ int main() {
     // Independent PPCS channels have independent 16-bit sequence spaces.
     reassembler.push_packet(1, 400, frame.data(), frame.size());
     assert(audio_frames == 2);
+
+    // Mic audio may be inserted between two UDP fragments of one video AVIO
+    // frame. It must be peeled out instead of becoming part of the video bytes.
+    int video_frames = 0;
+    aqara::AvioReassembler interleaved(key, key);
+    interleaved.set_callbacks([&](const aqara::VideoFrame&) { ++video_frames; }, {}, {});
+    std::vector<uint8_t> video(48, 0);
+    video[0] = 0x4e;
+    video[2] = 1;
+    put_u32_le(video, 28, 16);
+    for (int i = 0; i < 8; ++i)
+        video[32 + i] = static_cast<uint8_t>(0x10 + i);
+    const std::vector<uint8_t> video_plain = {0, 0, 0, 1, 0x65, 1, 2, 3};
+    aqara::ChaCha20::xor_stream(key, video.data() + 32, 0, video_plain.data(), video.data() + 40, video_plain.size());
+    interleaved.push_packet(4, 100, video.data(), 20);
+    std::vector<uint8_t> mixed;
+    mixed.insert(mixed.end(), video.begin() + 20, video.begin() + 27);
+    mixed.insert(mixed.end(), frame.begin(), frame.end());
+    interleaved.push_packet(4, 101, mixed.data(), mixed.size());
+    interleaved.push_packet(4, 102, video.data() + 27, video.size() - 27);
+    assert(video_frames == 1);
 
     std::cout << "reassembler test passed" << std::endl;
     return 0;
