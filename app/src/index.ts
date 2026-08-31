@@ -125,10 +125,10 @@ await rtmpServer.start();
 console.log(`🎙️ Talkback RTMP ingest listening on port ${rtmpServer.listenPort}`);
 
 // HTTP server for serving cached JPEG snapshots — only used while a P2P
-// stream is active for a given camera. Bound to process.env.HTTP_PORT || 8080.
+// stream is active for a given camera. Bound to process.env.HTTP_PORT || 8580 (auto-allocated).
 const framesDir = path.resolve(process.cwd(), "data", "frames");
 const httpServer = new FrameHttpServer(framesDir);
-httpServer.start();
+await httpServer.start();
 
 const client = createMqttClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
@@ -166,17 +166,18 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
       const host = process.env.BRIDGE_HOST || getLocalIpv4();
       const slug = slugMap[cameraInfo.device.did];
       const streamUrl = `rtsp://${host}:${actualPort}/live/${slug}`;
+      const rtmpTalkUrl = `rtmp://${host}:${rtmpServer.listenPort}/talk/${slug}`;
+      const snapshotUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${slug}/snapshot`;
+
       client.publish(`homeassistant/sensor/${deviceId}/p2p_rtsp_stream/state`, streamUrl, { retain: true });
-      client.publish(
-        `homeassistant/sensor/${deviceId}/talkback_rtmp/state`,
-        `rtmp://${host}:${rtmpServer.listenPort}/talk/${slug}`,
-        { retain: true },
-      );
+      client.publish(`homeassistant/sensor/${deviceId}/talkback_rtmp/state`, rtmpTalkUrl, { retain: true });
+      client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, snapshotUrl, { retain: true });
 
       if (!cameraInfo.snapshotter) {
-        const snap = new FrameSnapshotter({ slug, did: cameraInfo.device.did, rtspUrl: streamUrl });
+        const localRtspUrl = `rtsp://127.0.0.1:${actualPort}/live/${slug}`;
+        const snap = new FrameSnapshotter({ slug, did: cameraInfo.device.did, rtspUrl: localRtspUrl });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
-          const frameUrl = `http://${host}:${process.env.HTTP_PORT || 8080}/api/cameras/${frameSlug}/snapshot`;
+          const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
           client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, frameUrl, { retain: true });
           try {
             const imgBuf = await fs.readFile(framePath);
@@ -291,20 +292,27 @@ client.on("connect", () => {
     client.publish(`homeassistant/switch/${mqttDevice.id}/talkback/config`, "", { retain: true });
 
     // Initial state: P2P Stream OFF by default
+    const isP2pOn = !!cameraData[idx].bridge;
     client.publish(
       `homeassistant/switch/${mqttDevice.id}/p2p_stream/state`,
-      cameraData[idx].bridge ? "ON" : "OFF",
+      isP2pOn ? "ON" : "OFF",
       { retain: true },
     );
-    client.publish(`homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`, p2pRtspUrl, {
-      retain: true,
-    });
-    client.publish(`homeassistant/sensor/${mqttDevice.id}/snapshot_url/state`, snapshotUrl, {
-      retain: true,
-    });
-    client.publish(`homeassistant/sensor/${mqttDevice.id}/talkback_rtmp/state`, rtmpTalkUrl, {
-      retain: true,
-    });
+    client.publish(
+      `homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`,
+      isP2pOn ? p2pRtspUrl : "null",
+      { retain: true },
+    );
+    client.publish(
+      `homeassistant/sensor/${mqttDevice.id}/snapshot_url/state`,
+      isP2pOn ? snapshotUrl : "null",
+      { retain: true },
+    );
+    client.publish(
+      `homeassistant/sensor/${mqttDevice.id}/talkback_rtmp/state`,
+      isP2pOn ? rtmpTalkUrl : "null",
+      { retain: true },
+    );
 
     // Query Native camera RTSP URL if available
     try {
@@ -312,7 +320,7 @@ client.on("connect", () => {
       const best = pickMaxStreamQuality(qualities);
       const nativeRtspUrl = best
         ? `rtsp://${device.ip || getLocalIpv4()}:554/live/ch${best.channel}`
-        : "N/A";
+        : "null";
       client.publish(
         `homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`,
         nativeRtspUrl,
@@ -321,7 +329,7 @@ client.on("connect", () => {
         },
       );
     } catch {
-      client.publish(`homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`, "N/A", {
+      client.publish(`homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`, "null", {
         retain: true,
       });
     }
@@ -425,6 +433,8 @@ client.on("message", async (topic, msg) => {
   if (attr === "p2p_stream") {
     const p2pSwitchTopic = `homeassistant/switch/${deviceId}/p2p_stream/state`;
     const p2pRtspTopic = `homeassistant/sensor/${deviceId}/p2p_rtsp_stream/state`;
+    const snapshotUrlTopic = `homeassistant/sensor/${deviceId}/snapshot_url/state`;
+    const talkbackRtmpTopic = `homeassistant/sensor/${deviceId}/talkback_rtmp/state`;
     if (value === "ON") {
       console.log(`🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`);
       try {
@@ -435,7 +445,9 @@ client.on("message", async (topic, msg) => {
           `⚠️ [P2P Bridge] Could not start P2P stream for ${cameraInfo.device.deviceName}: ${err?.message || err}`,
         );
         client.publish(p2pSwitchTopic, "OFF", { retain: true });
-        client.publish(p2pRtspTopic, "OFF", { retain: true });
+        client.publish(p2pRtspTopic, "null", { retain: true });
+        client.publish(snapshotUrlTopic, "null", { retain: true });
+        client.publish(talkbackRtmpTopic, "null", { retain: true });
       }
     } else {
       console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
@@ -448,7 +460,9 @@ client.on("message", async (topic, msg) => {
         cameraInfo.snapshotter = undefined;
       }
       client.publish(p2pSwitchTopic, "OFF", { retain: true });
-      client.publish(p2pRtspTopic, "OFF", { retain: true });
+      client.publish(p2pRtspTopic, "null", { retain: true });
+      client.publish(snapshotUrlTopic, "null", { retain: true });
+      client.publish(talkbackRtmpTopic, "null", { retain: true });
     }
     return;
   }

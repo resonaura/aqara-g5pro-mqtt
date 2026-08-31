@@ -15,21 +15,29 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { findFreePort } from "./ports.js";
 
 export class FrameHttpServer {
   private server: http.Server | null = null;
-  private readonly port: number;
+  private port: number;
   private readonly framesDir: string;
 
   constructor(framesDir: string, port?: number) {
     this.framesDir = framesDir;
-    this.port = port ?? Number(process.env.HTTP_PORT || 8080);
+    this.port = port ?? Number(process.env.HTTP_PORT || 8580);
   }
 
-  public start(): void {
-    if (this.server) return;
+  public get listenPort(): number {
+    return this.port;
+  }
 
-    this.server = http.createServer((req, res) => {
+  public async start(): Promise<number> {
+    if (this.server) return this.port;
+
+    this.port = await findFreePort(this.port);
+
+    return new Promise((resolve) => {
+      const srv = http.createServer((req, res) => {
       const url = req.url ?? "/";
 
       // ── /health ─────────────────────────────────────────────────────────────
@@ -83,24 +91,20 @@ export class FrameHttpServer {
         return;
       }
 
-      // Unknown route
-      res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("Not found");
-    });
+        // Unknown route
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not found");
+      });
 
-    this.server.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") {
-        console.error(
-          `❌ [HTTP] Port ${this.port} is already in use — frame endpoints unavailable`,
-        );
-      } else {
+      srv.on("error", (err: NodeJS.ErrnoException) => {
         console.error(`❌ [HTTP] Server error: ${err.message}`);
-      }
-    });
+      });
 
-    this.server.listen(this.port, "0.0.0.0", () => {
-      // Only log once on startup — no spam per request
-      console.log(`🌐 [HTTP] Frame server listening on port ${this.port}`);
+      srv.listen(this.port, "0.0.0.0", () => {
+        this.server = srv;
+        console.log(`🌐 [HTTP] Frame server listening on port ${this.port}`);
+        resolve(this.port);
+      });
     });
   }
 

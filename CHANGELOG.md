@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.1 — Clean Inactive Entity States & Auto-Allocated HTTP Snapshot Port
+
+### 🖼️ HTTP Snapshot Port (Default 8580 & Auto-Correction)
+- **Port Range Alignment**: Moved default HTTP frame snapshot server from the busy port `8080` to `8580` (within the camera `85xx` port block).
+- **Auto Port Allocation**: If `8580` (or `HTTP_PORT`) is already in use by another service, `findFreePort` automatically probes and binds to the next available free port.
+- **Localhost RTSP Ingest**: `FrameSnapshotter` connects directly to `127.0.0.1` for local frame grabbing, avoiding external LAN interface routing, firewall blocks, or hairpin NAT issues.
+
+### 🧹 Clean `null` States for Inactive Stream Entities
+- **Accurate MQTT States**: When P2P stream is OFF or stopped, `p2p_rtsp_stream`, `snapshot_url`, and `talkback_rtmp` sensor states are set to `null` instead of retaining stale/inaccessible URLs.
+- **Native RTSP Sensor**: Publishes `null` when native RTSP stream URL is unavailable.
+
 ## v1.5.0 — Native C++ Streaming Engine, Zero-Drift Audio & Stream Stability
 
 ### 🚀 High-Performance Native C++ Engine (`aqara-streamer`)

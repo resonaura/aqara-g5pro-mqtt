@@ -82,6 +82,12 @@ export async function findFreePortRange(count: number, base = 8555): Promise<num
   );
 }
 
+/** Find a single free allowed TCP port starting near `base`. */
+export async function findFreePort(base = 8580): Promise<number> {
+  const [port] = await findFreePortRange(1, base);
+  return port;
+}
+
 // ---- rtsp_ports.json: records the actual ports chosen per camera. ----
 
 export interface RtspPortEntry {
