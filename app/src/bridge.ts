@@ -336,6 +336,10 @@ export class AqaraCameraBridge extends EventEmitter {
       this.decryptor = new AqaraStreamDecryptor(videoKeyHex);
     }
 
+    console.log(
+      `🔑 [P2P-Auth:${this.did}] Generated fresh X25519 keypair (pub: ${this.appPub.substring(0, 8)}...) & signed with Aqara Cloud (time: ${this.signTime})`,
+    );
+
     return { appPub: this.appPub, sign: this.appSign };
   }
 

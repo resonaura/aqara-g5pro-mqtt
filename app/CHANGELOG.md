@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.5.9 — Cold Rebuild Self-Healing & Direct Unicast LAN Discovery
+## v1.6.0 — Guaranteed Fresh Key Generation & IPC Deadlock Prevention
+
+### 🔑 Cryptographic & Self-Healing Fixes
+- **Verified Fresh Key Generation**: Explicitly logs every freshly generated X25519 keypair and Aqara Cloud signature timestamp on every reconnect attempt (`bridge.reconnect()`), ensuring keys are always fresh when reviving dropped camera sessions.
+- **RTSP Server Shutdown Deadlock Fix**: Added `shutdown(server_fd_, SHUT_RDWR)` before closing server sockets in C++ `RTSPServer::stop()`, preventing `accept()` threads from blocking IPC command execution.
+- **Direct Reconnect Flow**: Standardized watchdog reconnects to directly invoke `bridge.reconnect()` for tunnel resurrection with freshly derived ChaCha20 cipher keys.
 
 ### 🩺 Self-Healing & LAN Discovery Enhancements
 - **Cold Rebuild Self-Healing**: Watchdog reconnection attempt #2+ now executes a full clean cold rebuild of the camera bridge, recreating fresh X25519 cryptographic keypairs, cloud signatures, and native engine state identical to an add-on restart.

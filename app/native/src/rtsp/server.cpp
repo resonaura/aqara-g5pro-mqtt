@@ -106,6 +106,7 @@ void RTSPServer::stop() {
     running_ = false;
 
     if (server_fd_ >= 0) {
+        shutdown(server_fd_, SHUT_RDWR);
         close(server_fd_);
         server_fd_ = -1;
     }
