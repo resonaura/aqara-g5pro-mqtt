@@ -198,16 +198,23 @@ export class OfflineCardManager {
       onFrameUpdate: options.onFrameUpdate ?? existing?.onFrameUpdate,
     };
 
+    let isRendering = false;
     const render = async () => {
-      const durationSeconds = Math.max(1, Math.round((Date.now() - state.startedAt) / 1000));
-      const buf = await generateOfflineCardImage({
-        slug: state.slug,
-        deviceName: state.deviceName,
-        statusText: state.reason,
-        durationSeconds,
-      });
-      if (buf && state.onFrameUpdate) {
-        state.onFrameUpdate(buf);
+      if (isRendering) return;
+      isRendering = true;
+      try {
+        const durationSeconds = Math.max(1, Math.round((Date.now() - state.startedAt) / 1000));
+        const buf = await generateOfflineCardImage({
+          slug: state.slug,
+          deviceName: state.deviceName,
+          statusText: state.reason,
+          durationSeconds,
+        });
+        if (buf && state.onFrameUpdate) {
+          state.onFrameUpdate(buf);
+        }
+      } finally {
+        isRendering = false;
       }
     };
 

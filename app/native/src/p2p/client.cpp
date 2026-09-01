@@ -717,6 +717,13 @@ void P2PClient::watchdog_loop() {
                         PPCSCipher::build_lumi_frame(LumiCmdType::SESSION_START_REQ, nullptr, 0, cmd_seq_++);
                     send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
                     request_keyframe();
+
+                    if (now - ready_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 && event_cb_) {
+                        last_unhealthy_emitted_ms_ = now;
+                        std::cout << "[P2P-Native] No video received for " << config_.did
+                                  << " after 15s, emitting unhealthy event" << std::endl;
+                        event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+                    }
                 } else if (video_at > 0 && now - video_at > 6000 && now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
                     std::cout << "[P2P-Native] Video stream stalled (" << (now - video_at) / 1000 << "s) for "
@@ -732,7 +739,8 @@ void P2PClient::watchdog_loop() {
                         send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
                     }
 
-                    if (now - video_at > 20000 && event_cb_) {
+                    if (now - video_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 && event_cb_) {
+                        last_unhealthy_emitted_ms_ = now;
                         std::cout << "[P2P-Native] Video stream unresponsive for " << config_.did
                                   << ", emitting unhealthy event" << std::endl;
                         event_cb_(to_json(EventUnhealthy{.did = config_.did}));

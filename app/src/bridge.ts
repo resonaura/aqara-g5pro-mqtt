@@ -380,8 +380,6 @@ export class AqaraCameraBridge extends EventEmitter {
         const path = this.rtspPath || `live/${this.did}`;
         this.emit("rtsp_ready", `rtsp://${host}:${this.rtspPort}/${path}`);
         this.emit("p2p_session_ready");
-        this.emit("stream_started");
-        this.emit("keyframe");
       }
     });
 

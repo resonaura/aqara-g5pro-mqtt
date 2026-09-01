@@ -83,6 +83,7 @@ private:
     std::atomic<int64_t> last_video_traffic_ms_{0};
     std::atomic<int64_t> last_audio_traffic_ms_{0};
     std::atomic<int64_t> last_stream_retry_ms_{0};
+    std::atomic<int64_t> last_unhealthy_emitted_ms_{0};
 
     sockaddr_in camera_addr_{};
     std::vector<sockaddr_in> endpoints_;

@@ -171,10 +171,11 @@ async function restartCameraStream(
     const now = Date.now();
     const state = reconnectAttempts.get(did) || { count: 0, lastAttempt: 0 };
 
-    // Cooldown only applies if camera bridge is currently active and reporting rapid stalls
-    if (cameraInfo.bridge && now - state.lastAttempt < 15_000) {
+    // Cooldown with exponential backoff if camera is failing to reconnect
+    const cooldown = Math.min(15_000 * Math.pow(1.4, Math.min(state.count - 1, 4)), 60_000);
+    if (cameraInfo.bridge && state.lastAttempt > 0 && now - state.lastAttempt < cooldown) {
       console.log(
-        `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnect on cooldown (${Math.round((15_000 - (now - state.lastAttempt)) / 1000)}s remaining)...`,
+        `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnect on cooldown (${Math.round((cooldown - (now - state.lastAttempt)) / 1000)}s remaining, attempt #${state.count})...`,
       );
       return;
     }
@@ -230,30 +231,27 @@ async function restartCameraStream(
     try {
       if (cameraInfo.bridge) {
         console.log(
-          `🔄 [Watchdog:${cameraInfo.device.deviceName}] Resurrecting P2P tunnel while preserving RTSP server & clients...`,
+          `🔄 [Watchdog:${cameraInfo.device.deviceName}] Resurrecting P2P tunnel while preserving RTSP server & clients (attempt #${state.count})...`,
         );
         await cameraInfo.bridge.reconnect();
       } else {
         await ensureCameraBridge(cameraInfo);
       }
       console.log(
-        `✅ [Watchdog:${cameraInfo.device.deviceName}] P2P stream reconnected and restored successfully!`,
+        `📡 [Watchdog:${cameraInfo.device.deviceName}] Reconnection signal sent to native P2P engine (attempt #${state.count}), waiting for video packets...`,
       );
-      reconnectAttempts.delete(did);
-      OfflineCardManager.getInstance().setOnline(slug);
     } catch (err: any) {
-      const delay = Math.min(10_000 * Math.pow(1.5, Math.min(state.count - 1, 5)), 60_000);
+      const delay = Math.min(15_000 * Math.pow(1.4, Math.min(state.count - 1, 4)), 60_000);
       console.warn(
-        `❌ [Watchdog:${cameraInfo.device.deviceName}] Reconnection attempt #${state.count} failed: ${err?.message || err}. Scheduling retry in ${Math.round(delay / 1000)}s...`,
+        `❌ [Watchdog:${cameraInfo.device.deviceName}] Reconnection dispatch #${state.count} failed: ${err?.message || err}. Scheduling retry in ${Math.round(delay / 1000)}s...`,
       );
       OfflineCardManager.getInstance().updateStatus(
         slug,
         `Reconnecting in ${Math.round(delay / 1000)}s (attempt #${state.count})...`,
       );
       setTimeout(async () => {
-        // Re-check state before retrying
         const currentP2pState = await loadP2PState();
-        if (currentP2pState[did] !== false && !cameraInfo.bridge) {
+        if (currentP2pState[did] !== false) {
           void restartCameraStream(
             cameraInfo,
             `Scheduled retry after failed attempt #${state.count}`,
@@ -353,6 +351,13 @@ async function ensureCameraBridge(
     });
 
     bridge.on("keyframe", () => {
+      const state = reconnectAttempts.get(cameraInfo.device.did);
+      if (state) {
+        console.log(
+          `✅ [Watchdog:${cameraInfo.device.deviceName}] P2P stream restored with live video frames after ${state.count} attempt(s)!`,
+        );
+        reconnectAttempts.delete(cameraInfo.device.did);
+      }
       OfflineCardManager.getInstance().setOnline(slug);
       updateStreamEntities();
       startSnapshotter();

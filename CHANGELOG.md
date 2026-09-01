@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.8 — Offline Card Ticker Fix, Keyframe Lifecycle & Backoff Watchdog
+
+### 🩺 Offline Card & Reconnect Lifecycle Fixes
+- **True Video Frame Verification**: Fixed premature `keyframe` and `stream_started` event emission during P2P session setup in `bridge.ts`. The bridge now waits for actual H.264/HEVC keyframe NALs to arrive from the camera before declaring the stream online.
+- **Continuous Offline Card Ticker**: Resolved a bug where `OfflineCardManager` state was cancelled and reset to `1s` every 5 seconds. The offline card ticker now continuously renders and publishes updated elapsed seconds (`Offline for 15s`, `Offline for 45s`, etc.) throughout the entire offline period.
+- **Exponential Reconnect Backoff**: Watchdog reconnect attempts now properly increment (`attempt #1`, `attempt #2`, `attempt #3`...) with progressive cooldown intervals (`15s` $\rightarrow$ `60s`) instead of resetting back to attempt #1 immediately.
+- **FFmpeg Concurrency Guard**: Added `isRendering` protection in `OfflineCardManager` to prevent overlapping background FFmpeg card generation processes.
+- **C++ Watchdog Throttling**: Native `P2PClient` now throttles `unhealthy` event emissions to once every 15 seconds, eliminating log flood when a camera is powered off or disconnected from Wi-Fi.
+
 ## v1.5.7 — Protocol Enums, Abbreviation Standardization & Docker PNPM Pipeline
 
 ### 📡 Strongly-Typed Protocol Enums & Documentation
