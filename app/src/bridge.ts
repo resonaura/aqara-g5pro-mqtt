@@ -277,6 +277,7 @@ export class AqaraCameraBridge extends EventEmitter {
   private p2pSessionReady = false;
   private talkSeq = 0;
   private talkFramesSent = 0;
+  private engineListeners: Array<{ event: string; fn: (...args: any[]) => void }> = [];
 
   constructor(options: BridgeOptions) {
     super();
@@ -335,7 +336,17 @@ export class AqaraCameraBridge extends EventEmitter {
     await this.initCloudSession();
 
     const engine = NativeMediaEngine.getInstance();
-    engine.on("p2p_connected", (did: string, ip: string, port: number) => {
+    for (const { event, fn } of this.engineListeners) {
+      engine.off(event, fn);
+    }
+    this.engineListeners = [];
+
+    const registerListener = (event: string, fn: (...args: any[]) => void) => {
+      engine.on(event, fn);
+      this.engineListeners.push({ event, fn });
+    };
+
+    registerListener("p2p_connected", (did: string, ip: string, port: number) => {
       if (did === this.did) {
         this.isConnected = true;
         this.cameraIp = ip;
@@ -344,7 +355,7 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     });
 
-    engine.on("session_started", (did: string, port: number) => {
+    registerListener("session_started", (did: string, port: number) => {
       if (did === this.did) {
         this.isConnected = true;
         this.emit("connected", { port });
@@ -354,7 +365,7 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     });
 
-    engine.on("session_ready", (did: string) => {
+    registerListener("session_ready", (did: string) => {
       if (did === this.did) {
         this.p2pSessionReady = true;
         this.isConnected = true;
@@ -367,20 +378,49 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     });
 
-    engine.on("keyframe", (did: string) => {
+    registerListener("keyframe", (did: string) => {
       if (did === this.did) {
         this.emit("keyframe");
         this.emit("stream_started");
       }
     });
 
-    engine.on("talkback_ready", (did: string) => {
+    registerListener("unhealthy", (did: string) => {
+      if (did === this.did) {
+        this.emit("unhealthy");
+      }
+    });
+
+    registerListener("talkback_ready", (did: string) => {
       if (did === this.did) {
         this.emit("talkback", "accepted");
       }
     });
 
     const keyHex = this.decryptor?.getKeyHex() || "";
+    engine.startP2p({
+      did: this.did,
+      p2p_id: this.p2pInfo?.p2pId,
+      init_string: this.p2pInfo?.initStringApp,
+      app_pub_hex: this.appPub,
+      app_sign: this.appSign,
+      sign_time: this.signTime,
+      dev_pub_hex: this.p2pInfo?.devP2pPublicKey,
+      video_key_hex: keyHex,
+      audio_key_hex: keyHex,
+      camera_ip: this.cameraIp || "",
+      camera_port: this.cameraPort || 0,
+      rtsp_port: this.rtspPort,
+      rtsp_path: this.rtspPath || `live/${this.did}`,
+      p2p_quality_channel: this.p2pQualityChannel,
+    });
+  }
+
+  public async reconnect(): Promise<void> {
+    this.p2pSessionReady = false;
+    await this.initCloudSession();
+    const keyHex = this.decryptor?.getKeyHex() || "";
+    const engine = NativeMediaEngine.getInstance();
     engine.startP2p({
       did: this.did,
       p2p_id: this.p2pInfo?.p2pId,
@@ -472,6 +512,11 @@ export class AqaraCameraBridge extends EventEmitter {
 
   public stop(): void {
     this.isConnected = false;
-    NativeMediaEngine.getInstance().stopP2p(this.did);
+    const engine = NativeMediaEngine.getInstance();
+    for (const { event, fn } of this.engineListeners) {
+      engine.off(event, fn);
+    }
+    this.engineListeners = [];
+    engine.stopP2p(this.did);
   }
 }

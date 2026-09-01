@@ -36,6 +36,12 @@ void AvioReassembler::set_callbacks(VideoCallback video_cb, AudioCallback audio_
     kf_req_cb_ = std::move(kf_req_cb);
 }
 
+void AvioReassembler::set_keys(const uint8_t video_key[32], const uint8_t audio_key[32]) {
+    if (video_key) std::memcpy(video_key_, video_key, 32);
+    if (audio_key) std::memcpy(audio_key_, audio_key, 32);
+    reset();
+}
+
 void AvioReassembler::reset() {
     channels_.clear();
     last_audio_ts_ms_ = 0;

@@ -9,6 +9,7 @@
 #include <iostream>
 #include "cipher.hpp"
 #include "client.hpp"
+#include "../ipc/events.hpp"
 
 namespace aqara {
 
@@ -230,8 +231,11 @@ void P2pClient::notify_connected(const sockaddr_in& endpoint) {
     char ip[INET_ADDRSTRLEN] = {0};
     inet_ntop(AF_INET, &endpoint.sin_addr, ip, sizeof(ip));
     if (event_cb_) {
-        event_cb_("{\"event\":\"p2p_connected\",\"did\":\"" + config_.did + "\",\"ip\":\"" +
-                  std::string(ip) + "\",\"port\":" + std::to_string(ntohs(endpoint.sin_port)) + "}");
+        event_cb_(to_json(EventP2pConnected{
+            .did = config_.did,
+            .ip = std::string(ip),
+            .port = ntohs(endpoint.sin_port),
+        }));
     }
 }
 
@@ -578,7 +582,7 @@ void P2pClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
                 session_ready_ = true;
                 session_ready_since_ms_ = current_time_ms();
                 if (event_cb_) {
-                    event_cb_("{\"event\":\"session_ready\",\"did\":\"" + config_.did + "\"}");
+                    event_cb_(to_json(EventSessionReady{.did = config_.did}));
                 }
             }
             if (reassembler_)
@@ -635,13 +639,13 @@ void P2pClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
             request_keyframe();
 
             if (event_cb_) {
-                event_cb_("{\"event\":\"session_ready\",\"did\":\"" + config_.did + "\"}");
+                event_cb_(to_json(EventSessionReady{.did = config_.did}));
             }
         }
     } else if (type == 0x100B) {
         std::cout << "[P2P-Native] Talkback channel prepared (0x100B)" << std::endl;
         if (event_cb_) {
-            event_cb_("{\"event\":\"talkback_ready\",\"did\":\"" + config_.did + "\"}");
+            event_cb_(to_json(EventTalkbackReady{.did = config_.did}));
         }
     }
 }
@@ -704,7 +708,7 @@ void P2pClient::watchdog_loop() {
                     if (now - video_at > 20000 && event_cb_) {
                         std::cout << "[P2P-Native] Video stream unresponsive for " << config_.did
                                   << ", emitting unhealthy event" << std::endl;
-                        event_cb_("{\"event\":\"unhealthy\",\"did\":\"" + config_.did + "\"}");
+                        event_cb_(to_json(EventUnhealthy{.did = config_.did}));
                     }
                 }
             }

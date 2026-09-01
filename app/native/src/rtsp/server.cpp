@@ -419,13 +419,9 @@ std::string RtspServer::generate_sdp(const std::string& host_ip) {
 }
 
 void RtspServer::send_interleaved_rtp(RtspClient& client, int channel, const uint8_t* rtp_pkt, size_t len) {
-    if (channel < 0 || !rtp_pkt || len == 0 || len > 0xffff)
+    if (!client.is_playing || channel < 0 || client.socket_fd < 0 || !rtp_pkt || len == 0 || len > 0xffff)
         return;
 
-    // sendmsg() is allowed to return a short write. That happens most often on
-    // high-motion frames because their bitrate and number of RTP fragments grow.
-    // Treating a short write as success truncates RTP packets and produces exactly
-    // the moving-block corruption seen by clients. Serialize and send all bytes.
     std::vector<uint8_t> framed(4 + len);
     framed[0] = 0x24;  // '$'
     framed[1] = static_cast<uint8_t>(channel & 0xff);
@@ -447,10 +443,13 @@ void RtspServer::send_interleaved_rtp(RtspClient& client, int channel, const uin
         }
         if (written < 0 && errno == EINTR)
             continue;
+        const bool was_playing = client.is_playing;
         client.is_playing = false;
-        std::cerr << "[RTSP-Native] RTP send failed for " << client.ip << ":" << client.port
-                  << " sent=" << offset << "/" << framed.size()
-                  << " err=" << (written < 0 ? std::strerror(errno) : "peer closed") << std::endl;
+        if (was_playing) {
+            std::cerr << "[RTSP-Native] RTP send failed for " << client.ip << ":" << client.port
+                      << " sent=" << offset << "/" << framed.size()
+                      << " err=" << (written < 0 ? std::strerror(errno) : "peer closed") << std::endl;
+        }
         return;
     }
 }
@@ -495,6 +494,7 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
 
     const size_t MAX_PAYLOAD = 1380;
     for (size_t n = 0; n < nals.size(); ++n) {
+        if (!client.is_playing) return;
         const uint8_t* nal = nals[n].first;
         size_t nal_len = nals[n].second;
         bool is_last_nal = (n == nals.size() - 1);
@@ -523,7 +523,7 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
             uint8_t hdr2 = nal[1];
             size_t offset = 2;
 
-            while (offset < nal_len) {
+            while (offset < nal_len && client.is_playing) {
                 size_t chunk_len = std::min(MAX_PAYLOAD, nal_len - offset);
                 bool is_start = (offset == 2);
                 bool is_end = (offset + chunk_len >= nal_len);
@@ -563,7 +563,7 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
             uint8_t nal_nri = nal_header & 0x60;
             size_t offset = 1;
 
-            while (offset < nal_len) {
+            while (offset < nal_len && client.is_playing) {
                 size_t chunk_len = std::min(MAX_PAYLOAD, nal_len - offset);
                 bool is_start = (offset == 1);
                 bool is_end = (offset + chunk_len >= nal_len);

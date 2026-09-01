@@ -32,6 +32,7 @@ public:
     ~AvioReassembler() = default;
 
     void set_callbacks(VideoCallback video_cb, AudioCallback audio_cb, KeyframeRequestCallback kf_req_cb);
+    void set_keys(const uint8_t video_key[32], const uint8_t audio_key[32]);
     void push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len);
     void reset();
 

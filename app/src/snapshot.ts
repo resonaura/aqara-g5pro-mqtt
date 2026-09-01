@@ -11,7 +11,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import { getDataDir } from "./state.js";
 
@@ -130,10 +130,21 @@ export class FrameSnapshotter extends EventEmitter {
 
       this.proc = proc;
       let stderrBuf = "";
+
+      const killTimer = setTimeout(() => {
+        if (this.proc === proc) {
+          try {
+            proc.kill("SIGKILL");
+          } catch {}
+        }
+      }, 7000);
+      killTimer.unref();
+
       proc.stderr?.on("data", (d: Buffer) => {
         stderrBuf += d.toString();
       });
       proc.on("error", (err) => {
+        clearTimeout(killTimer);
         if (!this.stopped) {
           console.warn(`⚠️ [Snapshot:${this.slug}] ffmpeg error: ${err.message}`);
         }
@@ -141,6 +152,7 @@ export class FrameSnapshotter extends EventEmitter {
         resolve(false);
       });
       proc.on("exit", (code) => {
+        clearTimeout(killTimer);
         if (this.proc === proc) this.proc = null;
         if (this.stopped) {
           resolve(false);
@@ -151,6 +163,10 @@ export class FrameSnapshotter extends EventEmitter {
           try {
             if (statSync(tempPath).size > 0) {
               renameSync(tempPath, this.currentPath);
+              try {
+                const lastLivePath = path.join(this.dataDir, "frames", `${this.slug}.last_live.jpg`);
+                copyFileSync(this.currentPath, lastLivePath);
+              } catch {}
               completed = true;
             }
           } catch {}
@@ -215,6 +231,7 @@ export class FrameSnapshotter extends EventEmitter {
     };
     void tick();
     this.timer = setInterval(tick, this.intervalMs);
+    this.timer.unref();
   }
 
   public stop(): void {

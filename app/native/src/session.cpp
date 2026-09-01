@@ -2,6 +2,7 @@
 #include <cstring>
 #include <iostream>
 #include "session.hpp"
+#include "ipc/events.hpp"
 
 namespace aqara {
 
@@ -40,7 +41,7 @@ request_keyframe();
         [this](const VideoFrame& vf) {
             if (vf.is_keyframe && !seen_first_keyframe_) {
                 seen_first_keyframe_ = true;
-                if (event_cb_) event_cb_("{\"event\":\"keyframe\",\"did\":\"" + config_.did + "\"}");
+                if (event_cb_) event_cb_(to_json(EventKeyframe{.did = config_.did}));
             }
 
             if (vf.height > 0) {
@@ -90,7 +91,7 @@ request_keyframe();
         [this]() {
             if (rtsp_server_) rtsp_server_->hold_for_new_idr();
             if (p2p_client_) p2p_client_->request_keyframe();
-            if (event_cb_) event_cb_("{\"event\":\"request_keyframe\",\"did\":\"" + config_.did + "\"}");
+            if (event_cb_) event_cb_(to_json(EventRequestKeyframe{.did = config_.did}));
         }
     );
 
@@ -130,6 +131,50 @@ bool StreamSession::start() {
     std::cout << "[NativeSession] Stream session active for " << config_.did
               << " rtsp=rtsp://0.0.0.0:" << config_.rtsp_port << "/" << config_.rtsp_path << std::endl;
     return true;
+}
+
+bool StreamSession::restart_p2p(const SessionConfig& new_cfg) {
+    config_ = new_cfg;
+    seen_first_keyframe_ = false;
+    quality_switched_ = false;
+
+    if (rtsp_server_) {
+        rtsp_server_->hold_for_new_idr();
+    }
+
+    if (p2p_client_) {
+        p2p_client_->stop();
+        p2p_client_.reset();
+    }
+
+    auto vkey = hex_to_bytes(config_.video_key_hex);
+    auto akey = hex_to_bytes(config_.audio_key_hex);
+    uint8_t vk[32] = {0};
+    uint8_t ak[32] = {0};
+    if (vkey.size() >= 32) std::memcpy(vk, vkey.data(), 32);
+    if (akey.size() >= 32) std::memcpy(ak, akey.data(), 32);
+
+    reassembler_->set_keys(vk, ak);
+
+    P2pConfig pcfg;
+    pcfg.did = config_.did;
+    pcfg.p2p_id = config_.p2p_id;
+    pcfg.init_string = config_.init_string;
+    pcfg.app_pub_hex = config_.app_pub_hex;
+    pcfg.app_sign = config_.app_sign;
+    pcfg.sign_time = config_.sign_time;
+    pcfg.dev_pub_hex = config_.dev_pub_hex;
+    pcfg.video_key_hex = config_.video_key_hex;
+    pcfg.audio_key_hex = config_.audio_key_hex;
+    pcfg.camera_ip = config_.camera_ip;
+    pcfg.camera_port = config_.camera_port;
+    pcfg.p2p_quality_channel = config_.p2p_quality_channel;
+
+    std::cout << "[NativeSession] Preserving RTSP server on port " << config_.rtsp_port
+              << " while resurrecting P2P tunnel for " << config_.did << std::endl;
+
+    p2p_client_ = std::make_unique<P2pClient>(pcfg, reassembler_, event_cb_);
+    return p2p_client_->start();
 }
 
 void StreamSession::stop() {

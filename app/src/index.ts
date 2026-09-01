@@ -35,6 +35,8 @@ import { findFreePortRange, writeRtspPortMap, type RtspPortEntry } from "./ports
 import { RtmpIngestServer } from "./rtmp.js";
 import { assignUniqueSlugs } from "./slug.js";
 import { FrameSnapshotter } from "./snapshot.js";
+import { OfflineCardManager } from "./offline-card.js";
+import { NativeMediaEngine } from "./native-engine.js";
 import { Device, MQTTDevice } from "./types.js";
 import { generateEnvExample, normalizeValue } from "./utils.js";
 
@@ -149,61 +151,114 @@ function cameraBySlug(name: string) {
   return cameraData.find((c) => slugMap[c.device.did] === name);
 }
 
+const activeReconnections = new Set<string>();
+
 async function restartCameraStream(
   cameraInfo: (typeof cameraData)[number],
   reason: string,
 ): Promise<void> {
   const did = cameraInfo.device.did;
-  const now = Date.now();
-  const state = reconnectAttempts.get(did) || { count: 0, lastAttempt: 0 };
-
-  // Cooldown: at least 20s between restarts to avoid infinite rapid loops
-  if (now - state.lastAttempt < 20_000) {
+  if (activeReconnections.has(did)) {
     console.log(
-      `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnect on cooldown (${Math.round((20_000 - (now - state.lastAttempt)) / 1000)}s remaining)...`,
+      `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnection already in progress, skipping duplicate call.`,
     );
     return;
   }
-
-  state.count++;
-  state.lastAttempt = now;
-  reconnectAttempts.set(did, state);
-
-  console.warn(
-    `⚠️ [Watchdog:${cameraInfo.device.deviceName}] ${reason}. Reconnecting P2P stream (attempt #${state.count})...`,
-  );
-
-  if (cameraInfo.bridge) {
-    cameraInfo.bridge.stop();
-    cameraInfo.bridge = undefined;
-  }
-  if (cameraInfo.snapshotter) {
-    cameraInfo.snapshotter.stop();
-    cameraInfo.snapshotter = undefined;
-  }
-
-  // Wait 2s for ports & tunnels to cleanly close
-  await new Promise((r) => setTimeout(r, 2000));
-
-  // Check if still wanted ON in state
-  const p2pState = loadP2pState();
-  if (p2pState[did] === false) {
-    console.log(
-      `ℹ️ [Watchdog:${cameraInfo.device.deviceName}] P2P stream was turned OFF, skipping reconnect.`,
-    );
-    return;
-  }
+  activeReconnections.add(did);
 
   try {
-    await ensureCameraBridge(cameraInfo);
-    console.log(
-      `✅ [Watchdog:${cameraInfo.device.deviceName}] P2P stream reconnected and restored successfully!`,
-    );
-    reconnectAttempts.delete(did);
-  } catch (err: any) {
+    const now = Date.now();
+    const state = reconnectAttempts.get(did) || { count: 0, lastAttempt: 0 };
+
+    // Cooldown only applies if camera bridge is currently active and reporting rapid stalls
+    if (cameraInfo.bridge && now - state.lastAttempt < 15_000) {
+      console.log(
+        `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnect on cooldown (${Math.round((15_000 - (now - state.lastAttempt)) / 1000)}s remaining)...`,
+      );
+      return;
+    }
+
+    state.count++;
+    state.lastAttempt = now;
+    reconnectAttempts.set(did, state);
+
     console.warn(
-      `❌ [Watchdog:${cameraInfo.device.deviceName}] Reconnection attempt failed: ${err?.message || err}`,
+      `⚠️ [Watchdog:${cameraInfo.device.deviceName}] ${reason}. Reconnecting P2P stream (attempt #${state.count})...`,
     );
+
+    const slug = slugMap[did];
+    const deviceId = cameraInfo.mqttDevice.id;
+
+    OfflineCardManager.getInstance().setOffline({
+      slug,
+      deviceName: cameraInfo.device.deviceName,
+      deviceId,
+      reason: `Reconnecting P2P tunnel (attempt #${state.count})...`,
+      onFrameUpdate: (imgBuf) => {
+        client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
+      },
+    });
+
+    // Check if still wanted ON in state
+    const p2pState = loadP2pState();
+    if (p2pState[did] === false) {
+      console.log(
+        `ℹ️ [Watchdog:${cameraInfo.device.deviceName}] P2P stream was turned OFF, skipping reconnect.`,
+      );
+      if (cameraInfo.bridge) {
+        cameraInfo.bridge.stop();
+        cameraInfo.bridge = undefined;
+      }
+      if (cameraInfo.snapshotter) {
+        cameraInfo.snapshotter.stop();
+        cameraInfo.snapshotter = undefined;
+      }
+      OfflineCardManager.getInstance().setOffline({
+        slug,
+        deviceName: cameraInfo.device.deviceName,
+        deviceId,
+        reason: "P2P stream is turned OFF",
+        onFrameUpdate: (imgBuf) => {
+          client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
+        },
+      });
+      reconnectAttempts.delete(did);
+      return;
+    }
+
+    try {
+      if (cameraInfo.bridge) {
+        console.log(
+          `🔄 [Watchdog:${cameraInfo.device.deviceName}] Resurrecting P2P tunnel while preserving RTSP server & clients...`,
+        );
+        await cameraInfo.bridge.reconnect();
+      } else {
+        await ensureCameraBridge(cameraInfo);
+      }
+      console.log(
+        `✅ [Watchdog:${cameraInfo.device.deviceName}] P2P stream reconnected and restored successfully!`,
+      );
+      reconnectAttempts.delete(did);
+      OfflineCardManager.getInstance().setOnline(slug);
+    } catch (err: any) {
+      const delay = Math.min(10_000 * Math.pow(1.5, Math.min(state.count - 1, 5)), 60_000);
+      console.warn(
+        `❌ [Watchdog:${cameraInfo.device.deviceName}] Reconnection attempt #${state.count} failed: ${err?.message || err}. Scheduling retry in ${Math.round(delay / 1000)}s...`,
+      );
+      OfflineCardManager.getInstance().updateStatus(
+        slug,
+        `Reconnecting in ${Math.round(delay / 1000)}s (attempt #${state.count})...`,
+      );
+      setTimeout(() => {
+        // Re-check state before retrying
+        const currentP2pState = loadP2pState();
+        if (currentP2pState[did] !== false && !cameraInfo.bridge) {
+          void restartCameraStream(cameraInfo, `Scheduled retry after failed attempt #${state.count}`);
+        }
+      }, delay);
+    }
+  } finally {
+    activeReconnections.delete(did);
   }
 }
 
@@ -254,6 +309,7 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
         });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
           reconnectAttempts.delete(cameraInfo.device.did);
+          OfflineCardManager.getInstance().setOnline(frameSlug);
           const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
           client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, frameUrl, { retain: true });
           try {
@@ -283,6 +339,7 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
     });
 
     bridge.on("keyframe", () => {
+      OfflineCardManager.getInstance().setOnline(slug);
       updateStreamEntities();
       startSnapshotter();
     });
@@ -328,6 +385,7 @@ cameraData.forEach((cam) => {
       console.warn(
         `⚠️ [P2P Stream] Failed to restore stream on startup for ${cam.device.deviceName}: ${err?.message || err}`,
       );
+      void restartCameraStream(cam, "Initial boot stream restore failed");
     });
   }
 });
@@ -455,16 +513,6 @@ client.on("connect", () => {
     publishCameraDiscovery(client, mqttDevice, p2pRtspUrl);
   });
 
-  // Auto-restore P2P streams that were saved as ON before restart
-  cameraData.forEach((cam) => {
-    if (savedP2pState[cam.device.did]) {
-      console.log(`🔄 [P2P Stream] Restoring saved P2P stream (ON) for ${cam.device.deviceName}...`);
-      ensureCameraBridge(cam).catch((err) => {
-        console.warn(`⚠️ [P2P Stream] Failed to restore stream for ${cam.device.deviceName}: ${err?.message || err}`);
-      });
-    }
-  });
-
   // Подписываемся на команды для всех камер
   cameraData.forEach(({ mqttDevice }) => {
     client.subscribe(`homeassistant/+/${mqttDevice.id}/+/set`);
@@ -583,6 +631,16 @@ client.on("message", async (topic, msg) => {
       console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
       saveP2pState(cameraInfo.device.did, false);
       reconnectAttempts.delete(cameraInfo.device.did);
+      const slug = slugMap[cameraInfo.device.did];
+      OfflineCardManager.getInstance().setOffline({
+        slug,
+        deviceName: cameraInfo.device.deviceName,
+        deviceId,
+        reason: "P2P stream is switched OFF",
+        onFrameUpdate: (imgBuf) => {
+          client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
+        },
+      });
       if (cameraInfo.bridge) {
         cameraInfo.bridge.stop();
         cameraInfo.bridge = undefined;
@@ -777,6 +835,27 @@ async function publishAttr(
     console.log(`📊 ${device.deviceName} ${attr}: ${prevVal} ➔ ${strVal}`);
   }
 }
+
+// === GRACEFUL SHUTDOWN ===
+function shutdown(signal: string) {
+  console.log(`\n🛑 [App] Received ${signal}, performing graceful shutdown...`);
+  try {
+    for (const c of cameraData) {
+      c.snapshotter?.stop();
+      c.bridge?.stop();
+    }
+    httpServer.stop();
+    rtmpServer.stop();
+    NativeMediaEngine.getInstance().stop();
+    client.end();
+  } catch (err) {
+    console.error("❌ Error during shutdown:", err);
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // === START ===
 setInterval(poll, interval);

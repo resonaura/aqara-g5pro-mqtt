@@ -32,6 +32,7 @@ public:
     ~StreamSession();
 
     bool start();
+    bool restart_p2p(const SessionConfig& new_cfg);
     void stop();
 
     void request_keyframe();

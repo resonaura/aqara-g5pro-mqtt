@@ -24,6 +24,7 @@ export interface NativeSessionConfig {
 export class NativeMediaEngine extends EventEmitter {
   private static instance: NativeMediaEngine | null = null;
   private process: ChildProcess | null = null;
+  private rl: readline.Interface | null = null;
   private isReady = false;
   private pendingCommands: string[] = [];
 
@@ -51,6 +52,10 @@ export class NativeMediaEngine extends EventEmitter {
     return ensureNativeBinary();
   }
 
+  public get ready(): boolean {
+    return this.isReady;
+  }
+
   public start(): boolean {
     if (this.process) return true;
 
@@ -72,12 +77,12 @@ export class NativeMediaEngine extends EventEmitter {
         stdio: ["pipe", "pipe", "inherit"],
       });
 
-      const rl = readline.createInterface({
+      this.rl = readline.createInterface({
         input: this.process.stdout!,
         terminal: false,
       });
 
-      rl.on("line", (line) => {
+      this.rl.on("line", (line) => {
         if (!line.trim()) return;
         try {
           const msg = JSON.parse(line);
@@ -87,14 +92,21 @@ export class NativeMediaEngine extends EventEmitter {
         }
       });
 
-      this.process.on("exit", (code) => {
-        console.warn(`⚠️ [NativeEngine] Process exited with code ${code}`);
+      this.process.on("exit", (_code) => {
+        if (this.rl) {
+          this.rl.close();
+          this.rl = null;
+        }
         this.process = null;
         this.isReady = false;
       });
 
       this.process.on("error", (err) => {
         console.error(`❌ [NativeEngine] Process error:`, err);
+        if (this.rl) {
+          this.rl.close();
+          this.rl = null;
+        }
         this.process = null;
         this.isReady = false;
       });
@@ -126,6 +138,8 @@ export class NativeMediaEngine extends EventEmitter {
       this.emit("session_started", msg.did, msg.rtsp_port);
     } else if (msg.event === "keyframe") {
       this.emit("keyframe", msg.did);
+    } else if (msg.event === "unhealthy") {
+      this.emit("unhealthy", msg.did);
     } else {
       this.emit(msg.event || "message", msg);
     }
@@ -232,10 +246,15 @@ export class NativeMediaEngine extends EventEmitter {
   }
 
   public stop(): void {
+    if (this.rl) {
+      this.rl.close();
+      this.rl = null;
+    }
     if (this.process) {
       try {
         this.sendLine(JSON.stringify({ cmd: "exit" }));
-        this.process.kill();
+        this.process.stdin?.end();
+        this.process.kill("SIGTERM");
       } catch {}
       this.process = null;
       this.isReady = false;

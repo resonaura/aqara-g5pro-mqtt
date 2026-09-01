@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.5 — Stream Watchdog, Zero-Drop RTSP Resurrection, Glaze C++23 JSON & Gaussian HUD
+
+### 🩺 Self-Healing Stream Auto-Recovery & Zero-Drop RTSP
+- **Complete Event Propagation Pipeline**: `NativeMediaEngine` and `AqaraCameraBridge` now properly capture, normalize, and forward `unhealthy` stall events emitted by the native C++ engine to the application watchdog loop.
+- **Persistent Exponential Auto-Retry**: If a camera experiences a Wi-Fi dropout or power cycle (resulting in initial reconnection failure), the bridge now automatically schedules retries with exponential backoff (10s $\rightarrow$ 60s) instead of abandoning the stream.
+- **Zero-Drop RTSP Preservation**: The C++ RTSP server stays alive and listening during P2P network stalls or camera Wi-Fi reconnects. Clients (Home Assistant, go2rtc, WebRTC, VLC) remain connected without TCP disconnections or broken pipes.
+- **Gaussian-Blurred Offline HUD Card Generator**: Generates an informative standby image with Gaussian blur (`gblur=sigma=22`) based on the camera's last live frame. Displays camera name, detailed current reconnect status, active seconds ticker (`Offline for Xs`), and formatted timestamp.
+- **Glaze C++23 Modern JSON Reflection**: Refactored native IPC layer to use StephenBerry/Glaze for ultra-fast, typed compile-time reflection, eliminating manual string manipulation.
+- **Process & Timer Cleanup**: Cleanly close readline interfaces and unref background timer loops to prevent zombie processes and memory leaks.
+- **FFmpeg Snapshot Hard-Timeout**: Added a 7-second hard SIGKILL timer to `FrameSnapshotter` processes, preventing FFmpeg from hanging indefinitely on streams where audio continues but video is frozen.
+- **RTSP Disconnect Log Deduplication**: Prevented multi-NAL `Broken pipe` / `Connection reset by peer` terminal log spam when RTSP players close connections.
+- **Boot Stream Restore Deduplication**: Eliminated duplicate stream restore on MQTT connect.
+
 ## v1.5.4 — Dedicated Video Stream Watchdog, Direct LAN Routing & Polling Log Deduplication
 
 ### 📹 Dedicated Video Stream Watchdog & Recovery
