@@ -54,6 +54,8 @@ test("OfflineCardManager manages lifecycle and updates state", async () => {
   // Allow one render cycle
   await new Promise((r) => setTimeout(r, 100));
 
+  assert.equal(typeof frameReceived, "boolean");
+
   mgr.setOnline("camera-1");
   assert.equal(mgr.isOffline("camera-1"), false);
 });

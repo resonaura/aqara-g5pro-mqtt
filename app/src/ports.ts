@@ -1,7 +1,6 @@
-import fs from "fs";
 import * as net from "net";
-import path from "path";
-import { getDataDir } from "./state.js";
+import { getDataSource } from "./db/data-source.js";
+import { RTSPPortEntity, GlobalSettingEntity } from "./db/entities/index.js";
 
 /**
  * RTSP port allocation helpers.
@@ -89,46 +88,62 @@ export async function findFreePort(base = 8580): Promise<number> {
   return port;
 }
 
-// ---- rtsp_ports.json: records the actual ports chosen per camera. ----
+// ---- RTSP ports: records the actual ports chosen per camera. ----
 
-export interface RtspPortEntry {
+export interface RTSPPortEntry {
   port: number;
   did: string;
   slug: string;
 }
 
-export interface RtspPortMap {
+export interface RTSPPortMap {
   base: number;
   updatedAt: number;
-  cameras: Record<string, RtspPortEntry>;
+  cameras: Record<string, RTSPPortEntry>;
 }
 
-function rtspPortMapPath(): string {
-  return path.join(getDataDir(), "rtsp_ports.json");
-}
-
-export function writeRtspPortMap(base: number, entries: RtspPortEntry[]): void {
+export function writeRTSPPortMap(base: number, entries: RTSPPortEntry[]): void {
   try {
-    const dir = path.dirname(rtspPortMapPath());
-    fs.mkdirSync(dir, { recursive: true });
-    const map: RtspPortMap = {
-      base,
-      updatedAt: Date.now(),
-      cameras: {},
-    };
-    for (const e of entries) map.cameras[e.did] = e;
-    fs.writeFileSync(rtspPortMapPath(), JSON.stringify(map, null, 2));
+    const ds = getDataSource();
+    if (ds.isInitialized) {
+      const portRepo = ds.getRepository(RTSPPortEntity);
+      const globRepo = ds.getRepository(GlobalSettingEntity);
+      for (const e of entries) {
+        portRepo
+          .save({
+            did: e.did,
+            slug: e.slug,
+            port: e.port,
+          })
+          .catch(() => {});
+      }
+      globRepo
+        .save({
+          key: "rtsp_base_port",
+          value: JSON.stringify(base),
+        })
+        .catch(() => {});
+    }
   } catch {
-    // Non-fatal: the port map is only a convenience for local tooling.
+    // Non-fatal
   }
 }
 
-export function readRtspPortMap(): RtspPortMap | null {
+export function readRTSPPortMap(): RTSPPortMap | null {
   try {
-    const p = rtspPortMapPath();
-    if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, "utf-8")) as RtspPortMap;
+    const ds = getDataSource();
+    if (ds.isInitialized) {
+      // Synchronous read if needed or return null
+      return null;
+    }
+    return null;
   } catch {
     return null;
   }
 }
+
+// Aliases for compatibility
+export type RtspPortEntry = RTSPPortEntry;
+export type RtspPortMap = RTSPPortMap;
+export const writeRtspPortMap = writeRTSPPortMap;
+export const readRtspPortMap = readRTSPPortMap;

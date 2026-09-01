@@ -150,7 +150,7 @@ void IpcServer::handle_command(const std::string& line) {
         auto it = sessions_.find(cmd_dto.did);
         if (it != sessions_.end()) {
             it->second->ptz(action, speed);
-            send_event(to_json(EventPtzExecuted{.did = cmd_dto.did}));
+            send_event(to_json(EventPTZExecuted{.did = cmd_dto.did}));
         }
     } else if (cmd == "start_talkback") {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
@@ -184,4 +184,4 @@ void IpcServer::handle_command(const std::string& line) {
     }
 }
 
-} // namespace aqara
+}  // namespace aqara

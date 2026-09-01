@@ -18,27 +18,29 @@ import {
   publishCameraDiscovery,
   publishDiscovery,
   publishLightDiscovery,
-  publishNativeRtspDiscovery,
-  publishP2pRtspDiscovery,
-  publishP2pStreamSwitchDiscovery,
-  publishPtzDiscovery,
-  publishRtspDiscovery,
-  publishSdCardDiscovery,
+  publishNativeRTSPDiscovery,
+  publishP2PRTSPDiscovery,
+  publishP2PStreamSwitchDiscovery,
+  publishPTZDiscovery,
+  publishRTSPDiscovery,
+  publishSDCardDiscovery,
   publishSnapshotUrlDiscovery,
-  publishTalkbackRtmpDiscovery,
+  publishTalkbackRTMPDiscovery,
 } from "./discovery.js";
 import { ENTITIES } from "./entities.js";
-import { FrameHttpServer } from "./http-server.js";
+import { FrameHTTPServer } from "./http-server.js";
 import { EVENT_ATTRS, processEventAttrs, publishMotionDiscovery } from "./motion.js";
-import { createMqttClient } from "./mqtt.js";
-import { findFreePortRange, writeRtspPortMap, type RtspPortEntry } from "./ports.js";
-import { RtmpIngestServer } from "./rtmp.js";
+import { createMQTTClient } from "./mqtt.js";
+import { findFreePortRange, writeRTSPPortMap, type RTSPPortEntry } from "./ports.js";
+import { RTMPIngestServer } from "./rtmp.js";
 import { assignUniqueSlugs } from "./slug.js";
 import { FrameSnapshotter } from "./snapshot.js";
 import { OfflineCardManager } from "./offline-card.js";
 import { NativeMediaEngine } from "./native-engine.js";
 import { Device, MQTTDevice } from "./types.js";
 import { generateEnvExample, normalizeValue } from "./utils.js";
+import { loadP2PState, saveP2PState, getDataDir } from "./state.js";
+import { closeDatabase } from "./db/data-source.js";
 
 if (process.env.NODE_ENV !== "production") {
   await generateEnvExample();
@@ -117,7 +119,7 @@ const rtspPorts = await findFreePortRange(cameraData.length || 1, rtspBasePort);
 const slugMap = assignUniqueSlugs(
   cameraData.map((c) => ({ did: c.device.did, name: c.device.deviceName })),
 );
-const rtspPortEntries = new Map<string, RtspPortEntry>();
+const rtspPortEntries = new Map<string, RTSPPortEntry>();
 for (let i = 0; i < cameraData.length; i++) {
   const did = cameraData[i].device.did;
   rtspPortEntries.set(did, {
@@ -126,23 +128,22 @@ for (let i = 0; i < cameraData.length; i++) {
     slug: slugMap[did],
   });
 }
-writeRtspPortMap(rtspBasePort, [...rtspPortEntries.values()]);
+writeRTSPPortMap(rtspBasePort, [...rtspPortEntries.values()]);
 console.log(`🎚️  RTSP ports: ${rtspPorts.join(", ")} (base ${rtspBasePort})`);
 
 const rtmpPort = parseInt(process.env.RTMP_PORT || "1935", 10);
-const rtmpServer = new RtmpIngestServer(rtmpPort);
+const rtmpServer = new RTMPIngestServer(rtmpPort);
 await rtmpServer.start();
 console.log(`🎙️ Talkback RTMP ingest listening on port ${rtmpServer.listenPort}`);
 
 // HTTP server for serving cached JPEG snapshots — only used while a P2P
 // stream is active for a given camera. Bound to process.env.HTTP_PORT || 8580 (auto-allocated).
-import { getDataDir, loadP2pState, saveP2pState } from "./state.js";
 
 const framesDir = path.join(getDataDir(), "frames");
-const httpServer = new FrameHttpServer(framesDir);
+const httpServer = new FrameHTTPServer(framesDir);
 await httpServer.start();
 
-const client = createMqttClient();
+const client = createMQTTClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
 const talkbackFeeds = new Map<string, { ready: boolean; queue: Buffer[] }>();
 const reconnectAttempts = new Map<string, { count: number; lastAttempt: number }>();
@@ -200,7 +201,7 @@ async function restartCameraStream(
     });
 
     // Check if still wanted ON in state
-    const p2pState = loadP2pState();
+    const p2pState = await loadP2PState();
     if (p2pState[did] === false) {
       console.log(
         `ℹ️ [Watchdog:${cameraInfo.device.deviceName}] P2P stream was turned OFF, skipping reconnect.`,
@@ -249,11 +250,14 @@ async function restartCameraStream(
         slug,
         `Reconnecting in ${Math.round(delay / 1000)}s (attempt #${state.count})...`,
       );
-      setTimeout(() => {
+      setTimeout(async () => {
         // Re-check state before retrying
-        const currentP2pState = loadP2pState();
+        const currentP2pState = await loadP2PState();
         if (currentP2pState[did] !== false && !cameraInfo.bridge) {
-          void restartCameraStream(cameraInfo, `Scheduled retry after failed attempt #${state.count}`);
+          void restartCameraStream(
+            cameraInfo,
+            `Scheduled retry after failed attempt #${state.count}`,
+          );
         }
       }, delay);
     }
@@ -262,7 +266,9 @@ async function restartCameraStream(
   }
 }
 
-async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Promise<AqaraCameraBridge> {
+async function ensureCameraBridge(
+  cameraInfo: (typeof cameraData)[number],
+): Promise<AqaraCameraBridge> {
   if (cameraInfo.bridge) return cameraInfo.bridge;
   const existing = bridgeStartPromises.get(cameraInfo.device.did);
   if (existing) return existing;
@@ -293,9 +299,15 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
 
     const updateStreamEntities = () => {
       client.publish(`homeassistant/switch/${deviceId}/p2p_stream/state`, "ON", { retain: true });
-      client.publish(`homeassistant/sensor/${deviceId}/p2p_rtsp_stream/state`, streamUrl, { retain: true });
-      client.publish(`homeassistant/sensor/${deviceId}/talkback_rtmp/state`, rtmpTalkUrl, { retain: true });
-      client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, snapshotUrl, { retain: true });
+      client.publish(`homeassistant/sensor/${deviceId}/p2p_rtsp_stream/state`, streamUrl, {
+        retain: true,
+      });
+      client.publish(`homeassistant/sensor/${deviceId}/talkback_rtmp/state`, rtmpTalkUrl, {
+        retain: true,
+      });
+      client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, snapshotUrl, {
+        retain: true,
+      });
     };
 
     const startSnapshotter = () => {
@@ -311,7 +323,9 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
           reconnectAttempts.delete(cameraInfo.device.did);
           OfflineCardManager.getInstance().setOnline(frameSlug);
           const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
-          client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, frameUrl, { retain: true });
+          client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, frameUrl, {
+            retain: true,
+          });
           try {
             const imgBuf = await fs.readFile(framePath);
             client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
@@ -374,21 +388,25 @@ async function ensureCameraBridge(cameraInfo: (typeof cameraData)[number]): Prom
 }
 
 // Auto-restore saved P2P streams immediately on app boot
-const initialSavedP2pState = loadP2pState();
-console.log(
-  `💾 Loaded persistent state for ${Object.keys(initialSavedP2pState).length} camera(s) from ${getDataDir()}`,
-);
-cameraData.forEach((cam) => {
-  if (initialSavedP2pState[cam.device.did]) {
-    console.log(`🔄 [P2P Stream] Auto-restoring saved P2P stream (ON) for ${cam.device.deviceName}...`);
-    ensureCameraBridge(cam).catch((err) => {
-      console.warn(
-        `⚠️ [P2P Stream] Failed to restore stream on startup for ${cam.device.deviceName}: ${err?.message || err}`,
+void (async () => {
+  const initialSavedP2pState = await loadP2PState();
+  console.log(
+    `💾 Loaded persistent state for ${Object.keys(initialSavedP2pState).length} camera(s) from SQLite (${getDataDir()})`,
+  );
+  cameraData.forEach((cam) => {
+    if (initialSavedP2pState[cam.device.did]) {
+      console.log(
+        `🔄 [P2P Stream] Auto-restoring saved P2P stream (ON) for ${cam.device.deviceName}...`,
       );
-      void restartCameraStream(cam, "Initial boot stream restore failed");
-    });
-  }
-});
+      ensureCameraBridge(cam).catch((err) => {
+        console.warn(
+          `⚠️ [P2P Stream] Failed to restore stream on startup for ${cam.device.deviceName}: ${err?.message || err}`,
+        );
+        void restartCameraStream(cam, "Initial boot stream restore failed");
+      });
+    }
+  });
+})();
 
 rtmpServer.on("publish", async ({ name }: { name: string }) => {
   const cam = cameraBySlug(name);
@@ -407,7 +425,9 @@ rtmpServer.on("publish", async ({ name }: { name: string }) => {
     for (const frame of feed.queue.splice(0)) bridge.sendAudioFrame(frame);
   } catch (err: any) {
     talkbackFeeds.delete(name);
-    console.warn(`⚠️ [Talkback RTMP] startup failed for ${cam.device.deviceName}: ${err?.message || err}`);
+    console.warn(
+      `⚠️ [Talkback RTMP] startup failed for ${cam.device.deviceName}: ${err?.message || err}`,
+    );
   }
 });
 
@@ -436,10 +456,10 @@ rtmpServer.on("unpublish", ({ name }: { name: string }) => {
 const interval = Number(process.env.POLL_INTERVAL || 1) * 1000;
 
 // === DISCOVERY ===
-client.on("connect", () => {
+client.on("connect", async () => {
   console.log("🚀 MQTT connected, publishing discovery...");
 
-  const savedP2pState = loadP2pState();
+  const savedP2pState = await loadP2PState();
 
   // Публикуем discovery для всех камер
   cameraData.forEach(async ({ mqttDevice, hasSpotlight, device }, idx) => {
@@ -452,18 +472,18 @@ client.on("connect", () => {
 
     ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
     publishLightDiscovery(client, mqttDevice, hasSpotlight);
-    publishSdCardDiscovery(client, mqttDevice);
+    publishSDCardDiscovery(client, mqttDevice);
     publishMotionDiscovery(client, mqttDevice);
-    publishRtspDiscovery(client, mqttDevice);
-    publishP2pStreamSwitchDiscovery(client, mqttDevice);
-    publishP2pRtspDiscovery(client, mqttDevice);
-    publishNativeRtspDiscovery(client, mqttDevice);
+    publishRTSPDiscovery(client, mqttDevice);
+    publishP2PStreamSwitchDiscovery(client, mqttDevice);
+    publishP2PRTSPDiscovery(client, mqttDevice);
+    publishNativeRTSPDiscovery(client, mqttDevice);
     publishSnapshotUrlDiscovery(client, mqttDevice);
 
     if (supportsPtz(device.model)) {
-      publishPtzDiscovery(client, mqttDevice);
+      publishPTZDiscovery(client, mqttDevice);
     }
-    publishTalkbackRtmpDiscovery(client, mqttDevice);
+    publishTalkbackRTMPDiscovery(client, mqttDevice);
     // Remove the old retained manual switch; RTMP now owns talkback lifecycle.
     client.publish(`homeassistant/switch/${mqttDevice.id}/talkback/config`, "", { retain: true });
 
@@ -613,7 +633,7 @@ client.on("message", async (topic, msg) => {
     const talkbackRtmpTopic = `homeassistant/sensor/${deviceId}/talkback_rtmp/state`;
     if (value === "ON") {
       console.log(`🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`);
-      saveP2pState(cameraInfo.device.did, true);
+      await saveP2PState(cameraInfo.device.did, true);
       try {
         await ensureCameraBridge(cameraInfo);
         client.publish(p2pSwitchTopic, "ON", { retain: true });
@@ -621,7 +641,7 @@ client.on("message", async (topic, msg) => {
         console.warn(
           `⚠️ [P2P Bridge] Could not start P2P stream for ${cameraInfo.device.deviceName}: ${err?.message || err}`,
         );
-        saveP2pState(cameraInfo.device.did, false);
+        await saveP2PState(cameraInfo.device.did, false);
         client.publish(p2pSwitchTopic, "OFF", { retain: true });
         client.publish(p2pRtspTopic, "null", { retain: true });
         client.publish(snapshotUrlTopic, "null", { retain: true });
@@ -629,7 +649,7 @@ client.on("message", async (topic, msg) => {
       }
     } else {
       console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
-      saveP2pState(cameraInfo.device.did, false);
+      await saveP2PState(cameraInfo.device.did, false);
       reconnectAttempts.delete(cameraInfo.device.did);
       const slug = slugMap[cameraInfo.device.did];
       OfflineCardManager.getInstance().setOffline({
@@ -687,7 +707,7 @@ const QUALITY_ORDER = ["1520p", "1080p", "720p", "360p"];
 
 const lastPublishedValues = new Map<string, string>();
 
-async function publishRtspState(subjectId: string, cameraInfo: (typeof cameraData)[0]) {
+async function publishRTSPState(subjectId: string, cameraInfo: (typeof cameraData)[0]) {
   const res = await queryAttrs(["rtsp_url"], subjectId);
   const raw = res.result?.[0]?.value;
   if (!raw) return;
@@ -725,7 +745,7 @@ async function poll() {
       if (events.code === 0) {
         processEventAttrs(client, cameraInfo.mqttDevice, events.result || []);
       }
-      await publishRtspState(cameraInfo.device.did, cameraInfo);
+      await publishRTSPState(cameraInfo.device.did, cameraInfo);
     } catch (error: any) {
       console.error(
         `❌ Polling failed for ${cameraInfo.device.deviceName}:`,
@@ -837,7 +857,7 @@ async function publishAttr(
 }
 
 // === GRACEFUL SHUTDOWN ===
-function shutdown(signal: string) {
+async function shutdown(signal: string) {
   console.log(`\n🛑 [App] Received ${signal}, performing graceful shutdown...`);
   try {
     for (const c of cameraData) {
@@ -848,6 +868,7 @@ function shutdown(signal: string) {
     rtmpServer.stop();
     NativeMediaEngine.getInstance().stop();
     client.end();
+    await closeDatabase();
   } catch (err) {
     console.error("❌ Error during shutdown:", err);
   }

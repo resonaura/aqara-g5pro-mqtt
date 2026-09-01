@@ -12,7 +12,7 @@
 
 namespace aqara {
 
-struct RtspClient {
+struct RTSPClient {
     int socket_fd;
     std::string ip;
     int port;
@@ -43,11 +43,11 @@ struct RtspClient {
     uint32_t base_audio_rtp_ts = 0x20000000;
 };
 
-class RtspServer {
+class RTSPServer {
 public:
     using KeyframeCallback = std::function<void()>;
-    RtspServer(int port, const std::string& path, KeyframeCallback kf_cb = nullptr);
-    ~RtspServer();
+    RTSPServer(int port, const std::string& path, KeyframeCallback kf_cb = nullptr);
+    ~RTSPServer();
 
     bool start();
     void stop();
@@ -63,11 +63,11 @@ public:
 private:
     void accept_loop();
     void handle_client(int client_fd);
-    void process_rtsp_request(RtspClient& client, const std::string& req);
+    void process_rtsp_request(RTSPClient& client, const std::string& req);
 
     std::string generate_sdp(const std::string& host_ip);
-    void send_interleaved_rtp(RtspClient& client, int channel, const uint8_t* rtp_pkt, size_t len);
-    void send_video_to_client(RtspClient& client, const VideoFrame& vf);
+    void send_interleaved_rtp(RTSPClient& client, int channel, const uint8_t* rtp_pkt, size_t len);
+    void send_video_to_client(RTSPClient& client, const VideoFrame& vf);
 
     int port_;
     std::string path_;
@@ -77,7 +77,7 @@ private:
     std::thread accept_thread_;
 
     std::recursive_mutex clients_mutex_;
-    std::unordered_map<int, std::unique_ptr<RtspClient>> clients_;
+    std::unordered_map<int, std::unique_ptr<RTSPClient>> clients_;
 
     // Media parameters
     std::vector<uint8_t> sps_;

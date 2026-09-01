@@ -164,7 +164,11 @@ export class FrameSnapshotter extends EventEmitter {
             if (statSync(tempPath).size > 0) {
               renameSync(tempPath, this.currentPath);
               try {
-                const lastLivePath = path.join(this.dataDir, "frames", `${this.slug}.last_live.jpg`);
+                const lastLivePath = path.join(
+                  this.dataDir,
+                  "frames",
+                  `${this.slug}.last_live.jpg`,
+                );
                 copyFileSync(this.currentPath, lastLivePath);
               } catch {}
               completed = true;

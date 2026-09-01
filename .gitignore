@@ -5,8 +5,7 @@ package-lock.json
 # Build outputs
 dist/
 build/
-target/
-app/signer/target/
+app/native/build/
 *.so
 *.dylib
 *.dll
@@ -31,7 +30,6 @@ reports/
 PROMPT*.md
 REPORT*.md
 apk/
-app/signer/src/main/java/com/aqara/signer/Test*
 *.pcap
 *.pcapng
 *.bin
@@ -44,10 +42,14 @@ app/signer/src/main/java/com/aqara/signer/Test*
 Thumbs.db
 .idea/
 .vscode/
+.clangd/
 *.swp
+compile_commands.json
+app/native/compile_commands.json
 
-# Storage
+# Storage & Databases
 storage/
+*.sqlite*
 app.log
 
 # Offline session cache (contains X25519 private keys — DO NOT COMMIT)

@@ -22,7 +22,7 @@ static const uint8_t PPCS_TABLE[256] = {
     0x68, 0x35, 0xc3, 0x52, 0x9d, 0x46, 0x44, 0x1e, 0x17,
 };
 
-void PpcsCipher::encrypt(const uint8_t* key, size_t key_len, uint8_t* data, size_t data_len) {
+void PPCSCipher::encrypt(const uint8_t* key, size_t key_len, uint8_t* data, size_t data_len) {
     if (!key || key_len == 0 || !data || data_len == 0)
         return;
     size_t klen = std::min(key_len, static_cast<size_t>(20));
@@ -48,7 +48,7 @@ void PpcsCipher::encrypt(const uint8_t* key, size_t key_len, uint8_t* data, size
     }
 }
 
-void PpcsCipher::decrypt(const uint8_t* key, size_t key_len, uint8_t* data, size_t data_len) {
+void PPCSCipher::decrypt(const uint8_t* key, size_t key_len, uint8_t* data, size_t data_len) {
     if (!key || key_len == 0 || !data || data_len == 0)
         return;
     size_t klen = std::min(key_len, static_cast<size_t>(20));
@@ -75,7 +75,7 @@ void PpcsCipher::decrypt(const uint8_t* key, size_t key_len, uint8_t* data, size
     }
 }
 
-std::vector<uint8_t> PpcsCipher::build_pppp(uint8_t msg_type, const uint8_t* payload, size_t len) {
+std::vector<uint8_t> PPCSCipher::build_pppp(uint8_t msg_type, const uint8_t* payload, size_t len) {
     std::vector<uint8_t> out(4 + len);
     out[0] = 0xF1;  // PPCS_MAGIC
     out[1] = msg_type;
@@ -87,7 +87,7 @@ std::vector<uint8_t> PpcsCipher::build_pppp(uint8_t msg_type, const uint8_t* pay
     return out;
 }
 
-std::vector<uint8_t> PpcsCipher::punch_payload(const std::string& p2p_id) {
+std::vector<uint8_t> PPCSCipher::punch_payload(const std::string& p2p_id) {
     std::vector<uint8_t> b(20, 0);
     // Format: PRE-123456-SUF
     std::stringstream ss(p2p_id);
@@ -115,7 +115,7 @@ std::vector<uint8_t> PpcsCipher::punch_payload(const std::string& p2p_id) {
     return b;
 }
 
-std::vector<uint8_t> PpcsCipher::build_lumi_frame(uint32_t type, const uint8_t* payload, size_t len, uint32_t seq) {
+std::vector<uint8_t> PPCSCipher::build_lumi_frame(uint32_t type, const uint8_t* payload, size_t len, uint32_t seq) {
     std::vector<uint8_t> f(16 + len);
     std::memcpy(f.data(), "lumi", 4);
     f[4] = static_cast<uint8_t>(type & 0xff);
@@ -139,7 +139,7 @@ std::vector<uint8_t> PpcsCipher::build_lumi_frame(uint32_t type, const uint8_t* 
     return f;
 }
 
-std::vector<uint8_t> PpcsCipher::build_talkback_ppcs_body(const uint8_t* adts, size_t len) {
+std::vector<uint8_t> PPCSCipher::build_talkback_ppcs_body(const uint8_t* adts, size_t len) {
     std::vector<uint8_t> body(32 + len, 0);
     body[28] = static_cast<uint8_t>(len & 0xff);
     body[29] = static_cast<uint8_t>((len >> 8) & 0xff);

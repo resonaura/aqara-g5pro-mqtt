@@ -48,9 +48,9 @@ private:
     SessionConfig config_;
     std::function<void(const std::string&)> event_cb_;
 
-    std::shared_ptr<AvioReassembler> reassembler_;
-    std::unique_ptr<RtspServer> rtsp_server_;
-    std::unique_ptr<P2pClient> p2p_client_;
+    std::shared_ptr<AVIOReassembler> reassembler_;
+    std::unique_ptr<RTSPServer> rtsp_server_;
+    std::unique_ptr<P2PClient> p2p_client_;
     bool seen_first_keyframe_ = false;
     bool quality_switched_ = false;
     int current_height_ = 0;

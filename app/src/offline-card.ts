@@ -50,23 +50,20 @@ export async function generateOfflineCardImage(options: {
 
   const hasLastLive = existsSync(lastLivePath) && statSync(lastLivePath).size > 0;
 
-  const escName = escapeFfmpegText(options.deviceName);
-  const escStatus = escapeFfmpegText(options.statusText || "Reconnecting P2P tunnel...");
-  const escTitle = `● ${escName} (OFFLINE)`;
-  const escTimer = escapeFfmpegText(`Offline for ${options.durationSeconds}s`);
-  const escTime = escapeFfmpegText(new Date().toLocaleTimeString());
+  const escTitle = "OFFLINE";
+  const statusStr = options.statusText
+    ? `${options.statusText} · ${options.durationSeconds}s`
+    : `${options.durationSeconds}s`;
+  const escSub = escapeFfmpegText(statusStr);
 
   let args: string[];
 
   if (hasLastLive) {
     const filter = [
-      "gblur=sigma=22:steps=2",
-      "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.45:t=fill",
-      "drawbox=x=(iw-720)/2:y=(ih-250)/2:w=720:h=250:color=black@0.75:t=fill",
-      `drawtext=text='${escTitle}':fontcolor=red:fontsize=32:x=(w-text_w)/2:y=(h-text_h)/2-65`,
-      `drawtext=text='${escStatus}':fontcolor=white:fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2-10`,
-      `drawtext=text='${escTimer}':fontcolor=yellow:fontsize=18:x=(w-text_w)/2:y=(h-text_h)/2+40`,
-      `drawtext=text='${escTime}':fontcolor=gray:fontsize=14:x=(w-text_w)/2:y=(h-text_h)/2+75`,
+      "gblur=sigma=26:steps=2",
+      "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill",
+      `drawtext=text='${escTitle}':fontcolor=white@0.95:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2-16:shadowcolor=black@0.5:shadowx=2:shadowy=2`,
+      `drawtext=text='${escSub}':fontcolor=white@0.65:fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2+32:shadowcolor=black@0.5:shadowx=1:shadowy=1`,
     ].join(",");
 
     args = [
@@ -88,11 +85,9 @@ export async function generateOfflineCardImage(options: {
     ];
   } else {
     const filter = [
-      "drawbox=x=(iw-720)/2:y=(ih-250)/2:w=720:h=250:color=black@0.75:t=fill",
-      `drawtext=text='${escTitle}':fontcolor=red:fontsize=32:x=(w-text_w)/2:y=(h-text_h)/2-65`,
-      `drawtext=text='${escStatus}':fontcolor=white:fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2-10`,
-      `drawtext=text='${escTimer}':fontcolor=yellow:fontsize=18:x=(w-text_w)/2:y=(h-text_h)/2+40`,
-      `drawtext=text='${escTime}':fontcolor=gray:fontsize=14:x=(w-text_w)/2:y=(h-text_h)/2+75`,
+      "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill",
+      `drawtext=text='${escTitle}':fontcolor=white@0.95:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2-16:shadowcolor=black@0.5:shadowx=2:shadowy=2`,
+      `drawtext=text='${escSub}':fontcolor=white@0.65:fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2+32:shadowcolor=black@0.5:shadowx=1:shadowy=1`,
     ].join(",");
 
     args = [
@@ -103,7 +98,7 @@ export async function generateOfflineCardImage(options: {
       "-f",
       "lavfi",
       "-i",
-      "color=c=0x181825:s=1280x720:d=1",
+      "color=c=0x111116:s=1280x720:d=1",
       "-vf",
       filter,
       "-frames:v",

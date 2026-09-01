@@ -24,7 +24,7 @@ struct EventSessionStopped {
     std::string did;
 };
 
-struct EventP2pConnected {
+struct EventP2PConnected {
     std::string event = "p2p_connected";
     std::string did;
     std::string ip;
@@ -57,7 +57,7 @@ struct EventQualitySet {
     int channel = 0;
 };
 
-struct EventPtzExecuted {
+struct EventPTZExecuted {
     std::string event = "ptz_executed";
     std::string did;
 };
@@ -88,9 +88,9 @@ struct EventError {
     std::string message;
 };
 
-template <typename T>
+template<typename T>
 inline std::string to_json(const T& val) {
     return glz::write_json(val).value_or("{}");
 }
 
-} // namespace aqara
+}  // namespace aqara

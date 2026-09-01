@@ -25,24 +25,26 @@ static inline bool has_annex_b_prefix(const uint8_t* data, size_t len) {
     return false;
 }
 
-AvioReassembler::AvioReassembler(const uint8_t video_key[32], const uint8_t audio_key[32]) {
+AVIOReassembler::AVIOReassembler(const uint8_t video_key[32], const uint8_t audio_key[32]) {
     std::memcpy(video_key_, video_key, 32);
     std::memcpy(audio_key_, audio_key, 32);
 }
 
-void AvioReassembler::set_callbacks(VideoCallback video_cb, AudioCallback audio_cb, KeyframeRequestCallback kf_req_cb) {
+void AVIOReassembler::set_callbacks(VideoCallback video_cb, AudioCallback audio_cb, KeyframeRequestCallback kf_req_cb) {
     video_cb_ = std::move(video_cb);
     audio_cb_ = std::move(audio_cb);
     kf_req_cb_ = std::move(kf_req_cb);
 }
 
-void AvioReassembler::set_keys(const uint8_t video_key[32], const uint8_t audio_key[32]) {
-    if (video_key) std::memcpy(video_key_, video_key, 32);
-    if (audio_key) std::memcpy(audio_key_, audio_key, 32);
+void AVIOReassembler::set_keys(const uint8_t video_key[32], const uint8_t audio_key[32]) {
+    if (video_key)
+        std::memcpy(video_key_, video_key, 32);
+    if (audio_key)
+        std::memcpy(audio_key_, audio_key, 32);
     reset();
 }
 
-void AvioReassembler::reset() {
+void AVIOReassembler::reset() {
     channels_.clear();
     last_audio_ts_ms_ = 0;
 }
@@ -69,7 +71,7 @@ static inline bool is_avio_audio_header_safe(const uint8_t* data, size_t len) {
     return true;
 }
 
-void AvioReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& state, uint16_t next_seq) {
+void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& state, uint16_t next_seq) {
     sequence_gaps_++;
     discarded_bytes_ += state.stream_buf.size();
     state.stream_buf.clear();
@@ -83,7 +85,7 @@ void AvioReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
         kf_req_cb_();
 }
 
-void AvioReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
+void AVIOReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
     if (!data || len == 0)
         return;
     packets_received_++;
@@ -159,7 +161,8 @@ void AvioReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* 
     state.expected_seq = static_cast<uint16_t>(seq + 1);
 }
 
-void AvioReassembler::handle_packet_immediate(uint8_t channel, ChannelState& state, uint16_t, const uint8_t* data, size_t len) {
+void AVIOReassembler::handle_packet_immediate(uint8_t channel, ChannelState& state, uint16_t, const uint8_t* data,
+                                              size_t len) {
     static constexpr size_t MAX_STREAM_BUFFER = 4 * 1024 * 1024;
 
     auto append_video_bytes = [&](const uint8_t* bytes, size_t count) {
@@ -223,17 +226,19 @@ void AvioReassembler::handle_packet_immediate(uint8_t channel, ChannelState& sta
     }
 }
 
-void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) {
+void AVIOReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) {
     (void)channel;
     while (state.stream_buf.size() >= 32) {
         const uint8_t* data = state.stream_buf.data();
 
         if (is_avio_audio_header_safe(data, state.stream_buf.size())) {
-            const size_t frame_len = 32ULL + read_u32_le(data + 28); // dataLen includes the 8B nonce plus encrypted AAC
+            const size_t frame_len =
+                32ULL + read_u32_le(data + 28);  // dataLen includes the 8B nonce plus encrypted AAC
             if (frame_len > state.stream_buf.size())
                 return;
             process_completed_audio(data, frame_len);
-            state.stream_buf.erase(state.stream_buf.begin(), state.stream_buf.begin() + static_cast<std::ptrdiff_t>(frame_len));
+            state.stream_buf.erase(state.stream_buf.begin(),
+                                   state.stream_buf.begin() + static_cast<std::ptrdiff_t>(frame_len));
             continue;
         }
 
@@ -242,7 +247,8 @@ void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) 
             if (frame_len > state.stream_buf.size())
                 return;
             process_completed_avio(data, frame_len);
-            state.stream_buf.erase(state.stream_buf.begin(), state.stream_buf.begin() + static_cast<std::ptrdiff_t>(frame_len));
+            state.stream_buf.erase(state.stream_buf.begin(),
+                                   state.stream_buf.begin() + static_cast<std::ptrdiff_t>(frame_len));
             continue;
         }
 
@@ -258,7 +264,8 @@ void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) 
         if (next + 32 > state.stream_buf.size()) {
             const size_t drop = state.stream_buf.size() - 31;
             discarded_bytes_ += drop;
-            state.stream_buf.erase(state.stream_buf.begin(), state.stream_buf.begin() + static_cast<std::ptrdiff_t>(drop));
+            state.stream_buf.erase(state.stream_buf.begin(),
+                                   state.stream_buf.begin() + static_cast<std::ptrdiff_t>(drop));
             return;
         }
         discarded_bytes_ += next;
@@ -266,7 +273,7 @@ void AvioReassembler::parse_stream_buffer(uint8_t channel, ChannelState& state) 
     }
 }
 
-void AvioReassembler::process_completed_audio(const uint8_t* data, size_t len) {
+void AVIOReassembler::process_completed_audio(const uint8_t* data, size_t len) {
     if (len < 32)
         return;
     const uint32_t ms_part = read_u32_le(data + 8);
@@ -293,16 +300,16 @@ void AvioReassembler::process_completed_audio(const uint8_t* data, size_t len) {
     af.timestamp_ms = ts_ms;
     audio_frames_++;
     if (audio_frames_ == 1) {
-        const bool adts = af.aac_adts_data.size() >= 2 && af.aac_adts_data[0] == 0xff &&
-                          (af.aac_adts_data[1] & 0xf0) == 0xf0;
-        std::cout << "[AVIO] audio initialized: bytes=" << audio_len
-                  << " ts_ms=" << ts_ms << " adts=" << (adts ? "yes" : "no") << std::endl;
+        const bool adts =
+            af.aac_adts_data.size() >= 2 && af.aac_adts_data[0] == 0xff && (af.aac_adts_data[1] & 0xf0) == 0xf0;
+        std::cout << "[AVIO] audio initialized: bytes=" << audio_len << " ts_ms=" << ts_ms
+                  << " adts=" << (adts ? "yes" : "no") << std::endl;
     }
     if (audio_cb_)
         audio_cb_(af);
 }
 
-void AvioReassembler::process_completed_avio(const uint8_t* data, size_t len) {
+void AVIOReassembler::process_completed_avio(const uint8_t* data, size_t len) {
     if (len < 32)
         return;
 

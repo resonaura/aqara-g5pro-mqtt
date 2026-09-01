@@ -4,6 +4,7 @@ project(aqara_streamer CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Optimization flags
 if(MSVC)
@@ -15,14 +16,14 @@ endif()
 include(FetchContent)
 FetchContent_Declare(
     glaze
-    GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-    GIT_TAG v4.4.2
-    GIT_SHALLOW TRUE
+    URL https://github.com/stephenberry/glaze/archive/refs/tags/v4.4.2.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(glaze)
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${glaze_SOURCE_DIR}/include
 )
 
 set(SOURCES

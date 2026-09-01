@@ -1,6 +1,6 @@
 import mqtt from "mqtt";
 
-export function createMqttClient() {
+export function createMQTTClient() {
   const client = mqtt.connect(process.env.MQTT_URL!, {
     username: process.env.MQTT_USER,
     password: process.env.MQTT_PASS,
@@ -10,3 +10,5 @@ export function createMqttClient() {
 
   return client;
 }
+
+export const createMqttClient = createMQTTClient;

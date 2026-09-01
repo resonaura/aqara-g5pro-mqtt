@@ -28,9 +28,9 @@ StreamSession::StreamSession(const SessionConfig& config, std::function<void(con
     if (vkey.size() >= 32) std::memcpy(vk, vkey.data(), 32);
     if (akey.size() >= 32) std::memcpy(ak, akey.data(), 32);
 
-    reassembler_ = std::make_shared<AvioReassembler>(vk, ak);
-    rtsp_server_ = std::make_unique<RtspServer>(config_.rtsp_port, config_.rtsp_path, [this]() {
-request_keyframe();
+    reassembler_ = std::make_shared<AVIOReassembler>(vk, ak);
+    rtsp_server_ = std::make_unique<RTSPServer>(config_.rtsp_port, config_.rtsp_path, [this]() {
+        request_keyframe();
       // RTSP PLAY may request an IDR, but it must not reset the shared P2P
         // reassembly state. Home Assistant often opens/probes multiple clients.
         if (p2p_client_)
@@ -95,7 +95,7 @@ request_keyframe();
         }
     );
 
-    P2pConfig pcfg;
+    P2PConfig pcfg;
     pcfg.did = config_.did;
     pcfg.p2p_id = config_.p2p_id;
     pcfg.init_string = config_.init_string;
@@ -109,7 +109,7 @@ request_keyframe();
     pcfg.camera_port = config_.camera_port;
     pcfg.p2p_quality_channel = config_.p2p_quality_channel;
 
-    p2p_client_ = std::make_unique<P2pClient>(pcfg, reassembler_, event_cb_);
+    p2p_client_ = std::make_unique<P2PClient>(pcfg, reassembler_, event_cb_);
 }
 
 StreamSession::~StreamSession() {
@@ -156,7 +156,7 @@ bool StreamSession::restart_p2p(const SessionConfig& new_cfg) {
 
     reassembler_->set_keys(vk, ak);
 
-    P2pConfig pcfg;
+    P2PConfig pcfg;
     pcfg.did = config_.did;
     pcfg.p2p_id = config_.p2p_id;
     pcfg.init_string = config_.init_string;
@@ -173,7 +173,7 @@ bool StreamSession::restart_p2p(const SessionConfig& new_cfg) {
     std::cout << "[NativeSession] Preserving RTSP server on port " << config_.rtsp_port
               << " while resurrecting P2P tunnel for " << config_.did << std::endl;
 
-    p2p_client_ = std::make_unique<P2pClient>(pcfg, reassembler_, event_cb_);
+    p2p_client_ = std::make_unique<P2PClient>(pcfg, reassembler_, event_cb_);
     return p2p_client_->start();
 }
 

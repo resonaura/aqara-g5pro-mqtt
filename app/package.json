@@ -1,7 +1,7 @@
 {
   "name": "aqara-g5pro-mqtt",
   "description": "Aqara Cameras Local RTSP & MQTT Integration",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "type": "module",
   "private": true,
   "scripts": {
@@ -10,7 +10,8 @@
     "format": "prettier --write \"src/**/*.{ts,js,json}\"",
     "format:native": "clang-format -i native/src/**/*.cpp native/src/**/*.hpp",
     "format:all": "pnpm run format && pnpm run format:native",
-    "lint": "prettier --check \"src/**/*.{ts,js,json}\"",
+    "lint": "oxlint && prettier --check \"src/**/*.{ts,js,json}\"",
+    "lint:oxlint": "oxlint",
     "lint:native": "clang-format --dry-run -Werror native/src/**/*.cpp native/src/**/*.hpp",
     "lint:all": "pnpm run lint && pnpm run lint:native",
     "start": "node dist/index.js",
@@ -27,6 +28,7 @@
     "@types/node": "^24.3.0",
     "clang-format": "^1.8.0",
     "inquirer": "^8.2.7",
+    "oxlint": "^1.80.0",
     "prettier": "^3.9.6",
     "ts-node": "^10.9.2",
     "tsx": "^4.20.5",
@@ -35,8 +37,11 @@
   "packageManager": "pnpm@11.21.0",
   "dependencies": {
     "axios": "^1.11.0",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^17.2.1",
     "mqtt": "^5.14.0",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^1.1.0",
     "uuid": "^11.1.0",
     "yargs": "^18.0.0",
     "zod": "^3.25.76"

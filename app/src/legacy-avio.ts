@@ -11,7 +11,7 @@ export function buildStreamStartBody(channel = 4, videoStream = 0, streamType = 
   return b;
 }
 
-export function isAvioVideoHeader(data: Buffer, offset = 0): boolean {
+export function isAVIOVideoHeader(data: Buffer, offset = 0): boolean {
   if (data.length < offset + 32) return false;
   const codec = data.readUInt16LE(offset);
   if (codec !== AVIO_VIDEO_H264 && codec !== AVIO_VIDEO_HEVC) return false;
@@ -21,18 +21,18 @@ export function isAvioVideoHeader(data: Buffer, offset = 0): boolean {
   return payloadLen >= 16 && payloadLen <= 2_000_000;
 }
 
-export function isAvioAudioHeader(data: Buffer, offset = 0): boolean {
+export function isAVIOAudioHeader(data: Buffer, offset = 0): boolean {
   if (data.length < offset + 32) return false;
   if (data.readUInt16LE(offset) !== AVIO_AUDIO) return false;
   const payloadLen = data.readUInt32LE(offset + 28);
   return payloadLen > 0 && payloadLen <= 4096;
 }
 
-export function findAvioOffset(data: Buffer): number {
-  if (isAvioVideoHeader(data, 0)) return 0;
+export function findAVIOOffset(data: Buffer): number {
+  if (isAVIOVideoHeader(data, 0)) return 0;
   const last = Math.min(Math.max(0, data.length - 32), 1536);
   for (let i = 1; i <= last; i++) {
-    if (isAvioVideoHeader(data, i)) return i;
+    if (isAVIOVideoHeader(data, i)) return i;
   }
   return -1;
 }
@@ -43,7 +43,7 @@ export function extractLeadingAudio(buf: Buffer): {
 } {
   const audio: Buffer[] = [];
   let offset = 0;
-  while (isAvioAudioHeader(buf, offset)) {
+  while (isAVIOAudioHeader(buf, offset)) {
     const payLen = buf.readUInt32LE(offset + 28);
     const frameLen = 40 + payLen;
     if (offset + frameLen > buf.length) break;
@@ -53,16 +53,16 @@ export function extractLeadingAudio(buf: Buffer): {
   return { audio, rest: buf.subarray(offset) };
 }
 
-export function keepAvioRemainder(buf: Buffer): Buffer {
+export function keepAVIORemainder(buf: Buffer): Buffer {
   if (buf.length === 0) return buf;
   if (buf.length < 32) return buf;
-  if (isAvioAudioHeader(buf) || buf.readUInt16LE(0) === AVIO_AUDIO) return buf;
-  const off = findAvioOffset(buf);
+  if (isAVIOAudioHeader(buf) || buf.readUInt16LE(0) === AVIO_AUDIO) return buf;
+  const off = findAVIOOffset(buf);
   if (off < 0) return Buffer.alloc(0);
   return off === 0 ? buf : buf.subarray(off);
 }
 
-export function isNewAvioDatagram(
+export function isNewAVIODatagram(
   looksLikeHeader: boolean,
   idx: number,
   assembling: boolean,
@@ -74,7 +74,7 @@ export function isNewAvioDatagram(
   return idx === 0;
 }
 
-export function shouldFlushAvio(
+export function shouldFlushAVIO(
   curLen: number,
   declaredLen: number,
   _lastChunkLen?: number,
@@ -84,7 +84,7 @@ export function shouldFlushAvio(
   return curLen === declaredLen;
 }
 
-export function splitAvioFrames(buf: Buffer): {
+export function splitAVIOFrames(buf: Buffer): {
   frames: Buffer[];
   remainder: Buffer;
 } {
@@ -92,14 +92,14 @@ export function splitAvioFrames(buf: Buffer): {
   let cur = buf;
 
   while (cur.length >= 32) {
-    if (!isAvioVideoHeader(cur) && !isAvioAudioHeader(cur)) {
-      const off = findAvioOffset(cur);
+    if (!isAVIOVideoHeader(cur) && !isAVIOAudioHeader(cur)) {
+      const off = findAVIOOffset(cur);
       if (off < 0) break;
       cur = cur.subarray(off);
     }
 
     const payLen = cur.readUInt32LE(28);
-    const frameLen = (isAvioAudioHeader(cur) ? 40 : 32) + payLen;
+    const frameLen = (isAVIOAudioHeader(cur) ? 40 : 32) + payLen;
     if (cur.length < frameLen) break;
 
     frames.push(cur.subarray(0, frameLen));
@@ -108,3 +108,12 @@ export function splitAvioFrames(buf: Buffer): {
 
   return { frames, remainder: cur };
 }
+
+// Aliases for compatibility
+export const isAvioVideoHeader = isAVIOVideoHeader;
+export const isAvioAudioHeader = isAVIOAudioHeader;
+export const findAvioOffset = findAVIOOffset;
+export const keepAvioRemainder = keepAVIORemainder;
+export const isNewAvioDatagram = isNewAVIODatagram;
+export const shouldFlushAvio = shouldFlushAVIO;
+export const splitAvioFrames = splitAVIOFrames;

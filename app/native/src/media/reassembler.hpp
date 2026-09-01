@@ -26,10 +26,10 @@ using VideoCallback = std::function<void(const VideoFrame&)>;
 using AudioCallback = std::function<void(const AudioFrame&)>;
 using KeyframeRequestCallback = std::function<void()>;
 
-class AvioReassembler {
+class AVIOReassembler {
 public:
-    AvioReassembler(const uint8_t video_key[32], const uint8_t audio_key[32]);
-    ~AvioReassembler() = default;
+    AVIOReassembler(const uint8_t video_key[32], const uint8_t audio_key[32]);
+    ~AVIOReassembler() = default;
 
     void set_callbacks(VideoCallback video_cb, AudioCallback audio_cb, KeyframeRequestCallback kf_req_cb);
     void set_keys(const uint8_t video_key[32], const uint8_t audio_key[32]);

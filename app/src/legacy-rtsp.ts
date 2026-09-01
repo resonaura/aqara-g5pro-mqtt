@@ -41,7 +41,7 @@ function ntpTimestamp(): { sec: number; frac: number } {
   return { sec: ntpSec, frac };
 }
 
-export interface RtspClient {
+export interface RTSPClient {
   socket: net.Socket;
   session: string;
   isPlaying: boolean;
@@ -58,7 +58,9 @@ export interface RtspClient {
   waitLiveIdr?: boolean;
 }
 
-export class RtspServer extends EventEmitter {
+export type RtspClient = RTSPClient;
+
+export class RTSPServer extends EventEmitter {
   private server: net.Server | null = null;
   private rtpUdp: dgram.Socket | null = null;
   private rtpUdp6: dgram.Socket | null = null;
@@ -1018,3 +1020,5 @@ export class RtspServer extends EventEmitter {
     }
   }
 }
+
+export const RtspServer = RTSPServer;

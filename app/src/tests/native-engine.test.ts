@@ -11,7 +11,10 @@ test("NativeMediaEngine binary exists and responds to ping", async () => {
   if (!engine.ready) {
     engine.start();
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Timeout waiting for native engine")), 2000);
+      const timeout = setTimeout(
+        () => reject(new Error("Timeout waiting for native engine")),
+        2000,
+      );
       engine.once("ready", () => {
         clearTimeout(timeout);
         resolve();
@@ -31,7 +34,10 @@ test("NativeMediaEngine preserves RTSP server on session restart", async () => {
   if (!engine.ready) {
     engine.start();
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Timeout waiting for native engine")), 2000);
+      const timeout = setTimeout(
+        () => reject(new Error("Timeout waiting for native engine")),
+        2000,
+      );
       engine.once("ready", () => {
         clearTimeout(timeout);
         resolve();
@@ -56,7 +62,7 @@ test("NativeMediaEngine preserves RTSP server on session restart", async () => {
     engine.on("session_started", onStarted);
   });
 
-  engine.startP2p({
+  engine.startP2P({
     did: testDid,
     rtsp_port: rtspPort,
     rtsp_path: "live/test",
@@ -67,7 +73,10 @@ test("NativeMediaEngine preserves RTSP server on session restart", async () => {
 
   // 2. Re-start (resurrect) without stop_p2p: verifies RTSP server port is preserved without EADDRINUSE
   const resurrectPromise = new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Timeout waiting for session resurrection")), 3000);
+    const timeout = setTimeout(
+      () => reject(new Error("Timeout waiting for session resurrection")),
+      3000,
+    );
     const onStarted = (did: string, port: number) => {
       if (did === testDid) {
         clearTimeout(timeout);
@@ -79,7 +88,7 @@ test("NativeMediaEngine preserves RTSP server on session restart", async () => {
     engine.on("session_started", onStarted);
   });
 
-  engine.startP2p({
+  engine.startP2P({
     did: testDid,
     rtsp_port: rtspPort,
     rtsp_path: "live/test",
@@ -89,6 +98,6 @@ test("NativeMediaEngine preserves RTSP server on session restart", async () => {
   await resurrectPromise;
 
   // Cleanup
-  engine.stopP2p(testDid);
+  engine.stopP2P(testDid);
   engine.stop();
 });

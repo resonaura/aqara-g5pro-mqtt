@@ -17,7 +17,7 @@ int main() {
     for (int i = 0; i < 32; ++i)
         key[i] = static_cast<uint8_t>(i + 1);
 
-    aqara::AvioReassembler reassembler(key, key);
+    aqara::AVIOReassembler reassembler(key, key);
     int audio_frames = 0;
     std::vector<uint8_t> decoded;
     reassembler.set_callbacks({}, [&](const aqara::AudioFrame& frame) {
@@ -55,7 +55,7 @@ int main() {
     // Mic audio may be inserted between two UDP fragments of one video AVIO
     // frame. It must be peeled out instead of becoming part of the video bytes.
     int video_frames = 0;
-    aqara::AvioReassembler interleaved(key, key);
+    aqara::AVIOReassembler interleaved(key, key);
     interleaved.set_callbacks([&](const aqara::VideoFrame&) { ++video_frames; }, {}, {});
     std::vector<uint8_t> video(48, 0);
     video[0] = 0x4e;

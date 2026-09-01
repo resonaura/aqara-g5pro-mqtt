@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AqaraCameraBridge, buildTalkbackPpcsBody, TALKBACK_LEAD_FRAME } from "../bridge.js";
+import { AqaraCameraBridge, buildTalkbackPPCSBody, TALKBACK_LEAD_FRAME } from "../bridge.js";
 
 function createReadyBridge(): {
   bridge: AqaraCameraBridge;
@@ -30,7 +30,7 @@ function createReadyBridge(): {
 
 test("talkback PPCS body matches the 32-byte header with length at offset 28", () => {
   const adts = Buffer.from([0xff, 0xf9, 0x60, 0x40, 1, 2, 3]);
-  const body = buildTalkbackPpcsBody(adts);
+  const body = buildTalkbackPPCSBody(adts);
 
   assert.equal(body.length, 32 + adts.length);
   assert.deepEqual(body.subarray(0, 28), Buffer.alloc(28));
@@ -39,7 +39,7 @@ test("talkback PPCS body matches the 32-byte header with length at offset 28", (
 });
 
 test("talkback lead frame matches the official pcap channel-2 body", () => {
-  const body = buildTalkbackPpcsBody(TALKBACK_LEAD_FRAME);
+  const body = buildTalkbackPPCSBody(TALKBACK_LEAD_FRAME);
   // Decrypted APP->CAM seq=0 from /tmp/aqara_talk.pcap
   assert.equal(
     body.toString("hex"),
@@ -63,9 +63,9 @@ test("talkback wraps the decoder lead and AAC data in PPCS channel 2", () => {
       {
         channel: 2,
         sequence: 0,
-        payload: buildTalkbackPpcsBody(TALKBACK_LEAD_FRAME),
+        payload: buildTalkbackPPCSBody(TALKBACK_LEAD_FRAME),
       },
-      { channel: 2, sequence: 1, payload: buildTalkbackPpcsBody(aac) },
+      { channel: 2, sequence: 1, payload: buildTalkbackPPCSBody(aac) },
     ],
   );
 });
@@ -78,7 +78,7 @@ test("an explicit lead frame is sent once, without an extra warm-up frame", () =
     {
       channel: 2,
       sequence: 0,
-      payload: buildTalkbackPpcsBody(TALKBACK_LEAD_FRAME),
+      payload: buildTalkbackPPCSBody(TALKBACK_LEAD_FRAME),
     },
   ]);
 });

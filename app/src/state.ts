@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
 import path from "node:path";
+import { initDatabase } from "./db/data-source.js";
+import { CameraStateEntity, GlobalSettingEntity, RTSPPortEntity } from "./db/entities/index.js";
 
 export interface CameraPersistentState {
   p2p_stream?: boolean;
@@ -7,6 +9,10 @@ export interface CameraPersistentState {
   motion_enabled?: boolean;
   spotlight_state?: "ON" | "OFF";
   spotlight_brightness?: number;
+  slug?: string;
+  deviceName?: string;
+  model?: string;
+  rtsp_port?: number;
   [key: string]: any;
 }
 
@@ -35,221 +41,366 @@ export function getStateFilePath(): string {
   return path.join(getDataDir(), "app_state.json");
 }
 
-export function getLegacyP2pFilePath(): string {
+export function getLegacyP2PFilePath(): string {
   return path.join(getDataDir(), "p2p_state.json");
 }
 
-export function getLockDirPath(): string {
-  return path.join(getDataDir(), "app_state.lock");
+export const getLegacyP2pFilePath = getLegacyP2PFilePath;
+
+let migrationChecked = false;
+
+/**
+ * Automatically migrate legacy JSON state files (if present) to SQLite tables on startup.
+ */
+async function checkAndMigrateLegacyJson(): Promise<void> {
+  if (migrationChecked) return;
+  migrationChecked = true;
+
+  const ds = await initDatabase();
+  const camRepo = ds.getRepository(CameraStateEntity);
+  const globRepo = ds.getRepository(GlobalSettingEntity);
+  const portRepo = ds.getRepository(RTSPPortEntity);
+
+  // 1. Check legacy app_state.json
+  const appStatePath = getStateFilePath();
+  if (fs.existsSync(appStatePath)) {
+    try {
+      const raw = fs.readFileSync(appStatePath, "utf-8");
+      const parsed = JSON.parse(raw) as Partial<AppPersistentState>;
+      if (parsed.cameras) {
+        for (const [did, cState] of Object.entries(parsed.cameras)) {
+          const existing = await camRepo.findOneBy({ did });
+          if (!existing) {
+            const entity = new CameraStateEntity();
+            entity.did = did;
+            entity.slug = cState.slug;
+            entity.deviceName = cState.deviceName;
+            entity.model = cState.model;
+            entity.p2p_stream = cState.p2p_stream ?? false;
+            entity.quality_channel = cState.quality_channel;
+            entity.motion_enabled = cState.motion_enabled ?? true;
+            entity.spotlight_state = cState.spotlight_state;
+            entity.spotlight_brightness = cState.spotlight_brightness;
+            entity.rtsp_port = cState.rtsp_port;
+            await camRepo.save(entity);
+          }
+        }
+      }
+      if (parsed.global) {
+        for (const [k, v] of Object.entries(parsed.global)) {
+          await globRepo.save({
+            key: k,
+            value: typeof v === "string" ? v : JSON.stringify(v),
+          });
+        }
+      }
+      // Remove migrated file
+      fs.unlinkSync(appStatePath);
+      console.log(`[Database] Successfully migrated legacy app_state.json to SQLite`);
+    } catch (err: any) {
+      console.warn(`[Database] Error during app_state.json migration: ${err?.message}`);
+    }
+  }
+
+  // 2. Check legacy p2p_state.json
+  const p2pStatePath = getLegacyP2PFilePath();
+  if (fs.existsSync(p2pStatePath)) {
+    try {
+      const raw = fs.readFileSync(p2pStatePath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed.cameras) {
+        for (const [did, val] of Object.entries(parsed.cameras)) {
+          const streamFlag = typeof val === "boolean" ? val : ((val as any)?.p2p_stream ?? false);
+          let entity = await camRepo.findOneBy({ did });
+          if (!entity) {
+            entity = new CameraStateEntity();
+            entity.did = did;
+            entity.p2p_stream = streamFlag;
+          } else {
+            entity.p2p_stream = streamFlag;
+          }
+          await camRepo.save(entity);
+        }
+      }
+      fs.unlinkSync(p2pStatePath);
+      console.log(`[Database] Successfully migrated legacy p2p_state.json to SQLite`);
+    } catch (err: any) {
+      console.warn(`[Database] Error during p2p_state.json migration: ${err?.message}`);
+    }
+  }
+
+  // 3. Check legacy rtsp_ports.json
+  const rtspPortsPath = path.join(getDataDir(), "rtsp_ports.json");
+  if (fs.existsSync(rtspPortsPath)) {
+    try {
+      const raw = fs.readFileSync(rtspPortsPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed.cameras) {
+        for (const [did, entry] of Object.entries(parsed.cameras as Record<string, any>)) {
+          if (entry?.port) {
+            await portRepo.save({
+              did,
+              slug: entry.slug || did,
+              port: entry.port,
+            });
+          }
+        }
+      }
+      fs.unlinkSync(rtspPortsPath);
+      console.log(`[Database] Successfully migrated legacy rtsp_ports.json to SQLite`);
+    } catch (err: any) {
+      console.warn(`[Database] Error during rtsp_ports.json migration: ${err?.message}`);
+    }
+  }
 }
 
-// In-process serialized Promise queue
-let saveQueue = Promise.resolve();
+function entityToCameraState(entity: CameraStateEntity): CameraPersistentState {
+  const result: CameraPersistentState = {
+    p2p_stream: entity.p2p_stream,
+    motion_enabled: entity.motion_enabled,
+    ...entity.extra,
+  };
+  if (entity.slug !== undefined && entity.slug !== null) result.slug = entity.slug;
+  if (entity.deviceName !== undefined && entity.deviceName !== null)
+    result.deviceName = entity.deviceName;
+  if (entity.model !== undefined && entity.model !== null) result.model = entity.model;
+  if (entity.quality_channel !== undefined && entity.quality_channel !== null)
+    result.quality_channel = entity.quality_channel;
+  if (entity.spotlight_state !== undefined && entity.spotlight_state !== null)
+    result.spotlight_state = entity.spotlight_state as any;
+  if (entity.spotlight_brightness !== undefined && entity.spotlight_brightness !== null)
+    result.spotlight_brightness = entity.spotlight_brightness;
+  if (entity.rtsp_port !== undefined && entity.rtsp_port !== null)
+    result.rtsp_port = entity.rtsp_port;
+  return result;
+}
 
-function createDefaultState(): AppPersistentState {
+/**
+ * Load the complete application state from SQLite.
+ */
+export async function loadAppState(): Promise<AppPersistentState> {
+  await checkAndMigrateLegacyJson();
+  const ds = await initDatabase();
+  const camRepo = ds.getRepository(CameraStateEntity);
+  const globRepo = ds.getRepository(GlobalSettingEntity);
+
+  const [camEntities, globEntities] = await Promise.all([camRepo.find(), globRepo.find()]);
+
+  const cameras: Record<string, CameraPersistentState> = {};
+  for (const c of camEntities) {
+    cameras[c.did] = entityToCameraState(c);
+  }
+
+  const global: Record<string, any> = {};
+  for (const g of globEntities) {
+    try {
+      global[g.key] = JSON.parse(g.value);
+    } catch {
+      global[g.key] = g.value;
+    }
+  }
+
   return {
     version: 1,
     updatedAt: Date.now(),
-    cameras: {},
-    global: {},
+    cameras,
+    global,
   };
 }
 
 /**
- * Acquire an inter-process directory lock with stale-lock recovery.
+ * Update the application state atomically using a mutator function.
  */
-function acquireLock(timeoutMs = 5000): () => void {
-  const lockDir = getLockDirPath();
-  const dir = path.dirname(lockDir);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+export async function updateAppState(
+  updater: (draft: AppPersistentState) => void | Promise<void>,
+): Promise<AppPersistentState> {
+  await checkAndMigrateLegacyJson();
+  const current = await loadAppState();
+  await updater(current);
 
-  const deadline = Date.now() + timeoutMs;
-  while (true) {
-    try {
-      fs.mkdirSync(lockDir);
-      return () => {
-        try {
-          fs.rmdirSync(lockDir);
-        } catch {}
-      };
-    } catch (err: any) {
-      if (err?.code !== "EEXIST") throw err;
+  const ds = await initDatabase();
+  const camRepo = ds.getRepository(CameraStateEntity);
+  const globRepo = ds.getRepository(GlobalSettingEntity);
 
-      // Check for stale lock (> 10s old) from a crashed process
-      try {
-        const stats = fs.statSync(lockDir);
-        if (Date.now() - stats.mtimeMs > 10_000) {
-          try {
-            fs.rmdirSync(lockDir);
-            continue;
-          } catch {}
-        }
-      } catch {}
-
-      if (Date.now() >= deadline) {
-        console.warn("⚠️ Timed out waiting for app_state file lock, proceeding with write");
-        return () => {};
-      }
-
-      // Small synchronous spin-wait
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  // Save cameras
+  for (const [did, cState] of Object.entries(current.cameras)) {
+    let entity = await camRepo.findOneBy({ did });
+    if (!entity) {
+      entity = new CameraStateEntity();
+      entity.did = did;
     }
-  }
-}
+    if (cState.slug !== undefined) entity.slug = cState.slug;
+    if (cState.deviceName !== undefined) entity.deviceName = cState.deviceName;
+    if (cState.model !== undefined) entity.model = cState.model;
+    if (cState.p2p_stream !== undefined) entity.p2p_stream = cState.p2p_stream;
+    if (cState.quality_channel !== undefined) entity.quality_channel = cState.quality_channel;
+    if (cState.motion_enabled !== undefined) entity.motion_enabled = cState.motion_enabled;
+    if (cState.spotlight_state !== undefined) entity.spotlight_state = cState.spotlight_state;
+    if (cState.spotlight_brightness !== undefined)
+      entity.spotlight_brightness = cState.spotlight_brightness;
+    if (cState.rtsp_port !== undefined) entity.rtsp_port = cState.rtsp_port;
 
-/**
- * Load complete application persistent state safely with automatic schema migration.
- */
-export function loadAppState(): AppPersistentState {
-  const stateFile = getStateFilePath();
-  const legacyFile = getLegacyP2pFilePath();
-  const fallbackLocalFile = path.resolve(process.cwd(), "data", "app_state.json");
-  const fallbackLegacyLocal = path.resolve(process.cwd(), "data", "p2p_state.json");
-
-  const candidateFiles = [stateFile, legacyFile, fallbackLocalFile, fallbackLegacyLocal];
-
-  for (const file of candidateFiles) {
-    try {
-      if (fs.existsSync(file)) {
-        const raw = fs.readFileSync(file, "utf8").trim();
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === "object") {
-            if (parsed.cameras && typeof parsed.cameras === "object") {
-              return {
-                version: parsed.version || 1,
-                updatedAt: parsed.updatedAt || Date.now(),
-                cameras: parsed.cameras,
-                global: parsed.global || {},
-              };
-            }
-            // Legacy flat { [did]: boolean } migration
-            const state = createDefaultState();
-            for (const [key, val] of Object.entries(parsed)) {
-              if (typeof val === "boolean") {
-                state.cameras[key] = { p2p_stream: val };
-              } else if (val && typeof val === "object") {
-                state.cameras[key] = val as CameraPersistentState;
-              }
-            }
-            return state;
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn(`⚠️ Failed to read candidate state file ${file}: ${err.message}`);
+    const knownKeys = new Set([
+      "slug",
+      "deviceName",
+      "model",
+      "p2p_stream",
+      "quality_channel",
+      "motion_enabled",
+      "spotlight_state",
+      "spotlight_brightness",
+      "rtsp_port",
+    ]);
+    const extra: Record<string, any> = {};
+    for (const [k, v] of Object.entries(cState)) {
+      if (!knownKeys.has(k)) extra[k] = v;
     }
-  }
-
-  return createDefaultState();
-}
-
-/**
- * Synchronously update and save application state with atomic fsync + rename.
- */
-function updateAppStateSync(updater: (draft: AppPersistentState) => void): AppPersistentState {
-  const release = acquireLock();
-  const stateFile = getStateFilePath();
-  try {
-    const state = loadAppState();
-    updater(state);
-    state.updatedAt = Date.now();
-
-    const dir = path.dirname(stateFile);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    if (Object.keys(extra).length > 0) {
+      entity.extra = extra;
     }
-
-    // Atomic write via PID-tagged temp file + fsync + rename
-    const tmpFile = `${stateFile}.tmp.${process.pid}.${Date.now()}`;
-    const data = JSON.stringify(state, null, 2);
-    const fd = fs.openSync(tmpFile, "w");
-    fs.writeFileSync(fd, data, "utf8");
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-
-    fs.renameSync(tmpFile, stateFile);
-    return state;
-  } catch (err: any) {
-    console.warn(`⚠️ Failed to persist app state: ${err.message}`);
-    return loadAppState();
-  } finally {
-    release();
+    await camRepo.save(entity);
   }
-}
 
-/**
- * Update application state with an in-process serialized queue and cross-process lock.
- */
-export function updateAppState(updater: (draft: AppPersistentState) => void): Promise<AppPersistentState> {
-  let result: AppPersistentState = createDefaultState();
-  saveQueue = saveQueue
-    .then(async () => {
-      result = updateAppStateSync(updater);
-    })
-    .catch((err) => {
-      console.error("❌ Error in updateAppState queue:", err);
+  // Save global settings
+  for (const [k, v] of Object.entries(current.global)) {
+    await globRepo.save({
+      key: k,
+      value: typeof v === "string" ? v : JSON.stringify(v),
     });
-  return saveQueue.then(() => result);
+  }
+
+  return current;
 }
 
 /**
- * Get state object for a specific camera.
+ * Get state for a specific camera.
  */
-export function getCameraState(did: string): CameraPersistentState {
-  const state = loadAppState();
-  return state.cameras[did] || {};
+export async function getCameraState(did: string): Promise<CameraPersistentState> {
+  await checkAndMigrateLegacyJson();
+  const ds = await initDatabase();
+  const camRepo = ds.getRepository(CameraStateEntity);
+  const entity = await camRepo.findOneBy({ did });
+  if (!entity) return {};
+  return entityToCameraState(entity);
 }
 
 /**
  * Set/update partial state for a specific camera.
  */
-export async function setCameraState(did: string, partial: Partial<CameraPersistentState>): Promise<CameraPersistentState> {
-  const state = await updateAppState((draft) => {
-    draft.cameras[did] = {
-      ...(draft.cameras[did] || {}),
-      ...partial,
-    };
-  });
-  return state.cameras[did];
+export async function setCameraState(
+  did: string,
+  partial: Partial<CameraPersistentState>,
+): Promise<CameraPersistentState> {
+  await checkAndMigrateLegacyJson();
+  const ds = await initDatabase();
+  const camRepo = ds.getRepository(CameraStateEntity);
+
+  let entity = await camRepo.findOneBy({ did });
+  if (!entity) {
+    entity = new CameraStateEntity();
+    entity.did = did;
+  }
+
+  if (partial.slug !== undefined) entity.slug = partial.slug;
+  if (partial.deviceName !== undefined) entity.deviceName = partial.deviceName;
+  if (partial.model !== undefined) entity.model = partial.model;
+  if (partial.p2p_stream !== undefined) entity.p2p_stream = partial.p2p_stream;
+  if (partial.quality_channel !== undefined) entity.quality_channel = partial.quality_channel;
+  if (partial.motion_enabled !== undefined) entity.motion_enabled = partial.motion_enabled;
+  if (partial.spotlight_state !== undefined) entity.spotlight_state = partial.spotlight_state;
+  if (partial.spotlight_brightness !== undefined)
+    entity.spotlight_brightness = partial.spotlight_brightness;
+  if (partial.rtsp_port !== undefined) entity.rtsp_port = partial.rtsp_port;
+
+  const knownKeys = new Set([
+    "slug",
+    "deviceName",
+    "model",
+    "p2p_stream",
+    "quality_channel",
+    "motion_enabled",
+    "spotlight_state",
+    "spotlight_brightness",
+    "rtsp_port",
+  ]);
+  const extra: Record<string, any> = entity.extra || {};
+  for (const [k, v] of Object.entries(partial)) {
+    if (!knownKeys.has(k)) extra[k] = v;
+  }
+  if (Object.keys(extra).length > 0) {
+    entity.extra = extra;
+  }
+
+  const saved = await camRepo.save(entity);
+  return entityToCameraState(saved);
 }
 
 /**
  * Get global state value.
  */
-export function getGlobalState<T>(key: string, defaultValue: T): T {
-  const state = loadAppState();
-  return state.global[key] !== undefined ? state.global[key] : defaultValue;
+export async function getGlobalState<T = any>(key: string, fallback: T): Promise<T> {
+  await checkAndMigrateLegacyJson();
+  const ds = await initDatabase();
+  const globRepo = ds.getRepository(GlobalSettingEntity);
+  const entity = await globRepo.findOneBy({ key });
+  if (!entity) return fallback;
+  try {
+    return JSON.parse(entity.value) as T;
+  } catch {
+    return entity.value as unknown as T;
+  }
 }
 
 /**
  * Set global state value.
  */
-export async function setGlobalState<T>(key: string, value: T): Promise<void> {
-  await updateAppState((draft) => {
-    draft.global[key] = value;
+export async function setGlobalState<T = any>(key: string, value: T): Promise<void> {
+  await checkAndMigrateLegacyJson();
+  const ds = await initDatabase();
+  const globRepo = ds.getRepository(GlobalSettingEntity);
+  await globRepo.save({
+    key,
+    value: typeof value === "string" ? value : JSON.stringify(value),
   });
 }
 
 /**
- * Convenience helper: Load map of did -> boolean for P2P streams.
+ * Backwards compatibility helper for loading P2P state.
  */
-export function loadP2pState(): Record<string, boolean> {
-  const state = loadAppState();
-  const res: Record<string, boolean> = {};
-  for (const [did, cam] of Object.entries(state.cameras)) {
-    if (typeof cam.p2p_stream === "boolean") {
-      res[did] = cam.p2p_stream;
-    }
+export async function loadP2PState(): Promise<Record<string, boolean>> {
+  const appState = await loadAppState();
+  const cameras: Record<string, boolean> = {};
+  for (const [did, cam] of Object.entries(appState.cameras)) {
+    cameras[did] = !!cam.p2p_stream;
   }
-  return res;
+  return cameras;
 }
 
+export const loadP2pState = loadP2PState;
+
 /**
- * Convenience helper: Save P2P stream state for a camera.
+ * Backwards compatibility helper for saving P2P state.
  */
-export async function saveP2pState(did: string, enabled: boolean): Promise<void> {
-  await setCameraState(did, { p2p_stream: enabled });
+export async function saveP2PState(
+  didOrMap:
+    string | { cameras?: Record<string, { p2p_stream?: boolean }> } | Record<string, boolean>,
+  enabled?: boolean,
+): Promise<void> {
+  if (typeof didOrMap === "string") {
+    await setCameraState(didOrMap, { p2p_stream: !!enabled });
+  } else if (typeof didOrMap === "object" && didOrMap !== null) {
+    if ("cameras" in didOrMap && didOrMap.cameras) {
+      for (const [did, cam] of Object.entries(didOrMap.cameras)) {
+        await setCameraState(did, { p2p_stream: !!cam?.p2p_stream });
+      }
+    } else {
+      for (const [did, flag] of Object.entries(didOrMap)) {
+        await setCameraState(did, {
+          p2p_stream: typeof flag === "boolean" ? flag : !!(flag as any)?.p2p_stream,
+        });
+      }
+    }
+  }
 }
+
+export const saveP2pState = saveP2PState;

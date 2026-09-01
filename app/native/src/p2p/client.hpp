@@ -13,7 +13,7 @@
 
 namespace aqara {
 
-struct P2pConfig {
+struct P2PConfig {
     std::string did;
     std::string p2p_id;
     std::string init_string;
@@ -28,11 +28,11 @@ struct P2pConfig {
     int p2p_quality_channel = 0;
 };
 
-class P2pClient {
+class P2PClient {
 public:
-    P2pClient(const P2pConfig& config, std::shared_ptr<AvioReassembler> reassembler,
+    P2PClient(const P2PConfig& config, std::shared_ptr<AVIOReassembler> reassembler,
               std::function<void(const std::string&)> event_cb);
-    ~P2pClient();
+    ~P2PClient();
 
     bool start();
     void stop();
@@ -64,8 +64,8 @@ private:
     void queue_ack(uint8_t channel, uint16_t seq);
     void flush_acks(uint8_t channel);
 
-    P2pConfig config_;
-    std::shared_ptr<AvioReassembler> reassembler_;
+    P2PConfig config_;
+    std::shared_ptr<AVIOReassembler> reassembler_;
     std::function<void(const std::string&)> event_cb_;
 
     std::vector<uint8_t> ppcs_key_;

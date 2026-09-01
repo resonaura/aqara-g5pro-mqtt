@@ -46,17 +46,17 @@ static std::string hex_encode(const uint8_t* data, size_t len) {
     return ss.str();
 }
 
-RtspServer::RtspServer(int port, const std::string& path, KeyframeCallback kf_cb)
+RTSPServer::RTSPServer(int port, const std::string& path, KeyframeCallback kf_cb)
     : port_(port), path_(path), kf_req_cb_(std::move(kf_cb)) {
     last_video_send_time_ = std::chrono::steady_clock::now();
     last_audio_send_time_ = std::chrono::steady_clock::now();
 }
 
-RtspServer::~RtspServer() {
+RTSPServer::~RTSPServer() {
     stop();
 }
 
-bool RtspServer::start() {
+bool RTSPServer::start() {
     server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd_ < 0)
         return false;
@@ -95,12 +95,12 @@ bool RtspServer::start() {
     }
 
     running_ = true;
-    accept_thread_ = std::thread(&RtspServer::accept_loop, this);
+    accept_thread_ = std::thread(&RTSPServer::accept_loop, this);
     std::cout << "[RTSP-Native] Server listening on port " << port_ << " path /" << path_ << std::endl;
     return true;
 }
 
-void RtspServer::stop() {
+void RTSPServer::stop() {
     if (!running_)
         return;
     running_ = false;
@@ -121,7 +121,7 @@ void RtspServer::stop() {
     clients_.clear();
 }
 
-void RtspServer::hold_for_new_idr() {
+void RTSPServer::hold_for_new_idr() {
     {
         std::lock_guard<std::mutex> lock(keyframe_mutex_);
         cached_keyframe_ = VideoFrame{};
@@ -136,7 +136,7 @@ void RtspServer::hold_for_new_idr() {
     }
 }
 
-void RtspServer::accept_loop() {
+void RTSPServer::accept_loop() {
     while (running_) {
         sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
@@ -155,7 +155,7 @@ void RtspServer::accept_loop() {
         char ip_str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &(client_addr.sin_addr), ip_str, INET_ADDRSTRLEN);
 
-        auto client = std::make_unique<RtspClient>();
+        auto client = std::make_unique<RTSPClient>();
         client->socket_fd = client_fd;
         client->ip = ip_str;
         client->port = ntohs(client_addr.sin_port);
@@ -170,7 +170,7 @@ void RtspServer::accept_loop() {
     }
 }
 
-void RtspServer::handle_client(int client_fd) {
+void RTSPServer::handle_client(int client_fd) {
     char buf[4096];
     std::string accumulated;
 
@@ -244,7 +244,7 @@ static void parse_request_line(const std::string& req, std::string& method, std:
     }
 }
 
-void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req) {
+void RTSPServer::process_rtsp_request(RTSPClient& client, const std::string& req) {
     std::string method, url;
     parse_request_line(req, method, url);
     std::string cseq = get_cseq(req);
@@ -286,8 +286,7 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
             } else {
                 client.video_interleaved_channel = ch1;
             }
-            transport_resp =
-                "RTP/AVP/TCP;unicast;interleaved=" + std::to_string(ch1) + "-" + std::to_string(ch2);
+            transport_resp = "RTP/AVP/TCP;unicast;interleaved=" + std::to_string(ch1) + "-" + std::to_string(ch2);
             resp << "RTSP/1.0 200 OK\r\n"
                  << "CSeq: " << cseq << "\r\n"
                  << "Session: " << client.session_id << ";timeout=60\r\n"
@@ -329,8 +328,11 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
             client.received_keyframe = true;
             for (const auto& frame : gop) {
                 if (frame.timestamp_ms > 0) {
-                    if (client.base_timestamp_ms == 0) client.base_timestamp_ms = frame.timestamp_ms;
-                    const uint64_t delta_ms = frame.timestamp_ms >= client.base_timestamp_ms ? (frame.timestamp_ms - client.base_timestamp_ms) : 0;
+                    if (client.base_timestamp_ms == 0)
+                        client.base_timestamp_ms = frame.timestamp_ms;
+                    const uint64_t delta_ms = frame.timestamp_ms >= client.base_timestamp_ms
+                                                  ? (frame.timestamp_ms - client.base_timestamp_ms)
+                                                  : 0;
                     client.video_rtp_timestamp = client.base_video_rtp_ts + static_cast<uint32_t>(delta_ms * 90);
                 } else {
                     client.video_rtp_timestamp += 4500;
@@ -364,7 +366,7 @@ void RtspServer::process_rtsp_request(RtspClient& client, const std::string& req
     send(client.socket_fd, str.data(), str.length(), 0);
 }
 
-std::string RtspServer::generate_sdp(const std::string& host_ip) {
+std::string RTSPServer::generate_sdp(const std::string& host_ip) {
     std::ostringstream sdp;
     sdp << "v=0\r\n"
         << "o=- 0 0 IN IP4 " << host_ip << "\r\n"
@@ -418,7 +420,7 @@ std::string RtspServer::generate_sdp(const std::string& host_ip) {
     return sdp.str();
 }
 
-void RtspServer::send_interleaved_rtp(RtspClient& client, int channel, const uint8_t* rtp_pkt, size_t len) {
+void RTSPServer::send_interleaved_rtp(RTSPClient& client, int channel, const uint8_t* rtp_pkt, size_t len) {
     if (!client.is_playing || channel < 0 || client.socket_fd < 0 || !rtp_pkt || len == 0 || len > 0xffff)
         return;
 
@@ -446,15 +448,15 @@ void RtspServer::send_interleaved_rtp(RtspClient& client, int channel, const uin
         const bool was_playing = client.is_playing;
         client.is_playing = false;
         if (was_playing) {
-            std::cerr << "[RTSP-Native] RTP send failed for " << client.ip << ":" << client.port
-                      << " sent=" << offset << "/" << framed.size()
-                      << " err=" << (written < 0 ? std::strerror(errno) : "peer closed") << std::endl;
+            std::cerr << "[RTSP-Native] RTP send failed for " << client.ip << ":" << client.port << " sent=" << offset
+                      << "/" << framed.size() << " err=" << (written < 0 ? std::strerror(errno) : "peer closed")
+                      << std::endl;
         }
         return;
     }
 }
 
-void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) {
+void RTSPServer::send_video_to_client(RTSPClient& client, const VideoFrame& vf) {
     if (vf.annex_b_data.empty() || !client.is_playing)
         return;
     int ch = client.video_interleaved_channel;
@@ -494,7 +496,8 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
 
     const size_t MAX_PAYLOAD = 1380;
     for (size_t n = 0; n < nals.size(); ++n) {
-        if (!client.is_playing) return;
+        if (!client.is_playing)
+            return;
         const uint8_t* nal = nals[n].first;
         size_t nal_len = nals[n].second;
         bool is_last_nal = (n == nals.size() - 1);
@@ -601,7 +604,7 @@ void RtspServer::send_video_to_client(RtspClient& client, const VideoFrame& vf) 
     }
 }
 
-void RtspServer::broadcast_video(const VideoFrame& vf) {
+void RTSPServer::broadcast_video(const VideoFrame& vf) {
     if (vf.annex_b_data.empty())
         return;
     is_hevc_ = (vf.codec_id == 0x004F);
@@ -672,7 +675,7 @@ void RtspServer::broadcast_video(const VideoFrame& vf) {
 
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
     for (auto& pair : clients_) {
-        RtspClient& client = *(pair.second);
+        RTSPClient& client = *(pair.second);
         if (!client.is_playing)
             continue;
 
@@ -689,9 +692,8 @@ void RtspServer::broadcast_video(const VideoFrame& vf) {
             if (client.base_timestamp_ms == 0) {
                 client.base_timestamp_ms = vf.timestamp_ms;
             }
-            const uint64_t delta_ms = vf.timestamp_ms >= client.base_timestamp_ms
-                ? (vf.timestamp_ms - client.base_timestamp_ms)
-                : 0;
+            const uint64_t delta_ms =
+                vf.timestamp_ms >= client.base_timestamp_ms ? (vf.timestamp_ms - client.base_timestamp_ms) : 0;
             client.video_rtp_timestamp = client.base_video_rtp_ts + static_cast<uint32_t>(delta_ms * 90);
         } else {
             client.video_rtp_timestamp += 4500;
@@ -700,7 +702,7 @@ void RtspServer::broadcast_video(const VideoFrame& vf) {
     }
 }
 
-void RtspServer::broadcast_audio(const AudioFrame& af) {
+void RTSPServer::broadcast_audio(const AudioFrame& af) {
     if (af.aac_adts_data.empty())
         return;
 
@@ -715,9 +717,8 @@ void RtspServer::broadcast_audio(const AudioFrame& af) {
         // Has ADTS header: parse ADTS frame length
         bool has_crc = (data[1] & 0x01) == 0;
         size_t hdr_len = has_crc ? 9 : 7;
-        size_t frame_len =
-            ((static_cast<size_t>(data[3] & 0x03) << 11) | (static_cast<size_t>(data[4]) << 3) |
-             ((static_cast<size_t>(data[5] & 0xe0) >> 5)));
+        size_t frame_len = ((static_cast<size_t>(data[3] & 0x03) << 11) | (static_cast<size_t>(data[4]) << 3) |
+                            ((static_cast<size_t>(data[5] & 0xe0) >> 5)));
 
         if (frame_len >= hdr_len && frame_len <= len) {
             raw_aac = data + hdr_len;
@@ -733,7 +734,7 @@ void RtspServer::broadcast_audio(const AudioFrame& af) {
 
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
     for (auto& pair : clients_) {
-        RtspClient& client = *(pair.second);
+        RTSPClient& client = *(pair.second);
         if (!client.is_playing)
             continue;
         int ch = client.audio_interleaved_channel;

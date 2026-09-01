@@ -3,7 +3,7 @@ FROM node:22.16.0-slim AS build
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates python3 && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
 
 # Install dependencies first (leverages layer caching)

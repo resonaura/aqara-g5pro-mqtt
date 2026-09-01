@@ -6,7 +6,7 @@ WORKDIR /usr/src/app
 
 # Устанавливаем Node.js 22.x через NodeSource и сборочные утилиты
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg build-essential cmake \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg build-essential cmake git python3 \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs jq ffmpeg \
     && rm -rf /var/lib/apt/lists/*

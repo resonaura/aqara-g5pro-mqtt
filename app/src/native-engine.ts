@@ -150,7 +150,7 @@ export class NativeMediaEngine extends EventEmitter {
     this.process.stdin.write(line + "\n");
   }
 
-  public startP2p(config: NativeSessionConfig): void {
+  public startP2P(config: NativeSessionConfig): void {
     const payload = JSON.stringify({
       cmd: "start_p2p",
       ...config,
@@ -164,8 +164,12 @@ export class NativeMediaEngine extends EventEmitter {
     }
   }
 
+  public startP2p(config: NativeSessionConfig): void {
+    this.startP2P(config);
+  }
+
   public startSession(config: NativeSessionConfig): void {
-    this.startP2p(config);
+    this.startP2P(config);
   }
 
   public requestKeyframe(did: string): void {
@@ -231,7 +235,7 @@ export class NativeMediaEngine extends EventEmitter {
     }
   }
 
-  public stopP2p(did: string): void {
+  public stopP2P(did: string): void {
     const payload = JSON.stringify({
       cmd: "stop_p2p",
       did,
@@ -241,8 +245,12 @@ export class NativeMediaEngine extends EventEmitter {
     }
   }
 
+  public stopP2p(did: string): void {
+    this.stopP2P(did);
+  }
+
   public stopSession(did: string): void {
-    this.stopP2p(did);
+    this.stopP2P(did);
   }
 
   public stop(): void {

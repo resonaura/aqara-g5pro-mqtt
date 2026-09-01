@@ -17,7 +17,7 @@ import http from "node:http";
 import path from "node:path";
 import { findFreePort } from "./ports.js";
 
-export class FrameHttpServer {
+export class FrameHTTPServer {
   private server: http.Server | null = null;
   private port: number;
   private readonly framesDir: string;
@@ -38,58 +38,58 @@ export class FrameHttpServer {
 
     return new Promise((resolve) => {
       const srv = http.createServer((req, res) => {
-      const url = req.url ?? "/";
+        const url = req.url ?? "/";
 
-      // ── /health ─────────────────────────────────────────────────────────────
-      if (url === "/health" || url === "/health/") {
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("ok");
-        return;
-      }
-
-      // ── /frames/list ────────────────────────────────────────────────────────
-      if (url === "/frames/list" || url === "/frames/list/") {
-        try {
-          const files = readdirSync(this.framesDir).filter(
-            (f) => f.endsWith(".jpg") && statSync(path.join(this.framesDir, f)).size > 0,
-          );
-          const slugs = files.map((f) => f.replace(/\.jpg$/, ""));
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(slugs));
-        } catch {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end("[]");
-        }
-        return;
-      }
-
-      // ── /frame/<slug>, /snapshot/<slug>, /api/cameras/<slug>/snapshot ───────
-      const match =
-        url.match(/^\/frame\/([^/]+)$/) ||
-        url.match(/^\/snapshot\/([^/]+)$/) ||
-        url.match(/^\/api\/cameras\/([^/]+)\/snapshot$/);
-      if (match) {
-        const slug = match[1];
-        const filePath = path.join(this.framesDir, `${slug}.jpg`);
-        if (!existsSync(filePath)) {
-          res.writeHead(404, { "Content-Type": "text/plain" });
-          res.end("Not found");
+        // ── /health ─────────────────────────────────────────────────────────────
+        if (url === "/health" || url === "/health/") {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("ok");
           return;
         }
-        try {
-          const data = readFileSync(filePath);
-          res.writeHead(200, {
-            "Content-Type": "image/jpeg",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Content-Length": data.length,
-          });
-          res.end(data);
-        } catch {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end("Internal error");
+
+        // ── /frames/list ────────────────────────────────────────────────────────
+        if (url === "/frames/list" || url === "/frames/list/") {
+          try {
+            const files = readdirSync(this.framesDir).filter(
+              (f) => f.endsWith(".jpg") && statSync(path.join(this.framesDir, f)).size > 0,
+            );
+            const slugs = files.map((f) => f.replace(/\.jpg$/, ""));
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(slugs));
+          } catch {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end("[]");
+          }
+          return;
         }
-        return;
-      }
+
+        // ── /frame/<slug>, /snapshot/<slug>, /api/cameras/<slug>/snapshot ───────
+        const match =
+          url.match(/^\/frame\/([^/]+)$/) ||
+          url.match(/^\/snapshot\/([^/]+)$/) ||
+          url.match(/^\/api\/cameras\/([^/]+)\/snapshot$/);
+        if (match) {
+          const slug = match[1];
+          const filePath = path.join(this.framesDir, `${slug}.jpg`);
+          if (!existsSync(filePath)) {
+            res.writeHead(404, { "Content-Type": "text/plain" });
+            res.end("Not found");
+            return;
+          }
+          try {
+            const data = readFileSync(filePath);
+            res.writeHead(200, {
+              "Content-Type": "image/jpeg",
+              "Cache-Control": "no-cache, no-store, must-revalidate",
+              "Content-Length": data.length,
+            });
+            res.end(data);
+          } catch {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Internal error");
+          }
+          return;
+        }
 
         // Unknown route
         res.writeHead(404, { "Content-Type": "text/plain" });
@@ -116,3 +116,5 @@ export class FrameHttpServer {
     }
   }
 }
+
+export const FrameHttpServer = FrameHTTPServer;

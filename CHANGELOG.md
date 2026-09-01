@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.6 — SQLite TypeORM Persistence, Oxlint Integration & Addon Build Fix
+
+### 🗄️ SQLite3 & TypeORM Persistence Layer
+- **TypeORM & better-sqlite3**: Replaced file-based JSON state storage with a structured SQLite database (`storage.sqlite`) using TypeORM with `synchronize: true` (no manual migrations required).
+- **Entities**: Defined typed entities for `CameraStateEntity`, `GlobalSettingEntity`, and `RtspPortEntity`.
+- **Zero Data-Loss Auto-Migration**: Legacy `app_state.json`, `p2p_state.json`, and `rtsp_ports.json` are automatically imported into SQLite tables upon first startup.
+- **Oxlint & Code Quality**: Integrated `oxlint` with Prettier and Clang-Format in `lint:all` pipeline for instant TypeScript static analysis (0 warnings, 0 errors).
+- **Tarball Glaze FetchContent**: Switched CMake `FetchContent` to use direct GitHub release tarball URLs, resolving build errors in environments where `git` is absent.
+- **Docker Build Dependencies**: Added `git`, `python3`, and `ca-certificates` to `app/Dockerfile` and root `Dockerfile`.
+- **Repository Cleanup**: Purged old Java signer prototypes (`app/signer/`, 42 MB), deprecated `.so` libraries, obsolete PCAPs, and research markdown notes.
+
 ## v1.5.5 — Stream Watchdog Event Propagation, Self-Healing Auto-Retry & Snapshot Hard-Timeout
 
 ### 🩺 Self-Healing Stream Auto-Recovery

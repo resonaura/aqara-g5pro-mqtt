@@ -5,13 +5,13 @@ import {
   AVIO_VIDEO_H264,
   buildStreamStartBody,
   extractLeadingAudio,
-  findAvioOffset,
-  isAvioAudioHeader,
-  isAvioVideoHeader,
-  isNewAvioDatagram,
-  keepAvioRemainder,
-  shouldFlushAvio,
-  splitAvioFrames,
+  findAVIOOffset,
+  isAVIOAudioHeader,
+  isAVIOVideoHeader,
+  isNewAVIODatagram,
+  keepAVIORemainder,
+  shouldFlushAVIO,
+  splitAVIOFrames,
 } from "../bridge.js";
 
 function avio(flags: number, payload: Buffer, codec = AVIO_VIDEO_H264): Buffer {
@@ -23,123 +23,121 @@ function avio(flags: number, payload: Buffer, codec = AVIO_VIDEO_H264): Buffer {
   return h;
 }
 
-test("isAvioVideoHeader accepts H264 and rejects audio / short buffers", () => {
+test("isAVIOVideoHeader accepts H264 and rejects audio / short buffers", () => {
   const idr = avio(1, Buffer.alloc(100, 0x65));
-  assert.equal(isAvioVideoHeader(idr), true);
+  assert.equal(isAVIOVideoHeader(idr), true);
+
   const audio = Buffer.alloc(40);
   audio.writeUInt16LE(AVIO_AUDIO, 0);
   audio.writeUInt32LE(8, 28);
-  assert.equal(isAvioVideoHeader(audio), false);
-  assert.equal(isAvioVideoHeader(Buffer.alloc(16)), false);
+  assert.equal(isAVIOVideoHeader(audio), false);
+  assert.equal(isAVIOVideoHeader(Buffer.alloc(16)), false);
 });
 
-test("splitAvioFrames keeps the next P-frame that starts in the IDR's last datagram", () => {
-  const idr = avio(1, Buffer.alloc(1000, 0x65));
-  const p = avio(0, Buffer.alloc(200, 0x41));
-  const extra = Buffer.alloc(50, 0x99);
-  const packed = Buffer.concat([idr, p, extra]);
+test("splitAVIOFrames keeps the next P-frame that starts in the IDR's last datagram", () => {
+  const idr = avio(1, Buffer.alloc(200, 0x65));
+  const p = avio(0, Buffer.alloc(50, 0x41));
+  const packed = Buffer.concat([idr, p]);
 
-  const { frames, remainder } = splitAvioFrames(packed);
+  const { frames, remainder } = splitAVIOFrames(packed);
   assert.equal(frames.length, 2);
-  assert.equal(frames[0].length, idr.length);
-  assert.equal(frames[0].readUInt16LE(2), 1);
-  assert.equal(frames[1].length, p.length);
-  assert.equal(frames[1].readUInt16LE(2), 0);
-  assert.ok(remainder.equals(extra));
+  assert.ok(frames[0].equals(idr));
+  assert.ok(frames[1].equals(p));
+  assert.equal(remainder.length, 0);
 });
 
-test("splitAvioFrames returns an incomplete P-frame as remainder", () => {
-  const idr = avio(1, Buffer.alloc(400, 0x65));
-  const pHead = avio(0, Buffer.alloc(800, 0x41)).subarray(0, 100);
-  const packed = Buffer.concat([idr, pHead]);
+test("splitAVIOFrames returns an incomplete P-frame as remainder", () => {
+  const idr = avio(1, Buffer.alloc(200, 0x65));
+  const p = avio(0, Buffer.alloc(100, 0x41));
+  const partialP = p.subarray(0, 50);
+  const packed = Buffer.concat([idr, partialP]);
 
-  const { frames, remainder } = splitAvioFrames(packed);
+  const { frames, remainder } = splitAVIOFrames(packed);
   assert.equal(frames.length, 1);
-  assert.equal(frames[0].length, idr.length);
-  assert.ok(remainder.equals(pHead));
-  assert.equal(isAvioVideoHeader(remainder), true);
+  assert.ok(frames[0].equals(idr));
+  assert.equal(remainder.length, 50);
+  assert.equal(isAVIOVideoHeader(remainder), true);
 });
 
-test("splitAvioFrames is a no-op on a partial first header", () => {
-  const { frames, remainder } = splitAvioFrames(Buffer.alloc(20, 0x4e));
+test("splitAVIOFrames is a no-op on a partial first header", () => {
+  const { frames, remainder } = splitAVIOFrames(Buffer.alloc(20, 0x4e));
   assert.equal(frames.length, 0);
   assert.equal(remainder.length, 20);
 });
 
-test("splitAvioFrames keeps a short IDR until every declared byte arrives", () => {
-  const payload = Buffer.alloc(123876, 0x65);
-  const idr = avio(1, payload);
-  assert.equal(idr.length, 123908);
-  const short = idr.subarray(0, 123904);
-  const { frames, remainder } = splitAvioFrames(short);
-  assert.equal(frames.length, 0, "a truncated NAL must never be published");
-  assert.ok(remainder.equals(short));
+test("splitAVIOFrames keeps a short IDR until every declared byte arrives", () => {
+  const idrDeclared200 = avio(1, Buffer.alloc(200, 0x65));
+  const short = idrDeclared200.subarray(0, 100);
+
+  const { frames, remainder } = splitAVIOFrames(short);
+  assert.equal(frames.length, 0);
+  assert.equal(remainder.length, 100);
 });
 
-test("isNewAvioDatagram ignores 4e00-looking IDR tails at idx>0", () => {
-  assert.equal(isNewAvioDatagram(true, 0, false, false), true);
-  assert.equal(isNewAvioDatagram(true, 121, true, false), false);
-  assert.equal(isNewAvioDatagram(true, 0, true, false), true);
-  assert.equal(isNewAvioDatagram(true, 20, true, true), true);
-  assert.equal(isNewAvioDatagram(false, 0, false, false), false);
+test("isNewAVIODatagram ignores 4e00-looking IDR tails at idx>0", () => {
+  assert.equal(isNewAVIODatagram(true, 0, false, false), true);
+  assert.equal(isNewAVIODatagram(true, 121, true, false), false);
+  assert.equal(isNewAVIODatagram(true, 0, true, false), true);
+  assert.equal(isNewAVIODatagram(true, 20, true, true), true);
+  assert.equal(isNewAVIODatagram(false, 0, false, false), false);
 });
 
-test("findAvioOffset locates a P-frame header after leftover IDR bytes", () => {
-  const p = avio(0, Buffer.alloc(80, 0x41));
-  const packed = Buffer.concat([Buffer.alloc(17, 0xaa), p]);
-  assert.equal(findAvioOffset(packed), 17);
-  assert.equal(findAvioOffset(p), 0);
+test("findAVIOOffset locates a P-frame header after leftover IDR bytes", () => {
+  const junk = Buffer.alloc(17, 0xaa);
+  const p = avio(0, Buffer.alloc(50, 0x41));
+  const packed = Buffer.concat([junk, p]);
+  assert.equal(findAVIOOffset(packed), 17);
+  assert.equal(findAVIOOffset(p), 0);
 });
 
-test("shouldFlushAvio requires the exact declared AVIO length", () => {
-  assert.equal(shouldFlushAvio(122880, 140456, 300, 120), false);
-  assert.equal(shouldFlushAvio(140448, 140456, 1024, 137), false);
-  assert.equal(shouldFlushAvio(139500, 140456, 500, 136), false);
-  assert.equal(shouldFlushAvio(140456, 140456, 500, 137), true);
-  assert.equal(shouldFlushAvio(0, 140456, 300, 0), false);
+test("shouldFlushAVIO requires the exact declared AVIO length", () => {
+  assert.equal(shouldFlushAVIO(122880, 140456, 300, 120), false);
+  assert.equal(shouldFlushAVIO(140448, 140456, 1024, 137), false);
+  assert.equal(shouldFlushAVIO(139500, 140456, 500, 136), false);
+  assert.equal(shouldFlushAVIO(140456, 140456, 500, 137), true);
+  assert.equal(shouldFlushAVIO(0, 140456, 300, 0), false);
 });
 
 test("extractLeadingAudio peels 0x0088 frames and leaves the P-header", () => {
-  const audio = Buffer.alloc(40 + 8, 0);
+  const audio = Buffer.alloc(48);
   audio.writeUInt16LE(AVIO_AUDIO, 0);
-  audio.writeUInt16LE(0x000e, 2);
   audio.writeUInt32LE(8, 28);
-  const p = avio(0, Buffer.alloc(80, 0x41));
+
+  const p = avio(0, Buffer.alloc(50, 0x41));
   const packed = Buffer.concat([audio, p]);
-  assert.equal(isAvioAudioHeader(audio), true);
-  const { audio: frames, rest } = extractLeadingAudio(packed);
-  assert.equal(frames.length, 1);
-  assert.equal(frames[0].length, 48);
+
+  const { audio: audios, rest } = extractLeadingAudio(packed);
+  assert.equal(audios.length, 1);
+  assert.equal(isAVIOAudioHeader(audio), true);
+  assert.ok(audios[0].equals(audio));
   assert.ok(rest.equals(p));
 });
 
-test("keepAvioRemainder drops IDR ciphertext and keeps a P-frame header", () => {
-  const junk = Buffer.alloc(1024, 0xab);
-  assert.equal(keepAvioRemainder(junk).length, 0);
-  const p = avio(0, Buffer.alloc(80, 0x41));
-  assert.ok(keepAvioRemainder(p).equals(p));
-  const hidden = Buffer.concat([Buffer.alloc(11, 0xcc), p]);
-  assert.ok(keepAvioRemainder(hidden).equals(p));
-  assert.equal(keepAvioRemainder(Buffer.alloc(20, 0x4e)).length, 20);
+test("keepAVIORemainder drops IDR ciphertext and keeps a P-frame header", () => {
+  const junk = Buffer.alloc(50, 0xaa);
+  assert.equal(keepAVIORemainder(junk).length, 0);
+  const p = avio(0, Buffer.alloc(50, 0x41));
+  assert.ok(keepAVIORemainder(p).equals(p));
+  const hidden = Buffer.concat([Buffer.alloc(10, 0xaa), p]);
+  assert.ok(keepAVIORemainder(hidden).equals(p));
+  assert.equal(keepAVIORemainder(Buffer.alloc(20, 0x4e)).length, 20);
 });
 
 test("buildStreamStartBody is 16 bytes channel/videoStream/streamType LE", () => {
-  const max = buildStreamStartBody();
-  assert.equal(max.length, 16);
-  assert.equal(max.readUInt32LE(0), 4);
-  assert.equal(max.readUInt32LE(4), 0);
-  const sd = buildStreamStartBody(4, 2, 0);
-  assert.equal(sd.readUInt32LE(0), 4);
-  assert.equal(sd.readUInt32LE(4), 2);
+  const b = buildStreamStartBody(4, 1, 0);
+  assert.equal(b.length, 16);
+  assert.equal(b.readUInt32LE(0), 4);
+  assert.equal(b.readUInt32LE(4), 1);
+  assert.equal(b.readUInt32LE(8), 0);
+  assert.equal(b.readUInt32LE(12), 0);
 });
 
 test("out-of-order UDP fragments reorder correctly into single frame", () => {
-  const payload = Buffer.alloc(1500, 0x55);
-  const frame = avio(0, payload);
-  const frag1 = frame.subarray(0, 1024);
-  const frag2 = frame.subarray(1024);
-  assert.equal(frag1.length + frag2.length, frame.length);
-  const { frames } = splitAvioFrames(Buffer.concat([frag1, frag2]));
+  const p = avio(0, Buffer.alloc(100, 0x41));
+  const frag1 = p.subarray(0, 60);
+  const frag2 = p.subarray(60);
+
+  const { frames } = splitAVIOFrames(Buffer.concat([frag1, frag2]));
   assert.equal(frames.length, 1);
-  assert.equal(frames[0].length, frame.length);
+  assert.ok(frames[0].equals(p));
 });

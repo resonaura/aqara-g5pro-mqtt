@@ -23,17 +23,20 @@ const MSG_USER_CONTROL = 4;
 const MSG_AUDIO = 8;
 const MSG_COMMAND = 20;
 
-export interface RtmpPublishEvent {
+export interface RTMPPublishEvent {
   name: string;
   app: string;
 }
 
-export interface RtmpAudioEvent {
+export interface RTMPAudioEvent {
   name: string;
   adts: Buffer;
 }
 
-export class RtmpIngestServer extends EventEmitter {
+export type RtmpPublishEvent = RTMPPublishEvent;
+export type RtmpAudioEvent = RTMPAudioEvent;
+
+export class RTMPIngestServer extends EventEmitter {
   private server: net.Server | null = null;
   private port: number;
   private connections = new Set<RtmpConnection>();
@@ -82,6 +85,8 @@ export class RtmpIngestServer extends EventEmitter {
     socket.on("error", () => this.connections.delete(conn));
   }
 }
+
+export const RtmpIngestServer = RTMPIngestServer;
 
 class RtmpConnection extends EventEmitter {
   private socket: net.Socket;

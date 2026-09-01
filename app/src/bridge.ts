@@ -68,38 +68,45 @@ export const MSG_ALIVE_ACK = 0xe1;
 export const PPPP_LAN_PORT = 32108;
 export const DRW_MARKER = 0xd1;
 
-export const LUMI_TYPE_LOGIN = 0x1000;
-export const LUMI_TYPE_LOGIN_RESP = 0x1001;
-export const LUMI_TYPE_SESSION_START = 0x1002;
-export const LUMI_TYPE_SESSION_START_RESP = 0x1003;
-export const LUMI_TYPE_KEYFRAME_REQ = 0x1018;
-export const LUMI_TYPE_KEYFRAME_RESP = 0x1019;
-export const LUMI_TYPE_STREAM_START = 0x101c;
-export const LUMI_TYPE_STREAM_START_RESP = 0x101d;
-export const LUMI_TYPE_QUALITY = 0x100e;
-export const LUMI_TYPE_QUALITY_RESP = 0x100f;
-export const LUMI_TYPE_KEEPALIVE = 0x1024;
-export const LUMI_TYPE_KEEPALIVE_RESP = 0x1025;
+import { LumiCmdType } from "./protocol.js";
 
-export const LUMI_TYPE_AUDIO_START = 0x1004;
-export const LUMI_TYPE_AUDIO_START_RESP = 0x1005;
-export const LUMI_TYPE_AUDIO_SEND = 0x1006;
-export const LUMI_TYPE_AUDIO_SEND_RESP = 0x1007;
-export const LUMI_TYPE_AUDIO_STOP = 0x1008;
-export const LUMI_TYPE_TALKBACK_START = 0x100a;
-export const LUMI_TYPE_TALKBACK_START_RESP = 0x100b;
-export const LUMI_TYPE_TALKBACK_STOP = 0x100c;
+export * from "./protocol.js";
+
+// Backwards-compatible numeric aliases
+export const LUMI_TYPE_LOGIN = LumiCmdType.LOGIN_REQ;
+export const LUMI_TYPE_LOGIN_RESP = LumiCmdType.LOGIN_RESP;
+export const LUMI_TYPE_SESSION_START = LumiCmdType.SESSION_START_REQ;
+export const LUMI_TYPE_SESSION_START_RESP = LumiCmdType.SESSION_START_RESP;
+export const LUMI_TYPE_KEYFRAME_REQ = LumiCmdType.KEYFRAME_REQ;
+export const LUMI_TYPE_KEYFRAME_RESP = LumiCmdType.KEYFRAME_RESP;
+export const LUMI_TYPE_STREAM_START = LumiCmdType.STREAM_START_REQ;
+export const LUMI_TYPE_STREAM_START_RESP = LumiCmdType.STREAM_START_RESP;
+export const LUMI_TYPE_QUALITY = LumiCmdType.SET_QUALITY;
+export const LUMI_TYPE_QUALITY_RESP = LumiCmdType.SET_QUALITY_RESP;
+export const LUMI_TYPE_KEEPALIVE = LumiCmdType.KEEPALIVE;
+export const LUMI_TYPE_KEEPALIVE_RESP = LumiCmdType.KEEPALIVE_RESP;
+
+export const LUMI_TYPE_AUDIO_START = LumiCmdType.AUDIO_START;
+export const LUMI_TYPE_AUDIO_START_RESP = LumiCmdType.AUDIO_START_RESP;
+export const LUMI_TYPE_AUDIO_SEND = LumiCmdType.AUDIO_SEND;
+export const LUMI_TYPE_AUDIO_SEND_RESP = LumiCmdType.AUDIO_SEND_RESP;
+export const LUMI_TYPE_AUDIO_STOP = LumiCmdType.AUDIO_STOP;
+export const LUMI_TYPE_TALKBACK_START = LumiCmdType.PTZ_OR_TALK_START;
+export const LUMI_TYPE_TALKBACK_START_RESP = LumiCmdType.TALKBACK_RESP;
+export const LUMI_TYPE_TALKBACK_STOP = LumiCmdType.TALK_STOP;
 
 export const TALKBACK_LEAD_FRAME = Buffer.from([
   0xff, 0xf9, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x00, 0xd0, 0x00, 0x07,
 ]);
 
-export function buildTalkbackPpcsBody(adts: Buffer): Buffer {
+export function buildTalkbackPPCSBody(adts: Buffer): Buffer {
   const body = Buffer.alloc(32 + adts.length);
   body.writeUInt32LE(adts.length, 28);
   adts.copy(body, 32);
   return body;
 }
+
+export const buildTalkbackPpcsBody = buildTalkbackPPCSBody;
 
 export type VideoStreamOption = {
   title: string;
@@ -398,7 +405,7 @@ export class AqaraCameraBridge extends EventEmitter {
     });
 
     const keyHex = this.decryptor?.getKeyHex() || "";
-    engine.startP2p({
+    engine.startP2P({
       did: this.did,
       p2p_id: this.p2pInfo?.p2pId,
       init_string: this.p2pInfo?.initStringApp,
@@ -421,7 +428,7 @@ export class AqaraCameraBridge extends EventEmitter {
     await this.initCloudSession();
     const keyHex = this.decryptor?.getKeyHex() || "";
     const engine = NativeMediaEngine.getInstance();
-    engine.startP2p({
+    engine.startP2P({
       did: this.did,
       p2p_id: this.p2pInfo?.p2pId,
       init_string: this.p2pInfo?.initStringApp,
@@ -492,10 +499,10 @@ export class AqaraCameraBridge extends EventEmitter {
   public sendTalkbackFrame(adts: Buffer): boolean {
     if (!this.talkbackActive) return false;
     if (this.talkFramesSent === 0 && !adts.equals(TALKBACK_LEAD_FRAME)) {
-      const leadBody = buildTalkbackPpcsBody(TALKBACK_LEAD_FRAME);
+      const leadBody = buildTalkbackPPCSBody(TALKBACK_LEAD_FRAME);
       this.sendEncDrw(2, this.talkSeq++, leadBody);
     }
-    const body = buildTalkbackPpcsBody(adts);
+    const body = buildTalkbackPPCSBody(adts);
     this.sendEncDrw(2, this.talkSeq++, body);
     this.talkFramesSent++;
     return true;
@@ -517,6 +524,6 @@ export class AqaraCameraBridge extends EventEmitter {
       engine.off(event, fn);
     }
     this.engineListeners = [];
-    engine.stopP2p(this.did);
+    engine.stopP2P(this.did);
   }
 }
