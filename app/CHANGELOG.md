@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.5.8 — Offline Card Ticker Fix, Keyframe Lifecycle & Backoff Watchdog
+## v1.5.9 — Cold Rebuild Self-Healing & Direct Unicast LAN Discovery
+
+### 🩺 Self-Healing & LAN Discovery Enhancements
+- **Cold Rebuild Self-Healing**: Watchdog reconnection attempt #2+ now executes a full clean cold rebuild of the camera bridge, recreating fresh X25519 cryptographic keypairs, cloud signatures, and native engine state identical to an add-on restart.
+- **Cross-Subnet Direct Unicast LAN Discovery**: Discovery loop now transmits direct unicast `PUNCH` and `LAN_BROADCAST` datagrams directly to `camera_ip:32108`, guaranteeing discovery delivery across VLANs and subnets where standard UDP 255.255.255.255 broadcast is blocked by routers.
+- **Static LAN Port Preservation**: Fixed a regression where `cameraPort` was overwritten with transient UDP ports from active sessions, ensuring subsequent discovery attempts always target the camera's true static LAN listener port `32108`.
 
 ### 🩺 Offline Card & Reconnect Lifecycle Fixes
 - **True Video Frame Verification**: Fixed premature `keyframe` and `stream_started` event emission during P2P session setup in `bridge.ts`. The bridge now waits for actual H.264/HEVC keyframe NALs to arrive from the camera before declaring the stream online.

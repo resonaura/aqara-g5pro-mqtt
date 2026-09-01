@@ -356,8 +356,6 @@ export class AqaraCameraBridge extends EventEmitter {
     registerListener("p2p_connected", (did: string, ip: string, port: number) => {
       if (did === this.did) {
         this.isConnected = true;
-        this.cameraIp = ip;
-        this.cameraPort = port;
         this.emit("connected", { ip, port });
       }
     });

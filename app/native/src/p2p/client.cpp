@@ -400,8 +400,10 @@ void P2PClient::discovery_loop() {
         }
 
         // 3. Direct camera IP / LAN
-        if (!config_.camera_ip.empty() && config_.camera_port > 0) {
-            send_raw_packet(punch_pkt.data(), punch_pkt.size(), camera_addr_);
+        if (!config_.camera_ip.empty()) {
+            int port = (config_.camera_port > 0) ? config_.camera_port : 32108;
+            send_raw_packet(punch_pkt.data(), punch_pkt.size(), config_.camera_ip, port);
+            send_raw_packet(lan_bcast, 4, config_.camera_ip, 32108);
         }
         for (const auto& b : bcasts) {
             send_raw_packet(lan_bcast, 4, b.c_str(), 32108);

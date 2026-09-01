@@ -229,12 +229,20 @@ async function restartCameraStream(
     }
 
     try {
-      if (cameraInfo.bridge) {
+      if (cameraInfo.bridge && state.count < 2) {
         console.log(
           `🔄 [Watchdog:${cameraInfo.device.deviceName}] Resurrecting P2P tunnel while preserving RTSP server & clients (attempt #${state.count})...`,
         );
         await cameraInfo.bridge.reconnect();
       } else {
+        console.log(
+          `🔄 [Watchdog:${cameraInfo.device.deviceName}] Performing clean cold rebuild of camera bridge and session (attempt #${state.count})...`,
+        );
+        if (cameraInfo.bridge) {
+          cameraInfo.bridge.stop();
+          cameraInfo.bridge = undefined;
+        }
+        bridgeStartPromises.delete(did);
         await ensureCameraBridge(cameraInfo);
       }
       console.log(
