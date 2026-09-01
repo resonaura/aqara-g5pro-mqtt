@@ -12,6 +12,7 @@ namespace aqara {
  */
 enum class PpcsMsgType : uint8_t {
     HELLO = 0x00,          // Initial discovery handshake probe
+    CLOSE = 0x06,          // Clean session termination / teardown
     QUERY = 0x20,          // Local LAN endpoint query request
     LAN_BROADCAST = 0x30,  // LAN subnet broadcast probe
     PUNCH = 0x41,          // UDP hole-punching packet
@@ -41,6 +42,7 @@ enum class LumiCmdType : uint32_t {
     LOGIN_RESP = 0x1001,          // Camera authentication approval response (Login OK)
     SESSION_START_REQ = 0x1002,   // Initiate live stream session on channel 0
     SESSION_START_RESP = 0x1003,  // Stream pipeline ready acknowledgment
+    SESSION_STOP = 0x1004,        // Terminate active live stream session cleanly
     PTZ_OR_TALK_START = 0x100A,   // PTZ motor control (JSON) or Start Two-Way Talkback (binary)
     TALKBACK_RESP = 0x100B,       // Talkback audio channel prepared confirmation
     TALK_STOP = 0x100C,           // Stop Two-Way Talkback audio transmission

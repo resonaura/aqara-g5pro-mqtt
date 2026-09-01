@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.6.1 — Unified Snapshotter & Watchdog Safeguards
+## v1.6.2 — TUTK Clean Teardown, Keyframe Throttling & Full Jitter Backoff
+
+### 🚀 P2P Engine & Resilience Improvements
+- **Guaranteed Session Teardown (`0xF1 0x06 CLOSE` & `0x1004 SESSION_STOP`)**: `P2PClient::stop()` now immediately sends `0x1004 SESSION_STOP` and `PpcsMsgType::CLOSE` (`0xF1 0x06`) to the active session endpoint and static port `32108` before tearing down the UDP socket. This releases camera session slots instantly and prevents ghost session exhaustion locks on camera hardware.
+- **Hardware Encoder Protection (Keyframe Token Bucket)**: Rate-limited `0x1018 Keyframe Request` to at most once per 1500ms, preventing encoder storms and camera daemon crashes during burst packet loss.
+- **Full Jitter Exponential Backoff**: Reconnection supervisor now incorporates full random jitter into exponential backoff calculations, preventing network and cloud synchronization stampedes across multiple cameras.
 
 ### 🛡️ Unified Reconnect & Snapshot Safeguards
 - **Clean Snapshotter Offline Suppression**: `FrameSnapshotter` is now immediately paused and stopped when a camera enters offline reconnection mode. This completely prevents background `ffmpeg` processes from attempting to capture frames from empty/stalled streams, eliminating `Output file #0 does not contain any stream` log noise and CPU waste.

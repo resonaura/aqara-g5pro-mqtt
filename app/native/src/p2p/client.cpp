@@ -148,7 +148,23 @@ void P2PClient::stop() {
         return;
     running_ = false;
 
+    // 1. Send 0x1004 SESSION_STOP on channel 0 if session was started
+    if (is_connected_) {
+        auto stop_frame = PPCSCipher::build_lumi_frame(LumiCmdType::SESSION_STOP, nullptr, 0, cmd_seq_++);
+        send_enc_drw(0, ch0_seq_++, stop_frame.data(), stop_frame.size());
+    }
+
+    // 2. Send PPCS CLOSE (0xF1 0x06) to release camera slot immediately (prevent ghost session locks)
     if (udp_fd_ >= 0) {
+        auto close_pkt = PPCSCipher::build_pppp(PpcsMsgType::CLOSE);
+        PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), close_pkt.data(), close_pkt.size());
+        if (camera_addr_.sin_port != 0) {
+            send_raw_packet(close_pkt.data(), close_pkt.size(), camera_addr_);
+        }
+        if (!config_.camera_ip.empty()) {
+            send_raw_packet(close_pkt.data(), close_pkt.size(), config_.camera_ip, 32108);
+        }
+        shutdown(udp_fd_, SHUT_RDWR);
         close(udp_fd_);
         udp_fd_ = -1;
     }
@@ -279,6 +295,12 @@ void P2PClient::send_login_if_due(int64_t min_interval_ms) {
 }
 
 void P2PClient::request_keyframe() {
+    const int64_t now = current_time_ms();
+    int64_t prev = last_kf_req_sent_ms_.load();
+    if (prev != 0 && now - prev < 1500) {
+        return;  // Rate limit: at most 1 IDR request every 1.5s to prevent encoder stress
+    }
+    last_kf_req_sent_ms_ = now;
     auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::KEYFRAME_REQ, nullptr, 0, cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
 }

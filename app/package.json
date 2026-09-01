@@ -1,7 +1,7 @@
 {
   "name": "aqara-g5pro-mqtt",
   "description": "Aqara Cameras Local RTSP & MQTT Integration",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "type": "module",
   "private": true,
   "scripts": {

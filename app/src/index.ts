@@ -154,6 +154,11 @@ function cameraBySlug(name: string) {
 
 const activeReconnections = new Set<string>();
 
+function calculateFullJitter(attempt: number, baseMs = 15_000, maxMs = 60_000): number {
+  const cap = Math.min(maxMs, baseMs * Math.pow(1.4, Math.min(Math.max(attempt - 1, 0), 4)));
+  return Math.floor(cap * 0.75 + Math.random() * (cap * 0.25));
+}
+
 async function restartCameraStream(
   cameraInfo: (typeof cameraData)[number],
   reason: string,
@@ -171,8 +176,8 @@ async function restartCameraStream(
     const now = Date.now();
     const state = reconnectAttempts.get(did) || { count: 0, lastAttempt: 0 };
 
-    // Cooldown with exponential backoff if camera is failing to reconnect
-    const cooldown = Math.min(15_000 * Math.pow(1.4, Math.min(state.count - 1, 4)), 60_000);
+    // Cooldown with exponential backoff & full jitter if camera is failing to reconnect
+    const cooldown = calculateFullJitter(state.count);
     if (cameraInfo.bridge && state.lastAttempt > 0 && now - state.lastAttempt < cooldown) {
       console.log(
         `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnect on cooldown (${Math.round((cooldown - (now - state.lastAttempt)) / 1000)}s remaining, attempt #${state.count})...`,
