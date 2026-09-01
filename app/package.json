@@ -1,7 +1,7 @@
 {
   "name": "aqara-g5pro-mqtt",
   "description": "Aqara Cameras Local RTSP & MQTT Integration",
-  "version": "1.5.6",
+  "version": "1.5.7",
   "type": "module",
   "private": true,
   "scripts": {
@@ -25,6 +25,7 @@
     "test": "node --import tsx --test src/tests/*.test.ts"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.3.0",
     "clang-format": "^1.8.0",
     "inquirer": "^8.2.7",
@@ -37,7 +38,7 @@
   "packageManager": "pnpm@11.21.0",
   "dependencies": {
     "axios": "^1.11.0",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^17.2.1",
     "mqtt": "^5.14.0",
     "reflect-metadata": "^0.2.2",

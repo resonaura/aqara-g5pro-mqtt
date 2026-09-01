@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.7 — Protocol Enums, Abbreviation Standardization & Docker PNPM Pipeline
+
+### 📡 Strongly-Typed Protocol Enums & Documentation
+- **PPCS & Lumi Protocol Headers**: Extracted all magic byte codes into typed enums `PpcsMsgType` and `LumiCmdType` across C++ (`protocol.hpp`) and TypeScript (`protocol.ts`), with detailed documentation for every opcode (`0x1000` Login, `0x1001` Login OK, `0x1002`/`0x1003` Session Init, `0x100A` PTZ/Talk Start, `0x100B` Talkback Ready, `0x100C` Talk Stop, `0x100E` Resolution Switch, `0x1018` Keyframe Request, `0x101C` Stream Request).
+- **Abbreviation Standardization**: Standardized all acronyms across C++ and TypeScript to uppercase (`PPCS`, `P2P`, `RTSP`, `RTMP`, `HTTP`, `MQTT`, `PTZ`, `SD`, `AVIO`).
+
+### 🐳 Home Assistant Supervisor & Docker Build
+- **Pure PNPM Containerization**: Switched `app/Dockerfile` to `corepack` with `pnpm@11.21.0` and `--frozen-lockfile` layer caching, eliminating `npm` peer-dependency resolution errors (`ERESOLVE`) on `better-sqlite3` and `typeorm`.
+- **Prebuild Approval**: Configured `pnpm-workspace.yaml` `allowBuilds: better-sqlite3: true` for prebuilt native sqlite bindings.
+- **Root Scripts Parity (DRY)**: Synchronized all workspace root npm scripts 1:1 with `app/package.json`.
+- **Gitignore Cleanliness**: Added auto-generated build files (`compile_commands.json`, `*.sqlite*`) to `.gitignore`.
+
 ## v1.5.6 — SQLite TypeORM Persistence, Oxlint Integration & Addon Build Fix
 
 ### 🗄️ SQLite3 & TypeORM Persistence Layer
