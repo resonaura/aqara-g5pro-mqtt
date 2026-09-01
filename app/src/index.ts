@@ -201,6 +201,12 @@ async function restartCameraStream(
       },
     });
 
+    // Stop snapshotter while offline so ffmpeg is not executed on an empty/stalled stream
+    if (cameraInfo.snapshotter) {
+      cameraInfo.snapshotter.stop();
+      cameraInfo.snapshotter = undefined;
+    }
+
     // Check if still wanted ON in state
     const p2pState = await loadP2PState();
     if (p2pState[did] === false) {
@@ -210,10 +216,6 @@ async function restartCameraStream(
       if (cameraInfo.bridge) {
         cameraInfo.bridge.stop();
         cameraInfo.bridge = undefined;
-      }
-      if (cameraInfo.snapshotter) {
-        cameraInfo.snapshotter.stop();
-        cameraInfo.snapshotter = undefined;
       }
       OfflineCardManager.getInstance().setOffline({
         slug,
@@ -347,7 +349,6 @@ async function ensureCameraBridge(
     bridge.on("rtsp_ready", (url) => {
       console.log(`📹 [P2P RTSP] ${cameraInfo.device.deviceName} stream ready at ${url}`);
       updateStreamEntities();
-      startSnapshotter();
     });
 
     bridge.on("keyframe", () => {
@@ -375,7 +376,6 @@ async function ensureCameraBridge(
     try {
       await bridge.start();
       updateStreamEntities();
-      startSnapshotter();
       return bridge;
     } catch (err) {
       bridge.stop();

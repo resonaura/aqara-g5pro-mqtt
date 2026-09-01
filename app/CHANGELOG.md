@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.6.0 — Guaranteed Fresh Key Generation & IPC Deadlock Prevention
+## v1.6.1 — Unified Snapshotter & Watchdog Safeguards
+
+### 🛡️ Unified Reconnect & Snapshot Safeguards
+- **Clean Snapshotter Offline Suppression**: `FrameSnapshotter` is now immediately paused and stopped when a camera enters offline reconnection mode. This completely prevents background `ffmpeg` processes from attempting to capture frames from empty/stalled streams, eliminating `Output file #0 does not contain any stream` log noise and CPU waste.
+- **Strict Keyframe-Gated Snapshot Activation**: Snapshot capture is now strictly gated on confirmed video keyframe arrival (`bridge.on("keyframe")`), rather than premature `rtsp_ready` events.
+- **Per-Camera Total Isolation**: All watchdog states, cooldown locks, reconnection attempts, and offline card renders are fully scoped per camera `did`, guaranteeing that issues or reconnections on one camera never affect or block any other camera in the system.
 
 ### 🔑 Cryptographic & Self-Healing Fixes
 - **Verified Fresh Key Generation**: Explicitly logs every freshly generated X25519 keypair and Aqara Cloud signature timestamp on every reconnect attempt (`bridge.reconnect()`), ensuring keys are always fresh when reviving dropped camera sessions.
