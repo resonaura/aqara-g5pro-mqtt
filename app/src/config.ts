@@ -5,8 +5,11 @@ export const envSchema = z.object({
 
   // Aqara API
   AQUARA_URL: z.string().url().default("https://aiot-rpc-usa.aqara.com"),
+  AQARA_URL: z.string().url().optional(),
   APPID: z.string().min(8).default("444c476ef7135e53330f46e7"),
   TOKEN: z.string().min(16).optional().or(z.literal("")),
+  USER_ID: z.string().optional(),
+  PHONE_ID: z.string().optional(),
   AQARA_USER: z.string().optional(),
   AQARA_PASS: z.string().optional(),
 

@@ -24,7 +24,7 @@ While initially created for the **Aqara Camera Hub G5 Pro**, the architecture is
 | **Aqara Camera Hub G3** | `lumi.camera.acn001` | ✅ 2K / 1080p | ✅ | ✅ Pan / Tilt | — | 🧪 Compatible |
 | **Aqara Camera Hub G2H Pro** | `lumi.camera.acn004` | ✅ 1080p | ✅ | — (Fixed) | — | 🧪 Compatible |
 | **Aqara Camera Hub G2H** | `lumi.camera.gwac02/03` | ✅ 1080p | ✅ | — (Fixed) | — | 🧪 Compatible |
-| **Aqara Smart Video Doorbell G4** | `lumi.camera.acn005` | ✅ 1080p | ✅ | — (Fixed) | — | 🧪 Compatible |
+| **Aqara Smart Video Doorbell G4** | `lumi.camera.agl002` / `lumi.camera.acn005` | ✅ 1080p | ✅ | — (Fixed) | — | 🧪 Compatible |
 
 > 💡 **Have a different model?** See our [🤝 Collaboration & Device Testing](#-collaboration--device-testing) section!
 
@@ -131,6 +131,7 @@ pnpm start
 | `AQARA_PASS` | — | Aqara account password |
 | `AQUARA_URL` | `https://aiot-rpc-usa.aqara.com` | Aqara Cloud region endpoint |
 | `TOKEN` | — | Direct session token (if credentials are not used) |
+| `PHONE_ID` | *(auto-generated UUID)* | Bound client device UUID for Aqara Cloud session persistence |
 | `MQTT_URL` | `mqtt://localhost:1883` | MQTT Broker address |
 | `MQTT_USER` | — | MQTT username |
 | `MQTT_PASS` | — | MQTT password |

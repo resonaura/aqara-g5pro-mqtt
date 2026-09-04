@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { AqaraPullDevicesResponse, AqaraResponse, Device, MQTTDevice } from "./types.js";
 
-const PHONE_ID = uuidv4().toUpperCase();
+const PHONE_ID = process.env.PHONE_ID || uuidv4().toUpperCase();
 
 // Публичные ключи подписи приложения Aqara Home (Android)
 const APP_ID = process.env.APPID || "444c476ef7135e53330f46e7";
@@ -30,7 +30,7 @@ function aqaraSign(opts: { nonce: string; time: string; token?: string; body?: s
 }
 
 export const api = axios.create({
-  baseURL: process.env.AQUARA_URL || "https://aiot-rpc-usa.aqara.com",
+  baseURL: process.env.AQUARA_URL || process.env.AQARA_URL || "https://aiot-rpc-usa.aqara.com",
   headers: {
     "Content-Type": "application/json; charset=utf-8",
     lang: "en",
@@ -125,8 +125,10 @@ export async function getDevice(id: string): Promise<Device> {
 export async function getCameras(): Promise<Device[]> {
   const response = await getDevices();
 
-  if (!response.result || !response.result.devices) {
-    console.log("⚠️ No devices found in API response");
+  if (response.code !== 0 || !response.result || !response.result.devices) {
+    console.warn(
+      `⚠️ Aqara device query returned code=${response.code}: ${response.message || "No devices found in API response"}`,
+    );
     return [];
   }
 
