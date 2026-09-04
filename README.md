@@ -1,9 +1,10 @@
-# 🚀 Universal Aqara Cameras Bridge & Home Assistant Integration
+# <img src="icon.png" width="64" height="64" alt="Aqara Bridge Icon" style="vertical-align: middle; margin-right: 10px;" /> Universal Aqara Cameras Bridge & Home Assistant Integration
 
-[![Version](https://img.shields.io/badge/version-1.5.5-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.2-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20Discovery-orange.svg)](https://www.home-assistant.io/)
 [![C++17 Engine](https://img.shields.io/badge/Native%20Engine-C%2B%2B17-00599C.svg)](app/native)
+[![GHCR Image](https://img.shields.io/badge/Docker-GHCR-2496ED?logo=docker&logoColor=white)](https://github.com/resonaura/aqara-g5pro-mqtt/pkgs/container/aqara-g5pro-mqtt)
 
 A high-performance bridge and streaming engine connecting **Aqara Cameras** to **Home Assistant** via **MQTT**, **Local RTSP**, and **2-Way Audio Talkback (RTMP)**.
 
