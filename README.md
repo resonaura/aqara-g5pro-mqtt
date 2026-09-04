@@ -2,7 +2,7 @@
 
 # Universal Aqara Cameras Bridge & Home Assistant Integration
 
-[![Version](https://img.shields.io/badge/version-1.6.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.3-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Build & Publish](https://github.com/resonaura/aqara-g5pro-mqtt/actions/workflows/publish.yaml/badge.svg)](https://github.com/resonaura/aqara-g5pro-mqtt/actions/workflows/publish.yaml)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20Discovery-orange.svg)](https://www.home-assistant.io/)
