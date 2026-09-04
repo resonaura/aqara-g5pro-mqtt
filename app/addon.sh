@@ -9,7 +9,7 @@ if bashio::services.available mqtt ; then
   export SYSTEM_MQTT_PASS="$(bashio::services mqtt 'password')"
 fi
 
-# Читаем user config
+# Read user configuration
 USERNAME=$(jq -r '.username' $CONFIG_PATH)
 PASSWORD=$(jq -r '.password' $CONFIG_PATH)
 AREA=$(jq -r '.area' $CONFIG_PATH)
@@ -19,7 +19,7 @@ USER_MQTT_PASS=$(jq -r '.mqtt_pass // empty' $CONFIG_PATH)
 POLL_INTERVAL=$(jq -r '.poll_interval' $CONFIG_PATH)
 LOG_LEVEL=$(jq -r '.log_level' $CONFIG_PATH)
 
-# Если в конфиге ничего не указано → fallback на Supervisor
+# Fallback to Supervisor MQTT service if not specified in options
 if [ -n "$USER_MQTT_URL" ]; then
   MQTT_URL="$USER_MQTT_URL"
 else
@@ -65,6 +65,12 @@ if needs_regen; then
   echo "CONFIG_HASH=$HASH" >> "$ENV_FILE"
 else
   echo "✅ Existing .env is valid and matches config, skipping setup"
+fi
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  source "$ENV_FILE"
+  set +a
 fi
 
 echo "🚀 Starting Aqara G5 Pro integration..."

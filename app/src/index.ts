@@ -1,6 +1,4 @@
-import dotenv from "dotenv";
-dotenv.config();
-
+import "dotenv/config";
 import path from "path";
 import {
   aqaraDeviceToMQTT,
@@ -46,7 +44,7 @@ if (process.env.NODE_ENV !== "production") {
   await generateEnvExample();
 }
 
-// Автологин по email/password, если TOKEN не задан или устарел
+// Auto-login using email/password if TOKEN is not set or expired
 if (process.env.AQARA_USER && process.env.AQARA_PASS) {
   console.log("🔑 Logging in with Aqara credentials...");
   try {
@@ -57,7 +55,7 @@ if (process.env.AQARA_USER && process.env.AQARA_PASS) {
   }
 }
 
-// Получаем все камеры
+// Discover all cameras
 let cameras = await getCameras();
 if (cameras.length === 0 && process.env.AQARA_USER && process.env.AQARA_PASS) {
   console.log("🔄 Retrying login and camera discovery...");
@@ -73,7 +71,7 @@ if (cameras.length === 0) {
   process.exit(1);
 }
 
-// Подготавливаем данные для всех камер
+// Prepare camera metadata and device contexts
 const cameraData: Array<{
   device: Device;
   mqttDevice: MQTTDevice;
@@ -471,7 +469,7 @@ client.on("connect", async () => {
 
   const savedP2pState = await loadP2PState();
 
-  // Публикуем discovery для всех камер
+  // Publish discovery for all cameras
   cameraData.forEach(async ({ mqttDevice, hasSpotlight, device }, idx) => {
     const slug = slugMap[device.did];
     const bridgeHost = process.env.BRIDGE_HOST || getLocalIpv4();
@@ -543,7 +541,7 @@ client.on("connect", async () => {
     publishCameraDiscovery(client, mqttDevice, p2pRtspUrl);
   });
 
-  // Подписываемся на команды для всех камер
+  // Subscribe to control topics for all cameras
   cameraData.forEach(({ mqttDevice }) => {
     client.subscribe(`homeassistant/+/${mqttDevice.id}/+/set`);
   });
@@ -618,7 +616,7 @@ client.on("message", async (topic, msg) => {
   const [_, domain, deviceId, attr] = topic.split("/");
   const value = msg.toString();
 
-  // Находим камеру по ID
+  // Find camera by device ID
   const cameraInfo = cameraData.find(({ mqttDevice }) => mqttDevice.id === deviceId);
   if (!cameraInfo) {
     console.error(`❌ Unknown device ID: ${deviceId}`);
@@ -626,7 +624,7 @@ client.on("message", async (topic, msg) => {
   }
 
   const subjectId = cameraInfo.device.did;
-  // Только важные события в лог, остальное шум при опросе
+  // Log significant control events; filter high-frequency poll noise
   if (
     attr === "p2p_stream" ||
     attr === "talkback" ||
@@ -712,7 +710,7 @@ client.on("message", async (topic, msg) => {
   }
 });
 
-// === RTSP STREAM URLS (Официальный / облачный RTSP URL) ===
+// === RTSP STREAM URLS (Official / cloud RTSP URL) ===
 const QUALITY_ORDER = ["1520p", "1080p", "720p", "360p"];
 
 const lastPublishedValues = new Map<string, string>();

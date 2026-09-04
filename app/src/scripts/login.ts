@@ -1,5 +1,6 @@
-// Получение TOKEN через email/password и проверка списка устройств.
-// Использование: AQARA_USER=... AQARA_PASS=... npm run login
+// Fetch TOKEN via email/password and verify device list.
+// Usage: AQARA_USER=... AQARA_PASS=... pnpm run login
+import "dotenv/config";
 import { login, getDevices } from "../aqara.js";
 
 const user = process.env.AQARA_USER;

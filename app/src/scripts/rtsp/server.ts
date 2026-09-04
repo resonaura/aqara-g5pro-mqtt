@@ -1,4 +1,4 @@
-import { config } from "dotenv";
+import "dotenv/config";
 import {
   getCameras,
   getCameraStreamQualities,
@@ -11,8 +11,6 @@ import {
 import { AqaraCameraBridge, getLocalIpv4 } from "../../bridge.js";
 import { findFreePortRange, writeRtspPortMap, type RtspPortEntry } from "../../ports.js";
 import { assignUniqueSlugs } from "../../slug.js";
-
-config();
 
 async function main() {
   console.log("====================================================");

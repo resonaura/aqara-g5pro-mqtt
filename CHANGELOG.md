@@ -1,8 +1,10 @@
 # Changelog
 
-## v1.6.3 — Session Phone ID Persistence & Multi-Model Compatibility
+## v1.6.3 — Session Phone ID Persistence, Regional Endpoints & Multi-Model Compatibility
 
 ### 🐛 Bug Fixes & Session Persistence
+- **Regional Cloud Endpoint Resolution**: Fixed an ES Module evaluation timing issue where `axios.create` evaluated `baseURL` before `dotenv` finished injecting `.env` variables, which inadvertently caused queries for non-US regions (e.g. `rpc-au.aqara.com`, `rpc-ger.aqara.com`, `rpc-ru.aqara.com`) to fall back to the US cloud endpoint. `api` interceptors and `AqaraCameraBridge` now dynamically resolve `AQUARA_URL` on each request and instantiation.
+- **Addon Environment Sourcing**: Updated `addon.sh` to explicitly source and export `/usr/src/app/.env` before launching the Node daemon, guaranteeing environment variables are present before module evaluation.
 - **Cloud Session Binding Persistence (`PHONE_ID`)**: Saved generated `PHONE_ID` to `.env` during `setup.ts` and loaded `process.env.PHONE_ID` in the main runtime engine. Aqara Cloud binds user authentication tokens to the specific client `phoneid`; keeping the same `PHONE_ID` across setup and daemon runs prevents token invalidation and device query rejections.
 - **Account Credentials in `.env`**: Persisted `AQARA_USER` and `AQARA_PASS` into generated `.env` to enable automatic background re-authentication if the session token expires.
 - **Explicit API Error Reporting in `getCameras()`**: `getCameras()` now checks `response.code !== 0` and logs the exact Aqara API error code and message instead of silently reporting zero devices.

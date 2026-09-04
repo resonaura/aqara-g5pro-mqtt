@@ -17,7 +17,7 @@ export interface EntityConfig {
   icon: string;
   deviceClass?: string;
   unit?: string;
-  command?: boolean; // если поддерживает запись
+  command?: boolean; // whether write/command is supported
 }
 
 export interface AqaraPullDevicesResponse {

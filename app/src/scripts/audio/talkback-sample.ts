@@ -1,13 +1,10 @@
+import "dotenv/config";
 import { execSync } from "child_process";
-import { config } from "dotenv";
 import * as fs from "fs";
 import * as path from "path";
 import { getCameras, getToken, login } from "../../aqara.js";
 import { splitAdts } from "../../audio.js";
 import { AqaraCameraBridge } from "../../bridge.js";
-
-config({ path: path.resolve(process.cwd(), ".env") });
-config({ path: path.resolve(process.cwd(), "app/.env") });
 
 process.env.DEBUG = process.env.DEBUG || "1";
 

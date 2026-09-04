@@ -1,7 +1,5 @@
+import "dotenv/config";
 import { login, getCameras, api } from "../../aqara.js";
-import { config } from "dotenv";
-
-config();
 
 async function main() {
   if (process.env.AQARA_USER && process.env.AQARA_PASS) {

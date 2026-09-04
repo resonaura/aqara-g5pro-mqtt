@@ -1,7 +1,7 @@
 import { MqttClient } from "mqtt";
 import { MQTTDevice } from "./types.js";
 
-// Событийные атрибуты детекции: смена timeStamp любого из них = движение
+// Event detection attributes: a change in timeStamp of any of these indicates motion
 export const EVENT_ATTRS = [
   "detect_human_event",
   "detect_pets_event",
@@ -17,9 +17,9 @@ export const EVENT_ATTRS = [
 const RESET_SECONDS = Number(process.env.MOTION_RESET ?? 30);
 
 type CameraKey = string;
-// last seen timeStamp/value по каждому атрибуту
+// Last seen timeStamp/value per attribute
 const lastSeen = new Map<string, { ts: number; value: string }>();
-// активное движение + таймер сброса
+// Active motion state and reset timers
 const motionOn = new Map<CameraKey, boolean>();
 const offTimers = new Map<CameraKey, NodeJS.Timeout>();
 
@@ -79,7 +79,7 @@ export function processEventAttrs(
     });
   }
 
-  // перезапускаем таймер сброса
+  // Restart the reset timer
   const old = offTimers.get(mqttDevice.id);
   if (old) clearTimeout(old);
   offTimers.set(

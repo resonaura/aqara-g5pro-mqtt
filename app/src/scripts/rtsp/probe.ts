@@ -1,6 +1,5 @@
+import "dotenv/config";
 import { execFile } from "child_process";
-import { config } from "dotenv";
-import * as path from "path";
 import { promisify } from "util";
 import {
   getCameras,
@@ -11,9 +10,6 @@ import {
   pickMaxStreamQuality,
 } from "../../aqara.js";
 import { AqaraCameraBridge } from "../../bridge.js";
-
-config({ path: path.resolve(process.cwd(), ".env") });
-config({ path: path.resolve(process.cwd(), "app/.env") });
 
 process.env.DEBUG = process.env.DEBUG || "1";
 

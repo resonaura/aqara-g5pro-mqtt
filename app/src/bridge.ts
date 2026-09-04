@@ -294,9 +294,9 @@ export class AqaraCameraBridge extends EventEmitter {
     this.p2pQualityChannel =
       typeof options.p2pQualityChannel === "number" ? options.p2pQualityChannel : 0;
     this.cameraIp = options.cameraIp || null;
-    this.cameraPort = options.cameraPort || 0;
-    this.baseUrl = options.baseUrl || DEFAULT_CONFIG.BASE_URL;
-    this.appId = options.appId || DEFAULT_CONFIG.APP_ID;
+    this.baseUrl =
+      options.baseUrl || process.env.AQUARA_URL || process.env.AQARA_URL || DEFAULT_CONFIG.BASE_URL;
+    this.appId = options.appId || process.env.APPID || DEFAULT_CONFIG.APP_ID;
     this.appKey = options.appKey || DEFAULT_CONFIG.APP_KEY;
     this.rtspPort = options.rtspPort || DEFAULT_CONFIG.RTSP_PORT;
     this.rtspPath = options.rtspPath;

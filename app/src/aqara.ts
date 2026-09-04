@@ -3,10 +3,22 @@ import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { AqaraPullDevicesResponse, AqaraResponse, Device, MQTTDevice } from "./types.js";
 
-const PHONE_ID = process.env.PHONE_ID || uuidv4().toUpperCase();
+let cachedPhoneId: string | undefined;
 
-// Публичные ключи подписи приложения Aqara Home (Android)
-const APP_ID = process.env.APPID || "444c476ef7135e53330f46e7";
+export function getPhoneId(): string {
+  if (process.env.PHONE_ID) return process.env.PHONE_ID;
+  if (!cachedPhoneId) cachedPhoneId = uuidv4().toUpperCase();
+  return cachedPhoneId;
+}
+
+export function getAppId(): string {
+  return process.env.APPID || "444c476ef7135e53330f46e7";
+}
+
+export function getBaseUrl(): string {
+  return process.env.AQUARA_URL || process.env.AQARA_URL || "https://aiot-rpc-usa.aqara.com";
+}
+
 const APP_KEY = "uOJy0qmKwXj6aHUB2KQEIJuXHMDVTAJi";
 
 export function getToken(): string {
@@ -22,7 +34,8 @@ function md5(s: string): string {
 }
 
 function aqaraSign(opts: { nonce: string; time: string; token?: string; body?: string }): string {
-  let pre = `Appid=${APP_ID}&Nonce=${opts.nonce}&Time=${opts.time}`;
+  const appId = getAppId();
+  let pre = `Appid=${appId}&Nonce=${opts.nonce}&Time=${opts.time}`;
   if (opts.token) pre += `&Token=${opts.token}`;
   if (opts.body) pre += `&${opts.body}`;
   pre += `&${APP_KEY}`;
@@ -30,20 +43,21 @@ function aqaraSign(opts: { nonce: string; time: string; token?: string; body?: s
 }
 
 export const api = axios.create({
-  baseURL: process.env.AQUARA_URL || process.env.AQARA_URL || "https://aiot-rpc-usa.aqara.com",
   headers: {
     "Content-Type": "application/json; charset=utf-8",
     lang: "en",
     "app-version": "6.1.6",
     "sys-type": "1",
     "sys-version": "14",
-    "phone-model": "Pixel 7",
-    phoneid: PHONE_ID,
-    appid: APP_ID,
+    "phone-model": "NodeSetup",
   },
 });
 
 api.interceptors.request.use((config) => {
+  config.baseURL = getBaseUrl();
+  config.headers["phoneid"] = getPhoneId();
+  config.headers["appid"] = getAppId();
+
   const time = Date.now().toString();
   const nonce = crypto.randomBytes(16).toString("hex").toUpperCase();
   let body = "";
@@ -54,15 +68,17 @@ api.interceptors.request.use((config) => {
   } else if (config.data && typeof config.data === "string" && config.data.length > 0) {
     body = config.data;
   } else if (config.data && typeof config.data === "object") {
-    // axios сериализует объект позже — для подписи нужна точная строка запроса
+    // axios serializes object later — exact string is required for signing
     body = JSON.stringify(config.data);
     config.data = body;
   }
   config.headers["Time"] = time;
   config.headers["Nonce"] = nonce;
-  config.headers["Sign"] = aqaraSign({ nonce, time, token: getToken(), body });
-  if (getToken()) config.headers["Token"] = getToken();
-  if (getUserId()) config.headers["Userid"] = getUserId();
+  const isLogin = config.url?.includes("/user/login");
+  const token = isLogin ? undefined : getToken();
+  config.headers["Sign"] = aqaraSign({ nonce, time, token, body });
+  if (token) config.headers["Token"] = token;
+  if (getUserId() && !isLogin) config.headers["Userid"] = getUserId();
   return config;
 });
 
@@ -88,7 +104,7 @@ rZzBHsMuBwA4LQdxBwIDAQAB
     encryptType: 2,
     password: encrypted,
   });
-  // Логин выполняется без Token в подписи
+  // Login is performed without Token in the signature
   const time = Date.now().toString();
   const nonce = crypto.randomBytes(16).toString("hex").toUpperCase();
   const res = await api.post("/app/v1.0/lumi/user/login", body, {
@@ -144,7 +160,7 @@ export async function checkDeviceCapabilities(
   subjectId: string,
 ): Promise<{ hasSpotlight: boolean }> {
   try {
-    // Проверяем наличие spotlight через попытку получить атрибуты
+    // Check spotlight capability by querying attributes
     const res = await queryAttrs(["white_light_enable", "white_light_level"], subjectId);
     const hasSpotlight =
       res.result &&
