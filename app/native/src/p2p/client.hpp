@@ -70,6 +70,7 @@ private:
 
     std::vector<uint8_t> ppcs_key_;
     std::vector<uint8_t> punch_buf_;
+    std::vector<std::string> master_servers_;
 
     int udp_fd_ = -1;
     std::atomic<bool> running_{false};

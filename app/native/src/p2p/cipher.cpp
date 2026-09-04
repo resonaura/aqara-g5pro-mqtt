@@ -151,4 +151,91 @@ std::vector<uint8_t> PPCSCipher::build_talkback_ppcs_body(const uint8_t* adts, s
     return body;
 }
 
+// 54-byte lookup table extracted from libPPCS_API.so (cs2p2p_PPPP_DecodeString)
+static const uint8_t INITSTRING_LUT[54] = {
+    0x49, 0x59, 0x43, 0x3d, 0xb5, 0xbf, 0x6d, 0xa3, 0x47, 0x53, 0x4f, 0x61, 0x65, 0xe3, 0x71, 0xe9, 0x67, 0x7f,
+    0x02, 0x03, 0x0b, 0xad, 0xb3, 0x89, 0x2b, 0x2f, 0x35, 0xc1, 0x6b, 0x8b, 0x95, 0x97, 0x11, 0xe5, 0xa7, 0x0d,
+    0xef, 0xf1, 0x05, 0x07, 0x83, 0xfb, 0x9d, 0x3b, 0xc5, 0xc7, 0x13, 0x17, 0x1d, 0x1f, 0x25, 0x29, 0xd3, 0xdf};
+
+bool PPCSCipher::decode_init_string(const std::string& init_str, std::vector<std::string>& out_masters,
+                                    std::string& out_key) {
+    out_masters.clear();
+    out_key.clear();
+    if (init_str.empty()) {
+        return false;
+    }
+
+    std::string s = init_str;
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n')) {
+        s.erase(s.begin());
+    }
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) {
+        s.pop_back();
+    }
+
+    // Check if wrapped in JSON {"InitString": "..."} or {"initString": "..."}
+    if (!s.empty() && s.front() == '{') {
+        size_t pos = s.find("\"InitString\"");
+        if (pos == std::string::npos)
+            pos = s.find("\"initString\"");
+        if (pos != std::string::npos) {
+            size_t colon = s.find(':', pos);
+            if (colon != std::string::npos) {
+                size_t q1 = s.find('\"', colon);
+                if (q1 != std::string::npos) {
+                    size_t q2 = s.find('\"', q1 + 1);
+                    if (q2 != std::string::npos) {
+                        s = s.substr(q1 + 1, q2 - q1 - 1);
+                    }
+                }
+            }
+        }
+    }
+
+    size_t colon_pos = s.find(':');
+    std::string enc = (colon_pos != std::string::npos) ? s.substr(0, colon_pos) : s;
+    if (colon_pos != std::string::npos) {
+        out_key = s.substr(colon_pos + 1);
+    }
+
+    if (enc.size() < 2 || (enc.size() % 2 != 0)) {
+        return false;
+    }
+
+    std::string enc_upper = enc;
+    for (char& c : enc_upper) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+
+    std::vector<uint8_t> out;
+    size_t pairs = enc_upper.size() / 2;
+    out.reserve(pairs);
+
+    for (size_t i = 0; i < pairs; ++i) {
+        uint8_t running = 0x39;
+        for (size_t j = 0; j < i; ++j) {
+            running ^= out[j];
+        }
+        uint8_t hi = static_cast<uint8_t>(enc_upper[2 * i]);
+        uint8_t lo = static_cast<uint8_t>(enc_upper[2 * i + 1]);
+        uint8_t raw_n = static_cast<uint8_t>(lo + (hi << 4) + 0xaf);
+        out.push_back(static_cast<uint8_t>(INITSTRING_LUT[i % 54] ^ running ^ raw_n));
+    }
+
+    std::string text(out.begin(), out.end());
+    std::stringstream ss(text);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        while (!item.empty() && (item.front() == ' ' || item.front() == '\t'))
+            item.erase(item.begin());
+        while (!item.empty() && (item.back() == ' ' || item.back() == '\t'))
+            item.pop_back();
+        if (!item.empty()) {
+            out_masters.push_back(item);
+        }
+    }
+
+    return !out_masters.empty();
+}
+
 }  // namespace aqara

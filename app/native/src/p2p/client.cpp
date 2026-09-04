@@ -87,10 +87,40 @@ static int64_t current_time_ms() {
 P2PClient::P2PClient(const P2PConfig& config, std::shared_ptr<AVIOReassembler> reassembler,
                      std::function<void(const std::string&)> event_cb)
     : config_(config), reassembler_(reassembler), event_cb_(std::move(event_cb)) {
-    std::string key_str = config_.init_string;
-    size_t colon_pos = key_str.rfind(':');
-    if (colon_pos != std::string::npos) {
-        key_str = key_str.substr(colon_pos + 1);
+    std::string key_str;
+    std::vector<std::string> decoded_masters;
+    if (PPCSCipher::decode_init_string(config_.init_string, decoded_masters, key_str)) {
+        std::string masters_str;
+        for (size_t i = 0; i < decoded_masters.size(); ++i) {
+            if (i > 0)
+                masters_str += ", ";
+            masters_str += decoded_masters[i];
+            master_servers_.push_back(decoded_masters[i]);
+        }
+        std::cout << "[P2P-Native] Decoded " << decoded_masters.size()
+                  << " regional TUTK master server(s) from init_string: " << masters_str << std::endl;
+    }
+
+    // Append default master servers as fallback
+    for (const char* def_master : TUTK_MASTERS) {
+        bool exists = false;
+        for (const auto& m : master_servers_) {
+            if (m == def_master) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            master_servers_.push_back(def_master);
+        }
+    }
+
+    if (key_str.empty()) {
+        key_str = config_.init_string;
+        size_t colon_pos = key_str.rfind(':');
+        if (colon_pos != std::string::npos) {
+            key_str = key_str.substr(colon_pos + 1);
+        }
     }
     if (key_str.empty()) {
         key_str = "aqaraus19kn";
@@ -102,6 +132,8 @@ P2PClient::P2PClient(const P2PConfig& config, std::shared_ptr<AVIOReassembler> r
         camera_addr_.sin_family = AF_INET;
         camera_addr_.sin_port = htons(config_.camera_port);
         inet_pton(AF_INET, config_.camera_ip.c_str(), &camera_addr_.sin_addr);
+        std::cout << "[P2P-Native] Configured direct camera target: " << config_.camera_ip << ":" << config_.camera_port
+                  << std::endl;
     }
 }
 
@@ -407,10 +439,10 @@ void P2PClient::discovery_loop() {
     while (running_ && !is_connected_ && attempts < 150) {
         attempts++;
 
-        // 1. Query TUTK Master Servers
-        for (const char* master : TUTK_MASTERS) {
-            send_raw_packet(hello_pkt.data(), hello_pkt.size(), master, 32100);
-            send_raw_packet(query_pkt.data(), query_pkt.size(), master, 32100);
+        // 1. Query TUTK Master Servers (regional decoded masters first, then fallbacks)
+        for (const auto& master : master_servers_) {
+            send_raw_packet(hello_pkt.data(), hello_pkt.size(), master.c_str(), 32100);
+            send_raw_packet(query_pkt.data(), query_pkt.size(), master.c_str(), 32100);
         }
 
         // 2. Query known endpoints
@@ -516,6 +548,9 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
             endpoints_.push_back(ep);
             endpoints_.push_back(ep2);
         }
+
+        std::cout << "[P2P-Native] Master server " << ip_str << " returned camera endpoint candidate(s): " << ip_buf
+                  << ":" << ep_port << " / " << ip_buf2 << ":" << ep_port << " for " << config_.did << std::endl;
 
         auto punch_pkt = PPCSCipher::build_pppp(PpcsMsgType::PUNCH, punch_buf_.data(), punch_buf_.size());
         PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), punch_pkt.data(), punch_pkt.size());

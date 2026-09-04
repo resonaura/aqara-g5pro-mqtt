@@ -77,6 +77,12 @@ export class NativeMediaEngine extends EventEmitter {
         stdio: ["pipe", "pipe", "inherit"],
       });
 
+      if (this.process.stdin) {
+        this.process.stdin.on("error", () => {
+          // Prevent unhandled EPIPE on SIGTERM / child exit
+        });
+      }
+
       this.rl = readline.createInterface({
         input: this.process.stdout!,
         terminal: false,
@@ -146,8 +152,12 @@ export class NativeMediaEngine extends EventEmitter {
   }
 
   private sendLine(line: string): void {
-    if (!this.process || !this.process.stdin) return;
-    this.process.stdin.write(line + "\n");
+    if (!this.process || !this.process.stdin || !this.process.stdin.writable) return;
+    try {
+      this.process.stdin.write(line + "\n");
+    } catch {
+      // Ignored: process may be shutting down
+    }
   }
 
   public startP2P(config: NativeSessionConfig): void {

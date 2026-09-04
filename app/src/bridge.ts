@@ -366,11 +366,9 @@ export class AqaraCameraBridge extends EventEmitter {
 
     registerListener("session_started", (did: string, port: number) => {
       if (did === this.did) {
-        this.isConnected = true;
-        this.emit("connected", { port });
         const host = getLocalIpv4();
         const path = this.rtspPath || `live/${this.did}`;
-        this.emit("rtsp_ready", `rtsp://${host}:${port}/${path}`);
+        this.emit("rtsp_listening", `rtsp://${host}:${port}/${path}`);
       }
     });
 

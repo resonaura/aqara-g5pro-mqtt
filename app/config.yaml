@@ -1,7 +1,7 @@
 name: "Aqara G5 Pro Integration"
 slug: "aqara-g5pro-mqtt"
 description: "MQTT integration for Aqara G5 Pro camera via Home Assistant"
-version: "1.6.3"
+version: "1.6.4"
 image: "ghcr.io/resonaura/aqara-g5pro-mqtt/{arch}"
 arch:
   - aarch64
@@ -25,6 +25,7 @@ options:
   mqtt_url: ""
   mqtt_user: ""
   mqtt_pass: ""
+  camera_ips: ""
   poll_interval: 1
   log_level: "info"
 schema:
@@ -34,5 +35,6 @@ schema:
   mqtt_url: str?
   mqtt_user: str?
   mqtt_pass: str?
+  camera_ips: str?
   poll_interval: int
   log_level: list(debug|info|warn|error)

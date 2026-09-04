@@ -26,6 +26,9 @@ public:
     }
 
     static std::vector<uint8_t> build_talkback_ppcs_body(const uint8_t* adts, size_t len);
+
+    static bool decode_init_string(const std::string& init_str, std::vector<std::string>& out_masters,
+                                   std::string& out_key);
 };
 
 }  // namespace aqara

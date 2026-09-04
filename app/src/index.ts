@@ -9,6 +9,7 @@ import {
   writeAttr,
 } from "./aqara.js";
 import { AqaraCameraBridge, getLocalIpv4 } from "./bridge.js";
+import { resolveCameraIp } from "./camera-ip.js";
 import "./config.js";
 import { promises as fs } from "node:fs";
 import { getCameraStreamQualities, pickMaxStreamQuality, jsonQualityChannel } from "./aqara.js";
@@ -286,6 +287,14 @@ async function ensureCameraBridge(
     const rtmpTalkUrl = `rtmp://${host}:${rtmpServer.listenPort}/talk/${slug}`;
     const snapshotUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${slug}/snapshot`;
 
+    const resolvedIp = resolveCameraIp(cameraInfo.device, slug);
+    if (resolvedIp) {
+      cameraInfo.device.ip = resolvedIp;
+      console.log(
+        `🌐 [${cameraInfo.device.deviceName}] Direct camera LAN IP configured: ${resolvedIp}`,
+      );
+    }
+
     const bridge = new AqaraCameraBridge({
       did: cameraInfo.device.did,
       token: process.env.TOKEN || "",
@@ -347,6 +356,10 @@ async function ensureCameraBridge(
 
     bridge.on("unhealthy", () => {
       void restartCameraStream(cameraInfo, "Native P2P engine reported video stream stall");
+    });
+
+    bridge.on("rtsp_listening", (url) => {
+      console.log(`📡 [RTSP Server] ${cameraInfo.device.deviceName} listening on ${url}`);
     });
 
     bridge.on("rtsp_ready", (url) => {

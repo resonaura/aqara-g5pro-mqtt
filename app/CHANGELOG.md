@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.6.4 — Dynamic Regional TUTK Master Resolution, Direct Camera IP Overrides & Shutdown Safety
+
+### 🌐 Regional TUTK Master Server Discovery (AU / APAC / EU / KR / US)
+- **Dynamic `InitString` Decoding via Reverse-Engineered 54-Byte LUT**: Integrated the authentic 54-byte lookup table (`INITSTRING_LUT`) extracted from Aqara's `libPPCS_API.so` into the native C++ engine (`PPCSCipher::decode_init_string`). The bridge now automatically decrypts the regional master servers from `initStringApp` (returned by Aqara Cloud) for every camera model and region (including AU `AQARAKR`, EU, KR, CN, and US), querying the correct regional TUTK directory servers during P2P discovery instead of relying solely on hardcoded US/CN master IPs.
+- **Master Server Response Logging**: Added clear debug and trace logs when regional TUTK master servers respond with candidate WAN/LAN endpoints (`0x40` / `0x21`).
+
+### 🔌 P2P Connection Lifecycle & Logging Fixes
+- **Fixed False Positive `connected to undefined:8556` Log**: Removed misleading `connected` and `rtsp_ready` event triggers on `session_started` in `AqaraCameraBridge`. `session_started` indicates that the local RTSP listening socket opened on the Home Assistant host, whereas the actual P2P tunnel to the camera only connects upon `p2p_connected`. Real camera IP and port are now strictly logged on true P2P handshakes (`[P2P Tunnel] <Camera> connected to <IP>:<PORT>`), while local socket readiness is logged as `[RTSP Server] <Camera> listening on <URL>`.
+
+### 🛡️ Direct Camera IP Resolution & VLAN Routing
+- **Direct LAN IP Support**: Added `resolveCameraIp` support allowing users to explicitly configure camera LAN IPs via `CAMERA_IPS` mapping (e.g. `CAMERA_IPS="doorbell-g4=192.168.1.50"`), `CAMERA_IP_<DID>`, `CAMERA_IP_<SLUG>`, or `CAMERA_IP` for single camera setups. This enables reliable direct UDP punching for battery doorbells (like G4) and cameras located across isolated VLANs or Docker subnets where local UDP broadcast cannot cross.
+- **Home Assistant Add-on Option**: Exposed `camera_ips` in `config.yaml` options and schema and wired it through `addon.sh`.
+
+### ⚡ Shutdown Crash Prevention
+- **Prevented `write EPIPE` on Process Teardown**: Handled `this.process.stdin.on("error")` and added safety checks (`this.process.stdin.writable` with `try/catch`) in `NativeMediaEngine.sendLine()`, eliminating crashes during SIGTERM / add-on stops.
+
 ## v1.6.3 — Session Phone ID Persistence, Regional Endpoints & Multi-Model Compatibility
 
 ### 🐛 Bug Fixes & Session Persistence

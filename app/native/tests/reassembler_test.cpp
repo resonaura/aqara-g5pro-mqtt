@@ -4,6 +4,7 @@
 #include <vector>
 #include "crypto/chacha20.hpp"
 #include "media/reassembler.hpp"
+#include "p2p/cipher.hpp"
 
 static void put_u32_le(std::vector<uint8_t>& b, size_t offset, uint32_t value) {
     b[offset] = static_cast<uint8_t>(value);
@@ -73,6 +74,18 @@ int main() {
     interleaved.push_packet(4, 102, video.data() + 27, video.size() - 27);
     assert(video_frames == 1);
 
-    std::cout << "reassembler test passed" << std::endl;
+    // Test regional TUTK master decoding from InitString
+    std::vector<std::string> masters;
+    std::string out_key;
+    const std::string test_init = "EBGAEIBIKHJJGFJKEOGCFAEPHPMAHONDGJFPBKCPAJJMLFKBDBAGCJPBGOLKIKLKAJMJKFDOOFMOBECEJIMM:mysecretkey";
+    bool ok = aqara::PPCSCipher::decode_init_string(test_init, masters, out_key);
+    assert(ok);
+    assert(masters.size() == 3);
+    assert(masters[0] == "112.74.108.149");
+    assert(masters[1] == "54.84.37.235");
+    assert(masters[2] == "54.254.195.28");
+    assert(out_key == "mysecretkey");
+
+    std::cout << "reassembler and init_string test passed" << std::endl;
     return 0;
 }

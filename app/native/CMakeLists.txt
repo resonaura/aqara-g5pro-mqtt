@@ -45,6 +45,7 @@ add_executable(aqara-reassembler-test
     tests/reassembler_test.cpp
     src/crypto/chacha20.cpp
     src/media/reassembler.cpp
+    src/p2p/cipher.cpp
 )
 target_link_libraries(aqara-reassembler-test PRIVATE pthread)
 add_test(NAME aqara-reassembler-test COMMAND aqara-reassembler-test)

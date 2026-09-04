@@ -18,6 +18,7 @@ USER_MQTT_USER=$(jq -r '.mqtt_user // empty' $CONFIG_PATH)
 USER_MQTT_PASS=$(jq -r '.mqtt_pass // empty' $CONFIG_PATH)
 POLL_INTERVAL=$(jq -r '.poll_interval' $CONFIG_PATH)
 LOG_LEVEL=$(jq -r '.log_level' $CONFIG_PATH)
+CAMERA_IPS=$(jq -r '.camera_ips // empty' $CONFIG_PATH)
 
 # Fallback to Supervisor MQTT service if not specified in options
 if [ -n "$USER_MQTT_URL" ]; then
@@ -43,7 +44,7 @@ function needs_regen() {
 
   grep -q "^TOKEN=" "$ENV_FILE" || return 0
 
-  CURRENT_HASH=$(echo "$USERNAME|$PASSWORD|$AREA|$MQTT_USER|$MQTT_PASS|$MQTT_URL|$POLL_INTERVAL|$LOG_LEVEL" | sha256sum | cut -d' ' -f1)
+  CURRENT_HASH=$(echo "$USERNAME|$PASSWORD|$AREA|$MQTT_USER|$MQTT_PASS|$MQTT_URL|$POLL_INTERVAL|$LOG_LEVEL|$CAMERA_IPS" | sha256sum | cut -d' ' -f1)
   SAVED_HASH=$(grep '^CONFIG_HASH=' "$ENV_FILE" | cut -d'=' -f2- || echo "")
 
   [ "$CURRENT_HASH" != "$SAVED_HASH" ]
@@ -59,9 +60,10 @@ if needs_regen; then
     --mqtt-user "$MQTT_USER" \
     --mqtt-pass "$MQTT_PASS" \
     --poll-interval "$POLL_INTERVAL" \
-    --log-level "$LOG_LEVEL"
+    --log-level "$LOG_LEVEL" \
+    ${CAMERA_IPS:+--camera-ips "$CAMERA_IPS"}
 
-  HASH=$(echo "$USERNAME|$PASSWORD|$AREA|$MQTT_USER|$MQTT_PASS|$MQTT_URL|$POLL_INTERVAL|$LOG_LEVEL" | sha256sum | cut -d' ' -f1)
+  HASH=$(echo "$USERNAME|$PASSWORD|$AREA|$MQTT_USER|$MQTT_PASS|$MQTT_URL|$POLL_INTERVAL|$LOG_LEVEL|$CAMERA_IPS" | sha256sum | cut -d' ' -f1)
   echo "CONFIG_HASH=$HASH" >> "$ENV_FILE"
 else
   echo "✅ Existing .env is valid and matches config, skipping setup"

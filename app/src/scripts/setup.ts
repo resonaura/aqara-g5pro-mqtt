@@ -67,6 +67,7 @@ async function main() {
     "mqtt-pass": { type: "string" },
     "poll-interval": { type: "number", default: 1 },
     "log-level": { type: "string", default: "info" },
+    "camera-ips": { type: "string" },
   }).argv;
 
   let answers: SetupAnswers;
@@ -224,7 +225,7 @@ async function main() {
     devices.forEach((d: any) => console.log(`  - ${d.deviceName} (${d.did})`));
 
     // Build .env
-    const envContent = `NODE_ENV=production
+    let envContent = `NODE_ENV=production
 AQUARA_URL=${server}
 APPID=${appid}
 TOKEN=${token}
@@ -238,6 +239,9 @@ MQTT_PASS=${mqttPass}
 POLL_INTERVAL=${argv["poll-interval"]}
 LOG_LEVEL=${argv["log-level"]}
 `;
+    if (argv["camera-ips"]) {
+      envContent += `CAMERA_IPS=${argv["camera-ips"]}\n`;
+    }
 
     fs.writeFileSync(path.join(process.cwd(), ".env"), envContent, "utf-8");
     console.log("✅ .env generated successfully");
