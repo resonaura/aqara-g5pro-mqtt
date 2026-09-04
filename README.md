@@ -1,4 +1,5 @@
 <img src="icon.png" width="64" height="64" alt="Aqara Bridge Icon" />
+
 # Universal Aqara Cameras Bridge & Home Assistant Integration
 
 [![Version](https://img.shields.io/badge/version-1.6.2-blue.svg)](CHANGELOG.md)
