@@ -42,7 +42,7 @@ jobs:
           args: |
             --${{ matrix.arch }} \
             --target /data/app \
-            --image "aqara_g5_pro/{arch}" \
+            --image "aqara-g5-pro/{arch}" \
             --docker-hub "ghcr.io/${{ github.repository_owner }}"
 
   # 2. Standalone Multi-Arch Docker Image (for standalone Docker users)
