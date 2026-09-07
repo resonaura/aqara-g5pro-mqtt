@@ -1,4 +1,4 @@
-<img src="icon.png" width="64" height="64" alt="Aqara Bridge Icon" />
+<img src="https://raw.githubusercontent.com/resonaura/aqara-g5pro-mqtt/main/icon.png" width="64" height="64" alt="Aqara Bridge Icon" />
 
 # Universal Aqara Cameras Bridge & Home Assistant Integration
 
