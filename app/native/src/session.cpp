@@ -122,7 +122,9 @@ bool StreamSession::start() {
         return false;
     }
 
-    rtsp_server_->start_udp_ingest(config_.rtsp_port + 1000, config_.rtsp_port + 1001);
+    int video_ingest = config_.udp_video_port > 0 ? config_.udp_video_port : (10000 + (config_.rtsp_port - 8555) * 4);
+    int audio_ingest = config_.udp_audio_port > 0 ? config_.udp_audio_port : (video_ingest + 2);
+    rtsp_server_->start_udp_ingest(video_ingest, audio_ingest);
 
     if (!p2p_client_->start()) {
         std::cerr << "[NativeSession] Failed to start P2P client for " << config_.did << std::endl;
@@ -211,6 +213,12 @@ void StreamSession::stop_talkback() {
 
 void StreamSession::send_talkback(const uint8_t* adts, size_t len) {
     if (p2p_client_) p2p_client_->send_talkback_frame(adts, len);
+}
+
+std::vector<uint8_t> StreamSession::get_snapshot_annexb() const {
+    if (rtsp_server_)
+        return rtsp_server_->get_latest_annexb();
+    return {};
 }
 
 } // namespace aqara

@@ -53,6 +53,8 @@ export interface BridgeOptions {
   model?: string;
   p2pQualityChannel?: number;
   transcodeVideo?: boolean;
+  udpVideoPort?: number;
+  udpAudioPort?: number;
 }
 
 // ============= Constants =============
@@ -270,6 +272,8 @@ export class AqaraCameraBridge extends EventEmitter {
   public appKey: string;
   public rtspPort: number;
   public rtspPath?: string;
+  public udpVideoPort?: number;
+  public udpAudioPort?: number;
   public isConnected: boolean = false;
   public frameCount: number = 0;
   public droppedGapFrames: number = 0;
@@ -300,6 +304,8 @@ export class AqaraCameraBridge extends EventEmitter {
     this.appKey = options.appKey || DEFAULT_CONFIG.APP_KEY;
     this.rtspPort = options.rtspPort || DEFAULT_CONFIG.RTSP_PORT;
     this.rtspPath = options.rtspPath;
+    this.udpVideoPort = options.udpVideoPort;
+    this.udpAudioPort = options.udpAudioPort;
 
     const videoKey =
       options.videoKey || "fc639c2ec4167ee22f4dd023b113c9e46adbb18e427dd0fdaea48286dd54d3cf";
@@ -421,6 +427,8 @@ export class AqaraCameraBridge extends EventEmitter {
       rtsp_port: this.rtspPort,
       rtsp_path: this.rtspPath || `live/${this.did}`,
       p2p_quality_channel: this.p2pQualityChannel,
+      udp_video_port: this.udpVideoPort,
+      udp_audio_port: this.udpAudioPort,
     });
   }
 
@@ -444,6 +452,8 @@ export class AqaraCameraBridge extends EventEmitter {
       rtsp_port: this.rtspPort,
       rtsp_path: this.rtspPath || `live/${this.did}`,
       p2p_quality_channel: this.p2pQualityChannel,
+      udp_video_port: this.udpVideoPort,
+      udp_audio_port: this.udpAudioPort,
     });
   }
 

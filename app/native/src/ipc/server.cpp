@@ -22,12 +22,33 @@ struct IpcCommandDto {
     int rtsp_port = 8555;
     std::string rtsp_path;
     int p2p_quality_channel = 0;
+    int udp_video_port = 0;
+    int udp_audio_port = 0;
     int channel = 0;
     std::string direction;
     int action = 0;
     int speed = 50;
     std::string data_hex;
 };
+
+static std::string base64_encode(const uint8_t* data, size_t len) {
+    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+        if (i + 1 < len)
+            n |= static_cast<uint32_t>(data[i + 1]) << 8;
+        if (i + 2 < len)
+            n |= static_cast<uint32_t>(data[i + 2]);
+
+        out.push_back(tbl[(n >> 18) & 0x3f]);
+        out.push_back(tbl[(n >> 12) & 0x3f]);
+        out.push_back((i + 1 < len) ? tbl[(n >> 6) & 0x3f] : '=');
+        out.push_back((i + 2 < len) ? tbl[n & 0x3f] : '=');
+    }
+    return out;
+}
 
 static std::vector<uint8_t> hex_to_bytes(const std::string& hex) {
     std::vector<uint8_t> bytes;
@@ -92,6 +113,8 @@ void IpcServer::handle_command(const std::string& line) {
         cfg.rtsp_port = cmd_dto.rtsp_port > 0 ? cmd_dto.rtsp_port : 8555;
         cfg.rtsp_path = cmd_dto.rtsp_path.empty() ? ("live/" + cfg.did) : cmd_dto.rtsp_path;
         cfg.p2p_quality_channel = cmd_dto.p2p_quality_channel;
+        cfg.udp_video_port = cmd_dto.udp_video_port;
+        cfg.udp_audio_port = cmd_dto.udp_audio_port;
 
         if (cfg.did.empty()) {
             send_event(to_json(EventError{.message = "Missing did in start_session"}));
@@ -179,6 +202,20 @@ void IpcServer::handle_command(const std::string& line) {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         sessions_.erase(cmd_dto.did);
         send_event(to_json(EventSessionStopped{.did = cmd_dto.did}));
+    } else if (cmd == "get_snapshot") {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        auto it = sessions_.find(cmd_dto.did);
+        if (it != sessions_.end()) {
+            auto annexb = it->second->get_snapshot_annexb();
+            if (!annexb.empty()) {
+                std::string b64 = base64_encode(annexb.data(), annexb.size());
+                send_event(to_json(EventSnapshot{.did = cmd_dto.did, .data_base64 = b64}));
+            } else {
+                send_event(to_json(EventError{.did = cmd_dto.did, .message = "snapshot annexb not ready"}));
+            }
+        } else {
+            send_event(to_json(EventError{.did = cmd_dto.did, .message = "no active session"}));
+        }
     } else if (cmd == "exit") {
         running_ = false;
     }

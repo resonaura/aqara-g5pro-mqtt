@@ -30,7 +30,13 @@ import { ENTITIES } from "./entities.js";
 import { FrameHTTPServer } from "./http-server.js";
 import { EVENT_ATTRS, processEventAttrs, publishMotionDiscovery } from "./motion.js";
 import { createMQTTClient } from "./mqtt.js";
-import { findFreePortRange, writeRTSPPortMap, type RTSPPortEntry } from "./ports.js";
+import {
+  findFreePortRange,
+  writeRTSPPortMap,
+  readRTSPPortMap,
+  isPortAllowed,
+  type RTSPPortEntry,
+} from "./ports.js";
 import { RTMPIngestServer } from "./rtmp.js";
 import { assignUniqueSlugs } from "./slug.js";
 import { FrameSnapshotter } from "./snapshot.js";
@@ -115,10 +121,28 @@ for (let i = 0; i < cameras.length; i++) {
 // Allocate a contiguous block of free RTSP ports (default 8555, walking up if
 // the preferred port (or any port in the block) is already taken).
 // Keeps camera ports sequential and avoids well-known / 3xxx / 5xxx ranges.
-const rtspPorts = await findFreePortRange(cameraData.length || 1, rtspBasePort);
+const savedPortMap = readRTSPPortMap();
 const slugMap = assignUniqueSlugs(
   cameraData.map((c) => ({ did: c.device.did, name: c.device.deviceName })),
 );
+const rtspPorts: number[] = [];
+const allSavedValid =
+  savedPortMap &&
+  cameraData.length > 0 &&
+  cameraData.every((c) => {
+    const entry = savedPortMap.cameras[c.device.did];
+    return entry && isPortAllowed(entry.port);
+  });
+
+if (allSavedValid) {
+  for (let i = 0; i < cameraData.length; i++) {
+    rtspPorts.push(savedPortMap!.cameras[cameraData[i].device.did].port);
+  }
+} else {
+  const allocated = await findFreePortRange(cameraData.length || 1, rtspBasePort);
+  rtspPorts.push(...allocated);
+}
+
 const rtspPortEntries = new Map<string, RTSPPortEntry>();
 for (let i = 0; i < cameraData.length; i++) {
   const did = cameraData[i].device.did;
@@ -198,6 +222,8 @@ async function restartCameraStream(
     const deviceId = cameraInfo.mqttDevice.id;
     const idx = cameraData.indexOf(cameraInfo);
     const rtspPort = rtspPorts[idx];
+    const rtpPort = 10000 + (rtspPort - rtspBasePort) * 4;
+    const audioRtpPort = rtpPort + 2;
     const isHevc = cameraInfo.device.model.includes("agl004") || did.includes("lumi3");
 
     OfflineCardManager.getInstance().setOffline({
@@ -214,8 +240,8 @@ async function restartCameraStream(
     FallbackStreamManager.getInstance().startFallback({
       slug,
       deviceName: cameraInfo.device.deviceName,
-      rtpPort: rtspPort + 1000,
-      audioRtpPort: rtspPort + 1001,
+      rtpPort,
+      audioRtpPort,
       isHevc,
     });
 
@@ -310,6 +336,8 @@ async function ensureCameraBridge(
   const startPromise = (async () => {
     const idx = cameraData.indexOf(cameraInfo);
     const rtspPort = rtspPorts[idx];
+    const rtpPort = 10000 + (rtspPort - rtspBasePort) * 4;
+    const audioRtpPort = rtpPort + 2;
     const deviceId = cameraInfo.mqttDevice.id;
     const host = process.env.BRIDGE_HOST || getLocalIpv4();
     const slug = slugMap[cameraInfo.device.did];
@@ -332,6 +360,8 @@ async function ensureCameraBridge(
       cameraPort: 32108,
       rtspPort,
       rtspPath: `live/${slug}`,
+      udpVideoPort: rtpPort,
+      udpAudioPort: audioRtpPort,
       model: cameraInfo.device.model,
       p2pQualityChannel: jsonQualityChannel(null, cameraInfo.device.model),
       videoKey: process.env.VIDEO_KEY,
@@ -360,6 +390,8 @@ async function ensureCameraBridge(
           did: cameraInfo.device.did,
           rtspUrl: localRtspUrl,
           dataDir: getDataDir(),
+          getSnapshot: (did, timeoutMs) =>
+            NativeMediaEngine.getInstance().getSnapshot(did, timeoutMs),
         });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
           reconnectAttempts.delete(cameraInfo.device.did);
@@ -434,8 +466,8 @@ async function ensureCameraBridge(
       FallbackStreamManager.getInstance().startFallback({
         slug,
         deviceName: cameraInfo.device.deviceName,
-        rtpPort: rtspPort + 1000,
-        audioRtpPort: rtspPort + 1001,
+        rtpPort,
+        audioRtpPort,
         isHevc,
       });
       await bridge.start();

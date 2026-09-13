@@ -82,6 +82,12 @@ struct EventUnhealthy {
     std::string did;
 };
 
+struct EventSnapshot {
+    std::string event = "snapshot";
+    std::string did;
+    std::string data_base64;
+};
+
 struct EventError {
     std::string event = "error";
     std::string did;

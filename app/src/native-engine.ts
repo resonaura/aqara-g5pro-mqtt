@@ -19,6 +19,8 @@ export interface NativeSessionConfig {
   rtsp_port: number;
   rtsp_path?: string;
   p2p_quality_channel?: number;
+  udp_video_port?: number;
+  udp_audio_port?: number;
 }
 
 export class NativeMediaEngine extends EventEmitter {
@@ -27,6 +29,14 @@ export class NativeMediaEngine extends EventEmitter {
   private rl: readline.Interface | null = null;
   private isReady = false;
   private pendingCommands: string[] = [];
+  private pendingSnapshots = new Map<
+    string,
+    {
+      resolve: (b64: string) => void;
+      reject: (err: Error) => void;
+      timer: NodeJS.Timeout;
+    }
+  >();
 
   private constructor() {
     super();
@@ -105,6 +115,11 @@ export class NativeMediaEngine extends EventEmitter {
         }
         this.process = null;
         this.isReady = false;
+        for (const [, pending] of this.pendingSnapshots) {
+          clearTimeout(pending.timer);
+          pending.reject(new Error("Native engine process exited"));
+        }
+        this.pendingSnapshots.clear();
       });
 
       this.process.on("error", (err) => {
@@ -115,6 +130,11 @@ export class NativeMediaEngine extends EventEmitter {
         }
         this.process = null;
         this.isReady = false;
+        for (const [, pending] of this.pendingSnapshots) {
+          clearTimeout(pending.timer);
+          pending.reject(new Error(`Native engine error: ${err.message}`));
+        }
+        this.pendingSnapshots.clear();
       });
 
       return true;
@@ -146,6 +166,24 @@ export class NativeMediaEngine extends EventEmitter {
       this.emit("keyframe", msg.did);
     } else if (msg.event === "unhealthy") {
       this.emit("unhealthy", msg.did);
+    } else if (msg.event === "snapshot") {
+      const pending = this.pendingSnapshots.get(msg.did);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingSnapshots.delete(msg.did);
+        pending.resolve(msg.data_base64);
+      }
+      this.emit("snapshot", msg.did, msg.data_base64);
+    } else if (msg.event === "error") {
+      if (msg.did) {
+        const pending = this.pendingSnapshots.get(msg.did);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pendingSnapshots.delete(msg.did);
+          pending.reject(new Error(msg.message || "Native engine snapshot error"));
+        }
+      }
+      this.emit("error", msg);
     } else {
       this.emit(msg.event || "message", msg);
     }
@@ -261,6 +299,30 @@ export class NativeMediaEngine extends EventEmitter {
 
   public stopSession(did: string): void {
     this.stopP2P(did);
+  }
+
+  public getSnapshot(did: string, timeoutMs = 4000): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const existing = this.pendingSnapshots.get(did);
+      if (existing) {
+        clearTimeout(existing.timer);
+        this.pendingSnapshots.delete(did);
+        existing.reject(new Error("Snapshot request superseded"));
+      }
+      const timer = setTimeout(() => {
+        this.pendingSnapshots.delete(did);
+        reject(new Error("Snapshot request timed out"));
+      }, timeoutMs);
+      timer.unref?.();
+      this.pendingSnapshots.set(did, { resolve, reject, timer });
+      const payload = JSON.stringify({ cmd: "get_snapshot", did });
+      if (this.isReady) {
+        this.sendLine(payload);
+      } else {
+        this.pendingCommands.push(payload);
+        if (!this.process) this.start();
+      }
+    });
   }
 
   public stop(): void {

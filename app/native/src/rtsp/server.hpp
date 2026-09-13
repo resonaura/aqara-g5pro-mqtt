@@ -62,6 +62,7 @@ public:
     int get_udp_video_port() const { return udp_video_port_; }
     int get_udp_audio_port() const { return udp_audio_port_; }
     const std::string& get_path() const { return path_; }
+    std::vector<uint8_t> get_latest_annexb() const;
 
 private:
     void accept_loop();

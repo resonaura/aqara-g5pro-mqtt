@@ -1,6 +1,9 @@
 import * as net from "net";
+import * as fs from "fs";
+import * as path from "path";
 import { getDataSource } from "./db/data-source.js";
 import { RTSPPortEntity, GlobalSettingEntity } from "./db/entities/index.js";
+import { getDataDir } from "./state.js";
 
 /**
  * RTSP port allocation helpers.
@@ -102,7 +105,26 @@ export interface RTSPPortMap {
   cameras: Record<string, RTSPPortEntry>;
 }
 
+function getPortMapFilePath(): string {
+  return path.join(getDataDir(), "rtsp_ports.json");
+}
+
 export function writeRTSPPortMap(base: number, entries: RTSPPortEntry[]): void {
+  try {
+    const filePath = getPortMapFilePath();
+    const mapObj: RTSPPortMap = {
+      base,
+      updatedAt: Date.now(),
+      cameras: {},
+    };
+    for (const e of entries) {
+      mapObj.cameras[e.did] = e;
+    }
+    fs.writeFileSync(filePath, JSON.stringify(mapObj, null, 2), "utf8");
+  } catch (err: any) {
+    console.warn(`⚠️ [RTSP Ports] Failed to write JSON port map: ${err.message}`);
+  }
+
   try {
     const ds = getDataSource();
     if (ds.isInitialized) {
@@ -131,15 +153,13 @@ export function writeRTSPPortMap(base: number, entries: RTSPPortEntry[]): void {
 
 export function readRTSPPortMap(): RTSPPortMap | null {
   try {
-    const ds = getDataSource();
-    if (ds.isInitialized) {
-      // Synchronous read if needed or return null
-      return null;
+    const filePath = getPortMapFilePath();
+    if (fs.existsSync(filePath)) {
+      const raw = fs.readFileSync(filePath, "utf8");
+      return JSON.parse(raw) as RTSPPortMap;
     }
-    return null;
-  } catch {
-    return null;
-  }
+  } catch {}
+  return null;
 }
 
 // Aliases for compatibility

@@ -56,6 +56,11 @@ RTSPServer::~RTSPServer() {
     stop();
 }
 
+std::vector<uint8_t> RTSPServer::get_latest_annexb() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(keyframe_mutex_));
+    return cached_keyframe_.annex_b_data;
+}
+
 bool RTSPServer::start() {
     server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd_ < 0)

@@ -153,6 +153,9 @@ export async function getCameras(): Promise<Device[]> {
     device.model?.startsWith("lumi.camera"),
   );
 
+  // Deterministically sort by did so camera port assignment remains stable across reboots
+  cameras.sort((a, b) => (a.did || "").localeCompare(b.did || ""));
+
   return cameras;
 }
 

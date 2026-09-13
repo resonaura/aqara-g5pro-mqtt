@@ -11,7 +11,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, copyFileSync, writeFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { getDataDir } from "./state.js";
 
@@ -22,6 +22,7 @@ export interface FrameSnapshotterOptions {
   dataDir?: string;
   intervalMs?: number;
   maxConsecutiveFailures?: number;
+  getSnapshot?: (did: string, timeoutMs?: number) => Promise<string>;
 }
 
 export class FrameSnapshotter extends EventEmitter {
@@ -40,6 +41,7 @@ export class FrameSnapshotter extends EventEmitter {
   private readonly dataDir: string;
   private readonly intervalMs: number;
   private readonly maxConsecutiveFailures: number;
+  private readonly getSnapshot?: (did: string, timeoutMs?: number) => Promise<string>;
 
   constructor(options: FrameSnapshotterOptions) {
     super();
@@ -49,6 +51,7 @@ export class FrameSnapshotter extends EventEmitter {
     this.dataDir = options.dataDir || getDataDir();
     this.intervalMs = options.intervalMs ?? 10_000;
     this.maxConsecutiveFailures = options.maxConsecutiveFailures ?? 3;
+    this.getSnapshot = options.getSnapshot;
 
     if (!existsSync(this.dataDir)) {
       mkdirSync(this.dataDir, { recursive: true });
@@ -79,10 +82,112 @@ export class FrameSnapshotter extends EventEmitter {
     }
   }
 
+  private async grabFromKeyframe(): Promise<boolean> {
+    try {
+      if (!this.getSnapshot) return false;
+      const b64 = await this.getSnapshot(this.did, 4000);
+      if (!b64) return false;
+      const annexb = Buffer.from(b64, "base64");
+      if (annexb.length < 64) return false;
+
+      const framesDir = path.join(this.dataDir, "frames");
+      const tmpVideoPath = path.join(framesDir, `${this.slug}.${Date.now()}.tmp.h264`);
+      const tmpJpgPath = path.join(framesDir, `${this.slug}.${Date.now()}.tmp.jpg`);
+
+      writeFileSync(tmpVideoPath, annexb);
+
+      const ok = await new Promise<boolean>((resolve) => {
+        const args = [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-i",
+          tmpVideoPath,
+          "-an",
+          "-vf",
+          "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+          "-frames:v",
+          "1",
+          "-q:v",
+          "2",
+          "-y",
+          tmpJpgPath,
+        ];
+        let proc: ChildProcess;
+        try {
+          proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+        } catch {
+          resolve(false);
+          return;
+        }
+        const killTimer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {}
+        }, 5000);
+        killTimer.unref();
+
+        proc.on("exit", (code) => {
+          clearTimeout(killTimer);
+          resolve(code === 0);
+        });
+        proc.on("error", () => {
+          clearTimeout(killTimer);
+          resolve(false);
+        });
+      });
+
+      try {
+        unlinkSync(tmpVideoPath);
+      } catch {}
+
+      if (!ok || !existsSync(tmpJpgPath)) {
+        try {
+          unlinkSync(tmpJpgPath);
+        } catch {}
+        return false;
+      }
+
+      const st = statSync(tmpJpgPath);
+      if (st.size < 1000) {
+        try {
+          unlinkSync(tmpJpgPath);
+        } catch {}
+        return false;
+      }
+
+      renameSync(tmpJpgPath, this.currentPath);
+      try {
+        const lastLivePath = path.join(this.dataDir, "frames", `${this.slug}.last_live.jpg`);
+        copyFileSync(this.currentPath, lastLivePath);
+      } catch {}
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
-   * Spawn a single ffmpeg process that grabs one full frame and exits.
+   * Grab one frame (prefers low-overhead native keyframe tap, falls back to RTSP pull).
    */
-  private grabOnce(): Promise<boolean> {
+  private async grabOnce(): Promise<boolean> {
+    if (this.stopped) return false;
+
+    if (this.getSnapshot) {
+      const ok = await this.grabFromKeyframe();
+      if (ok) {
+        this.consecutiveFailures = 0;
+        this.lastSuccessTime = Date.now();
+        this.emit("frame", {
+          slug: this.slug,
+          did: this.did,
+          path: this.currentPath,
+        });
+        return true;
+      }
+    }
+
     return new Promise((resolve) => {
       if (this.stopped) {
         resolve(false);

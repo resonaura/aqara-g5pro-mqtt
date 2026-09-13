@@ -24,6 +24,8 @@ struct SessionConfig {
     int rtsp_port = 8555;
     std::string rtsp_path;
     int p2p_quality_channel = 0;
+    int udp_video_port = 0;
+    int udp_audio_port = 0;
 };
 
 class StreamSession {
@@ -41,6 +43,7 @@ public:
     void start_talkback();
     void stop_talkback();
     void send_talkback(const uint8_t* adts, size_t len);
+    std::vector<uint8_t> get_snapshot_annexb() const;
 
     const std::string& get_did() const { return config_.did; }
 

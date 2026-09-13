@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.6.6 — Deterministic Camera RTSP Port Mapping, Non-Overlapping Ingest Ports & Native In-Memory IDR Snapshots
+
+### 🎚️ Deterministic Camera Ordering & Persistent RTSP Port Mapping
+- **Alphabetical DID Sorting**: Cameras returned by the Aqara Cloud API (`/device/query/binding`) are now deterministically sorted by `did` (`cameras.sort((a, b) => a.did.localeCompare(b.did))`), preventing cameras from swapping RTSP ports across add-on reboots.
+- **Persistent Disk Port Map**: Port allocations are now permanently stored in `/data/rtsp_ports.json` (and SQLite database) via `writeRTSPPortMap` and reloaded on startup via `readRTSPPortMap`. Each camera retains its designated RTSP port permanently even if cloud discovery order fluctuates.
+
+### 🔀 Isolated UDP Ingest Ports
+- **Non-Overlapping Fallback Ingest Channels**: Separated fallback stream UDP ingest ports per camera using `10000 + (rtspPort - rtspBasePort) * 4` (video) and `+ 2` (audio). Completely eliminated socket bind collisions where camera audio and video ingest channels previously shared UDP port 9556.
+
+### 📸 Tuya-Style Native In-Memory Snapshots
+- **In-Memory IDR Keyframe Extraction**: Exposed `get_latest_annexb()` in `RTSPServer` and `get_snapshot` IPC command in the C++ native engine. The engine directly returns the latest clean Annex-B IDR keyframe from RAM.
+- **Low-Overhead Single-Frame Transcoding**: Refactored `FrameSnapshotter` to prefer native keyframe capture: decodes the cached Annex-B frame to JPEG in <50ms with a single-frame FFmpeg command without establishing continuous RTSP TCP sessions or probing the stream.
+- **Automatic Fallback**: Preserves graceful RTSP stream pull fallback if native IDR keyframes are not yet available.
+
 ## v1.6.5 — Continuous RTSP Fallback Video Stream, Watchdog Timeout Recovery & P2P IP Persistence
 
 ### 📺 Continuous RTSP Stream & Seamless Offline Fallback
