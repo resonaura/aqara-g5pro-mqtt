@@ -35,6 +35,7 @@ import { RTMPIngestServer } from "./rtmp.js";
 import { assignUniqueSlugs } from "./slug.js";
 import { FrameSnapshotter } from "./snapshot.js";
 import { OfflineCardManager } from "./offline-card.js";
+import { FallbackStreamManager } from "./fallback-stream.js";
 import { NativeMediaEngine } from "./native-engine.js";
 import { Device, MQTTDevice } from "./types.js";
 import { generateEnvExample, normalizeValue } from "./utils.js";
@@ -146,6 +147,7 @@ const client = createMQTTClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
 const talkbackFeeds = new Map<string, { ready: boolean; queue: Buffer[] }>();
 const reconnectAttempts = new Map<string, { count: number; lastAttempt: number }>();
+const reconnectTimers = new Map<string, NodeJS.Timeout>();
 
 function cameraBySlug(name: string) {
   return cameraData.find((c) => slugMap[c.device.did] === name);
@@ -194,6 +196,9 @@ async function restartCameraStream(
 
     const slug = slugMap[did];
     const deviceId = cameraInfo.mqttDevice.id;
+    const idx = cameraData.indexOf(cameraInfo);
+    const rtspPort = rtspPorts[idx];
+    const isHevc = cameraInfo.device.model.includes("agl004") || did.includes("lumi3");
 
     OfflineCardManager.getInstance().setOffline({
       slug,
@@ -203,6 +208,15 @@ async function restartCameraStream(
       onFrameUpdate: (imgBuf) => {
         client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
       },
+    });
+
+    // Start fallback video stream to native RTSP ingest port
+    FallbackStreamManager.getInstance().startFallback({
+      slug,
+      deviceName: cameraInfo.device.deviceName,
+      rtpPort: rtspPort + 1000,
+      audioRtpPort: rtspPort + 1001,
+      isHevc,
     });
 
     // Stop snapshotter while offline so ffmpeg is not executed on an empty/stalled stream
@@ -221,6 +235,7 @@ async function restartCameraStream(
         cameraInfo.bridge.stop();
         cameraInfo.bridge = undefined;
       }
+      FallbackStreamManager.getInstance().stopFallback(slug);
       OfflineCardManager.getInstance().setOffline({
         slug,
         deviceName: cameraInfo.device.deviceName,
@@ -246,6 +261,21 @@ async function restartCameraStream(
       console.log(
         `📡 [Watchdog:${cameraInfo.device.deviceName}] Reconnection signal sent to native P2P engine (attempt #${state.count}), waiting for video packets...`,
       );
+
+      // Supervisory timer: if stream does not recover within 35s, trigger next reconnect attempt
+      const existingTimer = reconnectTimers.get(did);
+      if (existingTimer) clearTimeout(existingTimer);
+      const supervisorTimer = setTimeout(() => {
+        reconnectTimers.delete(did);
+        if (OfflineCardManager.getInstance().isOffline(slug)) {
+          console.log(
+            `⏱️ [Watchdog:${cameraInfo.device.deviceName}] Reconnection attempt #${state.count} timed out waiting for video (35s), retrying...`,
+          );
+          void restartCameraStream(cameraInfo, "Reconnection response timeout");
+        }
+      }, 35_000);
+      supervisorTimer.unref();
+      reconnectTimers.set(did, supervisorTimer);
     } catch (err: any) {
       const delay = Math.min(15_000 * Math.pow(1.4, Math.min(state.count - 1, 4)), 60_000);
       console.warn(
@@ -375,14 +405,23 @@ async function ensureCameraBridge(
         );
         reconnectAttempts.delete(cameraInfo.device.did);
       }
+      const supervisorTimer = reconnectTimers.get(cameraInfo.device.did);
+      if (supervisorTimer) {
+        clearTimeout(supervisorTimer);
+        reconnectTimers.delete(cameraInfo.device.did);
+      }
+      FallbackStreamManager.getInstance().stopFallback(slug);
       OfflineCardManager.getInstance().setOnline(slug);
       updateStreamEntities();
       startSnapshotter();
     });
 
-    bridge.on("connected", ({ ip, port }) =>
-      console.log(`🔌 [P2P Tunnel] ${cameraInfo.device.deviceName} connected to ${ip}:${port}`),
-    );
+    bridge.on("connected", ({ ip, port }) => {
+      console.log(`🔌 [P2P Tunnel] ${cameraInfo.device.deviceName} connected to ${ip}:${port}`);
+      if (ip && ip !== "0.0.0.0" && !ip.startsWith("127.")) {
+        cameraInfo.device.ip = ip;
+      }
+    });
     bridge.on("info", (m: string) => console.log(`ℹ️ [${cameraInfo.device.deviceName}] ${m}`));
     bridge.on("warn", (m: string) => console.warn(`⚠️ [${cameraInfo.device.deviceName}] ${m}`));
     bridge.on("error", (e: any) =>
@@ -390,6 +429,15 @@ async function ensureCameraBridge(
     );
 
     try {
+      const isHevc =
+        cameraInfo.device.model.includes("agl004") || cameraInfo.device.did.includes("lumi3");
+      FallbackStreamManager.getInstance().startFallback({
+        slug,
+        deviceName: cameraInfo.device.deviceName,
+        rtpPort: rtspPort + 1000,
+        audioRtpPort: rtspPort + 1001,
+        isHevc,
+      });
       await bridge.start();
       updateStreamEntities();
       return bridge;
@@ -885,6 +933,8 @@ async function shutdown(signal: string) {
       c.snapshotter?.stop();
       c.bridge?.stop();
     }
+    FallbackStreamManager.getInstance().stopAll();
+    OfflineCardManager.getInstance().stopAll();
     httpServer.stop();
     rtmpServer.stop();
     NativeMediaEngine.getInstance().stop();

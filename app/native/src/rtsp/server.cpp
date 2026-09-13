@@ -111,8 +111,28 @@ void RTSPServer::stop() {
         server_fd_ = -1;
     }
 
+    if (udp_fd_ >= 0) {
+        shutdown(udp_fd_, SHUT_RDWR);
+        close(udp_fd_);
+        udp_fd_ = -1;
+    }
+
+    if (audio_udp_fd_ >= 0) {
+        shutdown(audio_udp_fd_, SHUT_RDWR);
+        close(audio_udp_fd_);
+        audio_udp_fd_ = -1;
+    }
+
     if (accept_thread_.joinable()) {
         accept_thread_.join();
+    }
+
+    if (udp_thread_.joinable()) {
+        udp_thread_.join();
+    }
+
+    if (audio_udp_thread_.joinable()) {
+        audio_udp_thread_.join();
     }
 
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
@@ -120,6 +140,128 @@ void RTSPServer::stop() {
         close(pair.second->socket_fd);
     }
     clients_.clear();
+}
+
+bool RTSPServer::start_udp_ingest(int video_port, int audio_port) {
+    if (!running_)
+        return false;
+
+    if (video_port > 0 && udp_fd_ < 0) {
+        udp_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udp_fd_ >= 0) {
+            int opt = 1;
+            setsockopt(udp_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+            timeval tv{};
+            tv.tv_sec = 0;
+            tv.tv_usec = 200000;  // 200ms timeout for clean shutdown
+            setsockopt(udp_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+            addr.sin_port = htons(video_port);
+            if (bind(udp_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                udp_video_port_ = video_port;
+                udp_thread_ = std::thread(&RTSPServer::udp_ingest_loop, this, udp_fd_, true);
+                std::cout << "[RTSP-Native] Ingest video RTP receiver listening on 127.0.0.1:" << video_port << std::endl;
+            } else {
+                std::cerr << "[RTSP-Native] Failed to bind UDP video ingest on port " << video_port << std::endl;
+                close(udp_fd_);
+                udp_fd_ = -1;
+            }
+        }
+    }
+
+    if (audio_port > 0 && audio_udp_fd_ < 0) {
+        audio_udp_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+        if (audio_udp_fd_ >= 0) {
+            int opt = 1;
+            setsockopt(audio_udp_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+            timeval tv{};
+            tv.tv_sec = 0;
+            tv.tv_usec = 200000;
+            setsockopt(audio_udp_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+            addr.sin_port = htons(audio_port);
+            if (bind(audio_udp_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                udp_audio_port_ = audio_port;
+                audio_udp_thread_ = std::thread(&RTSPServer::udp_ingest_loop, this, audio_udp_fd_, false);
+                std::cout << "[RTSP-Native] Ingest audio RTP receiver listening on 127.0.0.1:" << audio_port << std::endl;
+            } else {
+                std::cerr << "[RTSP-Native] Failed to bind UDP audio ingest on port " << audio_port << std::endl;
+                close(audio_udp_fd_);
+                audio_udp_fd_ = -1;
+            }
+        }
+    }
+
+    return (udp_fd_ >= 0);
+}
+
+void RTSPServer::udp_ingest_loop(int socket_fd, bool is_video) {
+    uint8_t packet[2048];
+    while (running_) {
+        ssize_t len = recv(socket_fd, packet, sizeof(packet), 0);
+        if (len <= 0) {
+            if (!running_)
+                break;
+            continue;
+        }
+        if (len < 12)
+            continue;
+
+        if (is_video) {
+            const uint8_t nal_type_h264 = packet[12] & 0x1F;
+            const bool is_fu_h264 = (nal_type_h264 == 28 && len >= 14);
+            const uint8_t fu_type_h264 = is_fu_h264 ? (packet[13] & 0x1F) : 0;
+            const bool fu_end_h264 = is_fu_h264 && (packet[13] & 0x40);
+            const bool is_idr_h264 = (nal_type_h264 == 5) || (is_fu_h264 && fu_type_h264 == 5);
+            const bool is_param_h264 = (nal_type_h264 == 7 || nal_type_h264 == 8);
+
+            const uint8_t nal_type_hevc = (packet[12] >> 1) & 0x3F;
+            const bool is_fu_hevc = (nal_type_hevc == 49 && len >= 15);
+            const uint8_t fu_type_hevc = is_fu_hevc ? (packet[14] & 0x3F) : 0;
+            const bool fu_end_hevc = is_fu_hevc && (packet[14] & 0x40);
+            const bool is_idr_hevc = (nal_type_hevc == 19 || nal_type_hevc == 20) ||
+                                     (is_fu_hevc && (fu_type_hevc == 19 || fu_type_hevc == 20));
+            const bool is_param_hevc = (nal_type_hevc >= 32 && nal_type_hevc <= 34);
+
+            const bool is_idr = is_idr_h264 || is_idr_hevc;
+            const bool is_param = is_param_h264 || is_param_hevc;
+            const bool is_end = (nal_type_h264 == 5) || fu_end_h264 ||
+                                (nal_type_hevc == 19 || nal_type_hevc == 20) || fu_end_hevc;
+
+            std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
+            for (auto& pair : clients_) {
+                RTSPClient& client = *(pair.second);
+                if (!client.is_playing || client.video_interleaved_channel < 0)
+                    continue;
+
+                if (client.wait_idr) {
+                    if (is_param || is_idr) {
+                        send_interleaved_rtp(client, client.video_interleaved_channel, packet, static_cast<size_t>(len));
+                        if (is_end) {
+                            client.wait_idr = false;
+                            client.received_keyframe = true;
+                        }
+                    }
+                    continue;
+                }
+                send_interleaved_rtp(client, client.video_interleaved_channel, packet, static_cast<size_t>(len));
+            }
+        } else {
+            std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
+            for (auto& pair : clients_) {
+                RTSPClient& client = *(pair.second);
+                if (!client.is_playing || client.audio_interleaved_channel < 0)
+                    continue;
+                send_interleaved_rtp(client, client.audio_interleaved_channel, packet, static_cast<size_t>(len));
+            }
+        }
+    }
 }
 
 void RTSPServer::hold_for_new_idr() {

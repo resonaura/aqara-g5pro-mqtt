@@ -122,6 +122,8 @@ bool StreamSession::start() {
         return false;
     }
 
+    rtsp_server_->start_udp_ingest(config_.rtsp_port + 1000, config_.rtsp_port + 1001);
+
     if (!p2p_client_->start()) {
         std::cerr << "[NativeSession] Failed to start P2P client for " << config_.did << std::endl;
         rtsp_server_->stop();

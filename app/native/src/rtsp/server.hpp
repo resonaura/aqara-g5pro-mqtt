@@ -57,11 +57,15 @@ public:
 
     void hold_for_new_idr();
 
+    bool start_udp_ingest(int video_port, int audio_port = 0);
     int get_port() const { return port_; }
+    int get_udp_video_port() const { return udp_video_port_; }
+    int get_udp_audio_port() const { return udp_audio_port_; }
     const std::string& get_path() const { return path_; }
 
 private:
     void accept_loop();
+    void udp_ingest_loop(int socket_fd, bool is_video);
     void handle_client(int client_fd);
     void process_rtsp_request(RTSPClient& client, const std::string& req);
 
@@ -92,6 +96,13 @@ private:
 
     std::chrono::steady_clock::time_point last_video_send_time_;
     std::chrono::steady_clock::time_point last_audio_send_time_;
+
+    int udp_video_port_ = 0;
+    int udp_audio_port_ = 0;
+    int udp_fd_ = -1;
+    int audio_udp_fd_ = -1;
+    std::thread udp_thread_;
+    std::thread audio_udp_thread_;
 };
 
 }  // namespace aqara

@@ -165,6 +165,7 @@ bool P2PClient::start() {
     }
 
     running_ = true;
+    start_time_ms_ = current_time_ms();
     last_p2p_traffic_ms_ = current_time_ms();
 
     receiver_thread_ = std::thread(&P2PClient::receiver_loop, this);
@@ -436,7 +437,7 @@ void P2PClient::discovery_loop() {
     std::cout << "[P2P-Native] Discovery started on local port " << my_port << " local_ip=" << local_ip << std::endl;
 
     int attempts = 0;
-    while (running_ && !is_connected_ && attempts < 150) {
+    while (running_ && !is_connected_) {
         attempts++;
 
         // 1. Query TUTK Master Servers (regional decoded masters first, then fallbacks)
@@ -458,12 +459,16 @@ void P2PClient::discovery_loop() {
             int port = (config_.camera_port > 0) ? config_.camera_port : 32108;
             send_raw_packet(punch_pkt.data(), punch_pkt.size(), config_.camera_ip, port);
             send_raw_packet(lan_bcast, 4, config_.camera_ip, 32108);
+            if (port != 32108) {
+                send_raw_packet(punch_pkt.data(), punch_pkt.size(), config_.camera_ip, 32108);
+            }
         }
         for (const auto& b : bcasts) {
             send_raw_packet(lan_bcast, 4, b.c_str(), 32108);
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        // Sleep 200ms during the first 150 attempts (~30s burst), then 1000ms thereafter to probe steadily
+        std::this_thread::sleep_for(std::chrono::milliseconds(attempts < 150 ? 200 : 1000));
     }
 }
 
@@ -543,10 +548,13 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         ep2.sin_port = htons(ep_port);
         inet_pton(AF_INET, ip_buf2, &ep2.sin_addr);
 
-        {
+        bool valid_ep = (ep.sin_addr.s_addr != 0 && ep_port > 0);
+        bool valid_ep2 = (ep2.sin_addr.s_addr != 0 && ep_port > 0);
+
+        if (valid_ep || valid_ep2) {
             std::lock_guard<std::mutex> lock(endpoints_mutex_);
-            endpoints_.push_back(ep);
-            endpoints_.push_back(ep2);
+            if (valid_ep) endpoints_.push_back(ep);
+            if (valid_ep2 && ep2.sin_addr.s_addr != ep.sin_addr.s_addr) endpoints_.push_back(ep2);
         }
 
         std::cout << "[P2P-Native] Master server " << ip_str << " returned camera endpoint candidate(s): " << ip_buf
@@ -554,8 +562,8 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
 
         auto punch_pkt = PPCSCipher::build_pppp(PpcsMsgType::PUNCH, punch_buf_.data(), punch_buf_.size());
         PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), punch_pkt.data(), punch_pkt.size());
-        send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep);
-        send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep2);
+        if (valid_ep) send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep);
+        if (valid_ep2 && ep2.sin_addr.s_addr != ep.sin_addr.s_addr) send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep2);
     } else if (msg_type == static_cast<uint8_t>(PpcsMsgType::PUNCH)) {
         // PUNCH from a candidate endpoint. Once connected, keep the winning
         // endpoint pinned instead of letting late LAN discovery steal it.
@@ -739,6 +747,17 @@ void P2PClient::watchdog_loop() {
         if (!running_)
             break;
         tick++;
+
+        if (!is_connected_) {
+            const int64_t now = current_time_ms();
+            if (now - start_time_ms_.load() > 20000 && now - last_unhealthy_emitted_ms_.load() > 20000 && event_cb_) {
+                last_unhealthy_emitted_ms_ = now;
+                std::cout << "[P2P-Native] Connection establishment timed out (20s) for " << config_.did
+                          << ", emitting unhealthy event" << std::endl;
+                event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+            }
+            continue;
+        }
 
         if (is_connected_) {
             // Keepalive ALIVE every 2 seconds

@@ -240,4 +240,10 @@ export class OfflineCardManager {
       this.offlineStates.delete(slug);
     }
   }
+
+  public stopAll(): void {
+    for (const slug of Array.from(this.offlineStates.keys())) {
+      this.setOnline(slug);
+    }
+  }
 }

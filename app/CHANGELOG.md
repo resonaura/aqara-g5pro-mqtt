@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.6.5 — Continuous RTSP Fallback Video Stream, Watchdog Timeout Recovery & P2P IP Persistence
+
+### 📺 Continuous RTSP Stream & Seamless Offline Fallback
+- **Snapshot-as-Video Fallback Stream**: Implemented continuous RTSP fallback video streaming modeled directly after `scrypted-tuya`. When a camera is offline or reconnecting, the bridge streams the Gaussian-blurred last-known live frame (`last_live.jpg`) or clean dark HUD overlay with live ticking clock (`%{pts:hms}`) and advancing RTP timestamps (1 fps) along with a silent AAC audio track over the camera's RTSP port (`rtsp://<host>:<port>/live/<slug>`).
+- **Seamless Live Handover**: Integrated native UDP ingest (`start_udp_ingest`) into the C++ `RTSPServer`. When live video keyframes arrive from the camera, the fallback process is cleanly stopped and live video seamlessly takes over without dropping the RTSP TCP session. Home Assistant, go2rtc, Scrypted, and WebRTC viewers remain connected without errors or broken streams.
+
+### 🛡️ P2P Connection & Watchdog Recovery Hardening
+- **Learned Camera IP Persistence**: The camera's discovered LAN IP address is now saved in `AqaraCameraBridge` and `cameraInfo.device.ip` when `p2p_connected` fires. When reconnecting across isolated VLANs (e.g. Home Assistant on 192.168.4.x and cameras on 192.168.5.x), the bridge now reliably passes the known IP to the native engine for direct UDP punching instead of failing when LAN broadcasts cannot cross subnets.
+- **Continuous Discovery Probing**: Prevented `P2PClient::discovery_loop()` from terminating after 30s when disconnected; the discovery loop now continues probing steadily (1 probe/s) until the camera is found.
+- **Watchdog Connection Timeout Supervision**: Added `!is_connected_` supervision in C++ `watchdog_loop()`: if connection establishment exceeds 20 seconds, an `EventUnhealthy` is emitted to trigger supervisor retry.
+- **TypeScript Supervisor Watchdog**: Added an active 35-second watchdog timer in `restartCameraStream`: if a reconnecting camera fails to deliver a live keyframe within 35 seconds, the watchdog triggers the next reconnection attempt with backoff and fresh cloud-signed keys.
+- **Filtered Zero Endpoints**: Master server discovery now ignores `0.0.0.0` and port 0 endpoint candidates.
+
 ## v1.6.4 — Dynamic Regional TUTK Master Resolution, Direct Camera IP Overrides & Shutdown Safety
 
 ### 🌐 Regional TUTK Master Server Discovery (AU / APAC / EU / KR / US)
