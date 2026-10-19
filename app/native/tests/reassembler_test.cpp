@@ -21,10 +21,12 @@ int main() {
     aqara::AVIOReassembler reassembler(key, key);
     int audio_frames = 0;
     std::vector<uint8_t> decoded;
-    reassembler.set_callbacks({}, [&](const aqara::AudioFrame& frame) {
-        ++audio_frames;
-        decoded = frame.aac_adts_data;
-    }, {});
+    reassembler.set_callbacks({},
+                              [&](const aqara::AudioFrame& frame) {
+                                  ++audio_frames;
+                                  decoded = frame.aac_adts_data;
+                              },
+                              {});
 
     const std::vector<uint8_t> plaintext = {0xff, 0xf1, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x11, 0x22};
     std::vector<uint8_t> frame(32 + 8 + plaintext.size(), 0);
@@ -45,13 +47,13 @@ int main() {
     // Independent PPCS channels have independent 16-bit sequence spaces.
     // Different timestamps pass through.
     put_u32_le(frame, 8, 100);  // ms_part = 100
-    put_u32_le(frame, 12, 1);  // s_part = 1 -> ts_ms = 1100
+    put_u32_le(frame, 12, 1);   // s_part = 1 -> ts_ms = 1100
     reassembler.push_packet(1, 400, frame.data(), frame.size());
     assert(audio_frames == 2);
 
     // Duplicate timestamp frame is dropped
     reassembler.push_packet(1, 401, frame.data(), frame.size());
-    assert(audio_frames == 2); // Still 2, duplicate dropped!
+    assert(audio_frames == 2);  // Still 2, duplicate dropped!
 
     // Mic audio may be inserted between two UDP fragments of one video AVIO
     // frame. It must be peeled out instead of becoming part of the video bytes.
@@ -73,11 +75,16 @@ int main() {
     interleaved.push_packet(4, 101, mixed.data(), mixed.size());
     interleaved.push_packet(4, 102, video.data() + 27, video.size() - 27);
     assert(video_frames == 1);
+    assert(interleaved.last_video_frame_ms() > 0);
+    interleaved.reset();
+    assert(interleaved.last_video_frame_ms() == 0);
+    assert(reassembler.last_video_frame_ms() == 0);  // Audio and raw datagrams cannot mark video healthy.
 
     // Test regional TUTK master decoding from InitString
     std::vector<std::string> masters;
     std::string out_key;
-    const std::string test_init = "EBGAEIBIKHJJGFJKEOGCFAEPHPMAHONDGJFPBKCPAJJMLFKBDBAGCJPBGOLKIKLKAJMJKFDOOFMOBECEJIMM:mysecretkey";
+    const std::string test_init =
+        "EBGAEIBIKHJJGFJKEOGCFAEPHPMAHONDGJFPBKCPAJJMLFKBDBAGCJPBGOLKIKLKAJMJKFDOOFMOBECEJIMM:mysecretkey";
     bool ok = aqara::PPCSCipher::decode_init_string(test_init, masters, out_key);
     assert(ok);
     assert(masters.size() == 3);

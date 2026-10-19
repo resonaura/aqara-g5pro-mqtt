@@ -80,7 +80,7 @@ static const char* TUTK_MASTERS[] = {"54.71.80.151",  "54.214.103.243", "3.23.78
 static const uint8_t TALKBACK_LEAD[11] = {0xff, 0xf9, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x00, 0xd0, 0x00, 0x07};
 
 static int64_t current_time_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 
@@ -791,6 +791,14 @@ void P2PClient::watchdog_loop() {
                 }
             } else if (session_ready_) {
                 const int64_t now = current_time_ms();
+                const int64_t decoded_at = reassembler_->last_video_frame_ms();
+                if (decoded_at > 0 && now - decoded_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 &&
+                    event_cb_) {
+                    last_unhealthy_emitted_ms_ = now;
+                    std::cerr << "[P2P-Native] No decoded video frames for " << config_.did
+                              << "; encrypted packets alone are not a healthy stream" << std::endl;
+                    event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+                }
                 const int64_t video_at = last_video_traffic_ms_.load();
                 const int64_t ready_at = session_ready_since_ms_.load();
 

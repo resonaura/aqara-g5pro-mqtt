@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.8 — Detect stalled decoded video
+
+- Recover when P2P packets keep arriving but no complete video frame is produced; stale cached snapshots cannot hide this failure.
+- Use a monotonic recovery clock and ignore late frames from stopped snapshotters.
+
+
 ## v1.6.7 — Bounded stream recovery
 
 - Keep the requested stream state ON during camera or cloud outages; retry with fresh keys without losing cooldown retries. Manual OFF cancels in-flight work.
