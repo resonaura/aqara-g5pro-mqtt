@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.6.7 — Bounded stream recovery
+
+- Keep the requested stream state ON during camera or cloud outages; retry with fresh keys without losing cooldown retries. Manual OFF cancels in-flight work.
+- Supervise native startup and ping/pong liveness; terminate stuck media workers with a deadline and recreate RTSP outputs without restarting MQTT or HTTP.
+- Prepare offline RTSP outputs before cloud authentication, watch the fallback encoder, and remove H264 startup buffering. Remember the observed live codec instead of guessing from the camera model.
+- Keep RTP sequence/timestamp continuity across live/offline encoder transitions, bound slow readers, and drain RTSP reader threads safely.
+- Send camera session shutdown packets before closing transport; serialize native IPC events and bound cloud polling.
+
+
 ## v1.6.6 — Deterministic Camera RTSP Port Mapping, Non-Overlapping Ingest Ports & Native In-Memory IDR Snapshots
 
 ### 🎚️ Deterministic Camera Ordering & Persistent RTSP Port Mapping

@@ -28,11 +28,23 @@ interface ActiveFallback {
   process: ChildProcess | null;
   stopping: boolean;
   restartTimer?: NodeJS.Timeout;
+  watchdog?: NodeJS.Timeout;
+  lastProgress: number;
 }
 
 export class FallbackStreamManager {
   private static instance: FallbackStreamManager | null = null;
   private fallbacks = new Map<string, ActiveFallback>();
+
+  public constructor(
+    private readonly runtime: {
+      command?: string;
+      args?: string[];
+      restartMs?: number;
+      watchdogMs?: number;
+      stallMs?: number;
+    } = {},
+  ) {}
 
   public static getInstance(): FallbackStreamManager {
     if (!FallbackStreamManager.instance) {
@@ -49,9 +61,7 @@ export class FallbackStreamManager {
   public startFallback(options: FallbackOptions): void {
     const existing = this.fallbacks.get(options.slug);
     if (existing) {
-      if (!existing.stopping && existing.process) {
-        return; // Already running
-      }
+      if (!existing.stopping) return; // Includes one pending restart; never create competing workers.
       this.stopFallback(options.slug);
     }
 
@@ -95,9 +105,9 @@ export class FallbackStreamManager {
           "-preset",
           "ultrafast",
           "-tune",
-          "stillimage",
+          "zerolatency",
           "-x265-params",
-          "keyint=2:no-info=1",
+          "keyint=2:min-keyint=2:repeat-headers=1:no-info=1:pools=1:frame-threads=1",
           "-pix_fmt",
           "yuv420p",
           "-r",
@@ -109,7 +119,7 @@ export class FallbackStreamManager {
           "-preset",
           "ultrafast",
           "-tune",
-          "stillimage",
+          "stillimage,zerolatency",
           "-profile:v",
           "baseline",
           "-pix_fmt",
@@ -124,6 +134,11 @@ export class FallbackStreamManager {
       "-hide_banner",
       "-loglevel",
       "warning",
+      "-progress",
+      "pipe:1",
+      "-nostats",
+      "-threads",
+      "1",
       ...inputArgs,
       "-f",
       "lavfi",
@@ -160,42 +175,60 @@ export class FallbackStreamManager {
       options,
       process: null,
       stopping: false,
+      lastProgress: Date.now(),
     };
     this.fallbacks.set(options.slug, record);
 
+    let settled = false;
+    const restart = () => {
+      if (settled) return;
+      settled = true;
+      clearInterval(record.watchdog);
+      record.process = null;
+      if (record.stopping || this.fallbacks.get(options.slug) !== record) return;
+      record.restartTimer = setTimeout(() => {
+        if (record.stopping || this.fallbacks.get(options.slug) !== record) return;
+        this.fallbacks.delete(options.slug);
+        this.startFallback(options);
+      }, this.runtime.restartMs ?? 2_000);
+      record.restartTimer.unref();
+    };
     try {
-      const proc = spawn("ffmpeg", fallbackArgs, {
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      record.process = proc;
-
-      console.log(
-        `📺 [FallbackStream:${options.deviceName}] Streaming offline card to RTSP ingest (127.0.0.1:${options.rtpPort})`,
+      const proc = spawn(
+        this.runtime.command ?? "ffmpeg",
+        [...(this.runtime.args ?? []), ...fallbackArgs],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
-
-      proc.stderr?.on("data", (chunk: Buffer) => {
-        const msg = chunk.toString().trim();
-        if (msg && !msg.includes("frame=") && !msg.includes("fps=")) {
-          // Log only non-progress warnings if needed
+      record.process = proc;
+      let progress = "";
+      let lastFrame = -1;
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        progress = (progress + chunk.toString()).slice(-8192);
+        const lines = progress.split("\n");
+        progress = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("frame=")) continue;
+          const frame = Number(line.slice(6).trim());
+          if (Number.isFinite(frame) && frame > lastFrame) {
+            lastFrame = frame;
+            record.lastProgress = Date.now();
+          }
         }
       });
-
-      proc.once("exit", () => {
-        if (record.stopping) return;
-        record.process = null;
-        // If still registered and not explicitly stopped, restart after 2s
-        record.restartTimer = setTimeout(() => {
-          if (!record.stopping && this.fallbacks.get(options.slug) === record) {
-            this.fallbacks.delete(options.slug);
-            this.startFallback(options);
-          }
-        }, 2000);
-        record.restartTimer.unref();
-      });
-    } catch (err: any) {
-      console.error(
-        `❌ [FallbackStream:${options.deviceName}] Failed to spawn fallback stream: ${err.message}`,
-      );
+      proc.stderr?.resume();
+      // spawn failures emit error asynchronously; they must never terminate the add-on.
+      proc.once("error", restart);
+      proc.once("close", restart);
+      record.watchdog = setInterval(() => {
+        if (record.stopping || Date.now() - record.lastProgress < (this.runtime.stallMs ?? 15_000))
+          return;
+        proc.kill("SIGKILL"); // Only the disposable offline encoder, not MQTT/HTTP/native outputs.
+      }, this.runtime.watchdogMs ?? 5_000);
+      record.watchdog.unref();
+    } catch {
+      restart();
     }
   }
 
@@ -203,6 +236,7 @@ export class FallbackStreamManager {
     const record = this.fallbacks.get(slug);
     if (!record) return;
     record.stopping = true;
+    clearInterval(record.watchdog);
     if (record.restartTimer) {
       clearTimeout(record.restartTimer);
       record.restartTimer = undefined;
@@ -214,7 +248,7 @@ export class FallbackStreamManager {
       const proc = record.process;
       setTimeout(() => {
         try {
-          proc.kill("SIGKILL");
+          if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
         } catch {}
       }, 1000).unref();
       record.process = null;

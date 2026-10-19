@@ -49,6 +49,7 @@ export interface BridgeOptions {
   rtspPort?: number;
   rtspPath?: string;
   videoKey?: string;
+  videoCodec?: "h264" | "hevc";
   deviceName?: string;
   model?: string;
   p2pQualityChannel?: number;
@@ -264,6 +265,7 @@ export class AqaraCameraBridge extends EventEmitter {
   public token: string;
   public deviceName?: string;
   public model: string;
+  public videoCodec: "h264" | "hevc";
   public p2pQualityChannel: number = 0;
   public cameraIp: string | null = null;
   public cameraPort: number = 0;
@@ -278,7 +280,8 @@ export class AqaraCameraBridge extends EventEmitter {
   public frameCount: number = 0;
   public droppedGapFrames: number = 0;
 
-  private keyPair: any = null;
+  private authController?: AbortController;
+  private stopped = false;
   private p2pInfo: P2PInfo | null = null;
   private appPub: string = "";
   private appSign: string = "";
@@ -295,6 +298,7 @@ export class AqaraCameraBridge extends EventEmitter {
     this.did = options.did;
     this.token = options.token;
     this.model = options.model || "";
+    this.videoCodec = options.videoCodec ?? "h264";
     this.p2pQualityChannel =
       typeof options.p2pQualityChannel === "number" ? options.p2pQualityChannel : 0;
     this.cameraIp = options.cameraIp || null;
@@ -312,46 +316,62 @@ export class AqaraCameraBridge extends EventEmitter {
     this.decryptor = new AqaraStreamDecryptor(videoKey);
   }
 
-  public async start(): Promise<void> {
-    return this.connect(false);
+  public async start(signal?: AbortSignal): Promise<void> {
+    return this.connect(false, signal);
   }
 
-  public async initCloudSession(): Promise<{ appPub: string; sign: string }> {
-    this.p2pInfo = await getP2PInfo(this.did);
+  public async initCloudSession(signal?: AbortSignal): Promise<{ appPub: string; sign: string }> {
+    this.authController?.abort();
+    const controller = new AbortController();
+    this.authController = controller;
+    const authSignal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(30_000),
+      ...(signal ? [signal] : []),
+    ]);
+    const info = await getP2PInfo(this.did, authSignal);
+    const keyPair = crypto.generateKeyPairSync("x25519");
+    const pubJwk = keyPair.publicKey.export({ format: "jwk" }) as any;
+    const appPub = Buffer.from(pubJwk.x, "base64url").toString("hex");
+    const signRes = await signP2PKey(this.did, appPub, authSignal);
+    authSignal.throwIfAborted();
+    if (this.stopped) throw new Error("Camera stream stopped");
 
-    this.keyPair = crypto.generateKeyPairSync("x25519");
-    const pubJwk = this.keyPair.publicKey.export({ format: "jwk" }) as any;
-    this.appPub = Buffer.from(pubJwk.x, "base64url").toString("hex");
-
-    const signRes = await signP2PKey(this.did, this.appPub);
-    this.appSign = signRes.sign;
-    this.signTime = signRes.time;
-
-    const devPubHex = signRes.p2pDevPublicKey || this.p2pInfo?.devP2pPublicKey;
+    const devPubHex = signRes.p2pDevPublicKey || info.devP2pPublicKey;
     if (devPubHex) {
       const devPubDer = Buffer.concat([
         Buffer.from("302a300506032b656e032100", "hex"),
         Buffer.from(devPubHex, "hex"),
       ]);
       const devPubKey = crypto.createPublicKey({ key: devPubDer, format: "der", type: "spki" });
-      const shared = crypto.diffieHellman({
-        publicKey: devPubKey,
-        privateKey: this.keyPair.privateKey,
-      });
-      const videoKeyHex = AqaraStreamDecryptor.deriveKey(this.did, shared).toString("hex");
-      this.decryptor = new AqaraStreamDecryptor(videoKeyHex);
+      const shared = crypto.diffieHellman({ publicKey: devPubKey, privateKey: keyPair.privateKey });
+      this.decryptor = new AqaraStreamDecryptor(
+        AqaraStreamDecryptor.deriveKey(this.did, shared).toString("hex"),
+      );
     }
-
-    console.log(
-      `🔑 [P2P-Auth:${this.did}] Generated fresh X25519 keypair (pub: ${this.appPub.substring(0, 8)}...) & signed with Aqara Cloud (time: ${this.signTime})`,
-    );
-
-    return { appPub: this.appPub, sign: this.appSign };
+    this.p2pInfo = info;
+    this.appPub = appPub;
+    this.appSign = signRes.sign;
+    this.signTime = signRes.time;
+    return { appPub, sign: signRes.sign };
   }
 
-  public async connect(_skipVideo?: boolean): Promise<void> {
-    await this.initCloudSession();
+  public prepareOutput(): void {
+    NativeMediaEngine.getInstance().ensureOutput({
+      did: this.did,
+      rtsp_port: this.rtspPort,
+      rtsp_path: this.rtspPath || `live/${this.did}`,
+      udp_video_port: this.udpVideoPort,
+      udp_audio_port: this.udpAudioPort,
+      video_codec: this.videoCodec,
+    });
+  }
 
+  public async connect(_skipVideo?: boolean, signal?: AbortSignal): Promise<void> {
+    if (this.stopped) throw new Error("Camera stream stopped");
+    this.p2pSessionReady = false;
+    this.isConnected = false;
+    this.prepareOutput();
     const engine = NativeMediaEngine.getInstance();
     for (const { event, fn } of this.engineListeners) {
       engine.off(event, fn);
@@ -392,9 +412,11 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     });
 
-    registerListener("keyframe", (did: string) => {
+    registerListener("keyframe", (did: string, codec?: string) => {
       if (did === this.did) {
-        this.emit("keyframe");
+        if (codec === "h264" || codec === "hevc") this.videoCodec = codec;
+        this.prepareOutput();
+        this.emit("keyframe", this.videoCodec);
         this.emit("stream_started");
       }
     });
@@ -405,12 +427,22 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     });
 
+    registerListener("error", (message: { did?: string; message?: string }) => {
+      if (message.did === this.did) {
+        this.emit("warn", message.message || "Native media operation failed");
+        this.emit("unhealthy");
+      }
+    });
+
     registerListener("talkback_ready", (did: string) => {
       if (did === this.did) {
         this.emit("talkback", "accepted");
       }
     });
 
+    await this.initCloudSession(signal);
+    signal?.throwIfAborted();
+    if (this.stopped) throw new Error("Camera stream stopped");
     const keyHex = this.decryptor?.getKeyHex() || "";
     engine.startP2P({
       did: this.did,
@@ -425,6 +457,7 @@ export class AqaraCameraBridge extends EventEmitter {
       camera_ip: this.cameraIp || "",
       camera_port: this.cameraPort || 0,
       rtsp_port: this.rtspPort,
+      video_codec: this.videoCodec,
       rtsp_path: this.rtspPath || `live/${this.did}`,
       p2p_quality_channel: this.p2pQualityChannel,
       udp_video_port: this.udpVideoPort,
@@ -432,29 +465,8 @@ export class AqaraCameraBridge extends EventEmitter {
     });
   }
 
-  public async reconnect(): Promise<void> {
-    this.p2pSessionReady = false;
-    await this.initCloudSession();
-    const keyHex = this.decryptor?.getKeyHex() || "";
-    const engine = NativeMediaEngine.getInstance();
-    engine.startP2P({
-      did: this.did,
-      p2p_id: this.p2pInfo?.p2pId,
-      init_string: this.p2pInfo?.initStringApp,
-      app_pub_hex: this.appPub,
-      app_sign: this.appSign,
-      sign_time: this.signTime,
-      dev_pub_hex: this.p2pInfo?.devP2pPublicKey,
-      video_key_hex: keyHex,
-      audio_key_hex: keyHex,
-      camera_ip: this.cameraIp || "",
-      camera_port: this.cameraPort || 0,
-      rtsp_port: this.rtspPort,
-      rtsp_path: this.rtspPath || `live/${this.did}`,
-      p2p_quality_channel: this.p2pQualityChannel,
-      udp_video_port: this.udpVideoPort,
-      udp_audio_port: this.udpAudioPort,
-    });
+  public async reconnect(signal?: AbortSignal): Promise<void> {
+    return this.connect(false, signal);
   }
 
   public async waitForSessionReady(timeoutMs = 10000): Promise<boolean> {
@@ -529,6 +541,9 @@ export class AqaraCameraBridge extends EventEmitter {
   }
 
   public stop(): void {
+    this.stopped = true;
+    this.authController?.abort();
+    this.p2pSessionReady = false;
     this.isConnected = false;
     const engine = NativeMediaEngine.getInstance();
     for (const { event, fn } of this.engineListeners) {

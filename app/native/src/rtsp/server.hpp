@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -9,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../media/reassembler.hpp"
+#include "rtp-timeline.hpp"
 
 namespace aqara {
 
@@ -34,9 +36,11 @@ struct RTSPClient {
     uint16_t video_rtp_seq = 0;
     uint32_t video_rtp_timestamp = 0x10000000;
     uint32_t video_ssrc = 0x12345678;
+    RtpTimeline video_clock{0x10000000};
     uint16_t audio_rtp_seq = 0;
     uint32_t audio_rtp_timestamp = 0x20000000;
     uint32_t audio_ssrc = 0x87654321;
+    RtpTimeline audio_clock{0x20000000};
 
     uint64_t base_timestamp_ms = 0;
     uint32_t base_video_rtp_ts = 0x10000000;
@@ -49,6 +53,8 @@ public:
     RTSPServer(int port, const std::string& path, KeyframeCallback kf_cb = nullptr);
     ~RTSPServer();
 
+    // Only used before starting the output; live frames refine the codec parameters.
+    void set_initial_codec(bool hevc) { is_hevc_ = hevc; }
     bool start();
     void stop();
 
@@ -71,6 +77,7 @@ private:
     void process_rtsp_request(RTSPClient& client, const std::string& req);
 
     std::string generate_sdp(const std::string& host_ip);
+    void send_ingest_rtp(RTSPClient& client, bool video, const uint8_t* packet, size_t len);
     void send_interleaved_rtp(RTSPClient& client, int channel, const uint8_t* rtp_pkt, size_t len);
     void send_video_to_client(RTSPClient& client, const VideoFrame& vf);
 
@@ -80,6 +87,9 @@ private:
     std::atomic<bool> running_{false};
     int server_fd_ = -1;
     std::thread accept_thread_;
+    std::mutex handlers_mutex_;
+    std::condition_variable handlers_done_;
+    size_t active_handlers_ = 0;
 
     std::recursive_mutex clients_mutex_;
     std::unordered_map<int, std::unique_ptr<RTSPClient>> clients_;

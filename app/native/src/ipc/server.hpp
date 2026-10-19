@@ -22,6 +22,7 @@ public:
 private:
     void handle_command(const std::string& line);
 
+    std::mutex output_mutex_;
     std::mutex sessions_mutex_;
     std::unordered_map<std::string, std::unique_ptr<StreamSession>> sessions_;
     std::atomic<bool> running_{false};

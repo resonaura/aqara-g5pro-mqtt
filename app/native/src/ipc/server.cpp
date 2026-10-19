@@ -21,6 +21,7 @@ struct IpcCommandDto {
     int camera_port = 0;
     int rtsp_port = 8555;
     std::string rtsp_path;
+    std::string video_codec;
     int p2p_quality_channel = 0;
     int udp_video_port = 0;
     int udp_audio_port = 0;
@@ -70,6 +71,7 @@ IpcServer::~IpcServer() {
 }
 
 void IpcServer::send_event(const std::string& json_str) {
+    std::lock_guard<std::mutex> lock(output_mutex_);
     std::cout << json_str << std::endl;
 }
 
@@ -89,7 +91,7 @@ void IpcServer::handle_command(const std::string& line) {
     IpcCommandDto cmd_dto;
     auto ec = glz::read_json(cmd_dto, line);
     if (ec) {
-        send_event(to_json(EventError{.message = "JSON parse error: " + glz::format_error(ec, line)}));
+        send_event(to_json(EventError{.message = "Invalid IPC JSON command"}));
         return;
     }
 
@@ -97,7 +99,7 @@ void IpcServer::handle_command(const std::string& line) {
 
     if (cmd == "ping") {
         send_event(to_json(EventPong{}));
-    } else if (cmd == "start_session" || cmd == "start_p2p") {
+    } else if (cmd == "ensure_output" || cmd == "start_session" || cmd == "start_p2p") {
         SessionConfig cfg;
         cfg.did = cmd_dto.did;
         cfg.p2p_id = cmd_dto.p2p_id;
@@ -111,6 +113,7 @@ void IpcServer::handle_command(const std::string& line) {
         cfg.camera_ip = cmd_dto.camera_ip;
         cfg.camera_port = cmd_dto.camera_port;
         cfg.rtsp_port = cmd_dto.rtsp_port > 0 ? cmd_dto.rtsp_port : 8555;
+        cfg.video_codec = cmd_dto.video_codec;
         cfg.rtsp_path = cmd_dto.rtsp_path.empty() ? ("live/" + cfg.did) : cmd_dto.rtsp_path;
         cfg.p2p_quality_channel = cmd_dto.p2p_quality_channel;
         cfg.udp_video_port = cmd_dto.udp_video_port;
@@ -124,6 +127,8 @@ void IpcServer::handle_command(const std::string& line) {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         auto it = sessions_.find(cfg.did);
         if (it != sessions_.end()) {
+            if (cmd == "ensure_output")
+                return;
             if (it->second->restart_p2p(cfg)) {
                 send_event(to_json(EventSessionStarted{.did = cfg.did, .rtsp_port = cfg.rtsp_port}));
             } else {
@@ -134,7 +139,7 @@ void IpcServer::handle_command(const std::string& line) {
 
         auto session = std::make_unique<StreamSession>(cfg, [this](const std::string& evt) { send_event(evt); });
 
-        if (session->start()) {
+        if (cmd == "ensure_output" ? session->start_output() : session->start()) {
             sessions_[cfg.did] = std::move(session);
             send_event(to_json(EventSessionStarted{.did = cfg.did, .rtsp_port = cfg.rtsp_port}));
         } else {

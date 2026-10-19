@@ -41,3 +41,28 @@ test("FallbackStreamManager manages fallback video stream lifecycle", async () =
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("missing encoder does not crash the add-on or resurrect after stop", async () => {
+  const mgr = new FallbackStreamManager({
+    command: "/nonexistent/aqara-encoder-fixture",
+    restartMs: 20,
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fallback-missing-"));
+  try {
+    mgr.startFallback({
+      slug: "missing",
+      deviceName: "Fixture",
+      rtpPort: 19557,
+      audioRtpPort: 19558,
+      dataDir: dir,
+    });
+    await new Promise((r) => setTimeout(r, 70));
+    assert.equal(mgr.isRunning("missing"), false);
+    mgr.stopAll();
+    await new Promise((r) => setTimeout(r, 70));
+    assert.equal(mgr.isRunning("missing"), false);
+  } finally {
+    mgr.stopAll();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

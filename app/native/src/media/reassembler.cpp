@@ -302,7 +302,7 @@ void AVIOReassembler::process_completed_audio(const uint8_t* data, size_t len) {
     if (audio_frames_ == 1) {
         const bool adts =
             af.aac_adts_data.size() >= 2 && af.aac_adts_data[0] == 0xff && (af.aac_adts_data[1] & 0xf0) == 0xf0;
-        std::cout << "[AVIO] audio initialized: bytes=" << audio_len << " ts_ms=" << ts_ms
+        std::cerr << "[AVIO] audio initialized: bytes=" << audio_len << " ts_ms=" << ts_ms
                   << " adts=" << (adts ? "yes" : "no") << std::endl;
     }
     if (audio_cb_)

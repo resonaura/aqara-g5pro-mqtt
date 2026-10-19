@@ -49,3 +49,6 @@ add_executable(aqara-reassembler-test
 )
 target_link_libraries(aqara-reassembler-test PRIVATE pthread)
 add_test(NAME aqara-reassembler-test COMMAND aqara-reassembler-test)
+
+add_executable(aqara-rtp-timeline-test tests/rtp_timeline_test.cpp)
+add_test(NAME aqara-rtp-timeline-test COMMAND aqara-rtp-timeline-test)

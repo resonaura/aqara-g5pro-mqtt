@@ -97,7 +97,7 @@ P2PClient::P2PClient(const P2PConfig& config, std::shared_ptr<AVIOReassembler> r
             masters_str += decoded_masters[i];
             master_servers_.push_back(decoded_masters[i]);
         }
-        std::cout << "[P2P-Native] Decoded " << decoded_masters.size()
+        std::cerr << "[P2P-Native] Decoded " << decoded_masters.size()
                   << " regional TUTK master server(s) from init_string: " << masters_str << std::endl;
     }
 
@@ -132,7 +132,7 @@ P2PClient::P2PClient(const P2PConfig& config, std::shared_ptr<AVIOReassembler> r
         camera_addr_.sin_family = AF_INET;
         camera_addr_.sin_port = htons(config_.camera_port);
         inet_pton(AF_INET, config_.camera_ip.c_str(), &camera_addr_.sin_addr);
-        std::cout << "[P2P-Native] Configured direct camera target: " << config_.camera_ip << ":" << config_.camera_port
+        std::cerr << "[P2P-Native] Configured direct camera target: " << config_.camera_ip << ":" << config_.camera_port
                   << std::endl;
     }
 }
@@ -172,14 +172,13 @@ bool P2PClient::start() {
     discovery_thread_ = std::thread(&P2PClient::discovery_loop, this);
     watchdog_thread_ = std::thread(&P2PClient::watchdog_loop, this);
 
-    std::cout << "[P2P-Native] Started P2P client for " << config_.did << " p2p_id=" << config_.p2p_id << std::endl;
+    std::cerr << "[P2P-Native] Started P2P client for " << config_.did << " p2p_id=" << config_.p2p_id << std::endl;
     return true;
 }
 
 void P2PClient::stop() {
     if (!running_)
         return;
-    running_ = false;
 
     // 1. Send 0x1004 SESSION_STOP on channel 0 if session was started
     if (is_connected_) {
@@ -197,11 +196,14 @@ void P2PClient::stop() {
         if (!config_.camera_ip.empty()) {
             send_raw_packet(close_pkt.data(), close_pkt.size(), config_.camera_ip, 32108);
         }
+        // Shutdown packets must be sent while send_raw_packet still accepts writes.
+        running_ = false;
         shutdown(udp_fd_, SHUT_RDWR);
         close(udp_fd_);
         udp_fd_ = -1;
     }
 
+    running_ = false;
     if (receiver_thread_.joinable())
         receiver_thread_.join();
     if (discovery_thread_.joinable())
@@ -321,7 +323,7 @@ void P2PClient::send_login_if_due(int64_t min_interval_ms) {
         .app_public_key = config_.app_pub_hex,
     };
     std::string login_json = glz::write_json(payload).value_or("");
-    std::cout << "[P2P-Native] Sending 0x1000 Login for " << config_.did << std::endl;
+    std::cerr << "[P2P-Native] Sending 0x1000 Login for " << config_.did << std::endl;
     auto login_frame = PPCSCipher::build_lumi_frame(
         LumiCmdType::LOGIN_REQ, reinterpret_cast<const uint8_t*>(login_json.data()), login_json.length(), cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, login_frame.data(), login_frame.size());
@@ -357,7 +359,7 @@ void P2PClient::ptz(int action, int speed) {
 void P2PClient::start_talkback() {
     if (!is_connected_)
         return;
-    std::cout << "[P2P-Native] Sending 0x100A startTalk to " << config_.did << std::endl;
+    std::cerr << "[P2P-Native] Sending 0x100A startTalk to " << config_.did << std::endl;
     talk_seq_ = 0;
     talk_frames_sent_ = 0;
     auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::PTZ_OR_TALK_START, nullptr, 0, cmd_seq_++);
@@ -367,7 +369,7 @@ void P2PClient::start_talkback() {
 void P2PClient::stop_talkback() {
     if (!is_connected_)
         return;
-    std::cout << "[P2P-Native] Sending 0x100C stopTalk to " << config_.did << std::endl;
+    std::cerr << "[P2P-Native] Sending 0x100C stopTalk to " << config_.did << std::endl;
     auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::TALK_STOP, nullptr, 0, cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
 }
@@ -434,7 +436,7 @@ void P2PClient::discovery_loop() {
 
     uint8_t lan_bcast[4] = {0xF1, static_cast<uint8_t>(PpcsMsgType::LAN_BROADCAST), 0x00, 0x00};
     auto bcasts = get_broadcast_ips();
-    std::cout << "[P2P-Native] Discovery started on local port " << my_port << " local_ip=" << local_ip << std::endl;
+    std::cerr << "[P2P-Native] Discovery started on local port " << my_port << " local_ip=" << local_ip << std::endl;
 
     int attempts = 0;
     while (running_ && !is_connected_) {
@@ -516,7 +518,7 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
     if (dec[0] != 0xF1) {
         char ip_str[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &(src.sin_addr), ip_str, INET_ADDRSTRLEN);
-        std::cout << "[P2P-Native] Drop non-PPCS packet " << len << "B from " << ip_str << ":" << ntohs(src.sin_port)
+        std::cerr << "[P2P-Native] Drop non-PPCS packet " << len << "B from " << ip_str << ":" << ntohs(src.sin_port)
                   << " byte0=0x" << std::hex << (int)data[0] << " dec0=0x" << (int)dec[0] << std::dec << std::endl;
         return;
     }
@@ -553,17 +555,21 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
 
         if (valid_ep || valid_ep2) {
             std::lock_guard<std::mutex> lock(endpoints_mutex_);
-            if (valid_ep) endpoints_.push_back(ep);
-            if (valid_ep2 && ep2.sin_addr.s_addr != ep.sin_addr.s_addr) endpoints_.push_back(ep2);
+            if (valid_ep)
+                endpoints_.push_back(ep);
+            if (valid_ep2 && ep2.sin_addr.s_addr != ep.sin_addr.s_addr)
+                endpoints_.push_back(ep2);
         }
 
-        std::cout << "[P2P-Native] Master server " << ip_str << " returned camera endpoint candidate(s): " << ip_buf
+        std::cerr << "[P2P-Native] Master server " << ip_str << " returned camera endpoint candidate(s): " << ip_buf
                   << ":" << ep_port << " / " << ip_buf2 << ":" << ep_port << " for " << config_.did << std::endl;
 
         auto punch_pkt = PPCSCipher::build_pppp(PpcsMsgType::PUNCH, punch_buf_.data(), punch_buf_.size());
         PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), punch_pkt.data(), punch_pkt.size());
-        if (valid_ep) send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep);
-        if (valid_ep2 && ep2.sin_addr.s_addr != ep.sin_addr.s_addr) send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep2);
+        if (valid_ep)
+            send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep);
+        if (valid_ep2 && ep2.sin_addr.s_addr != ep.sin_addr.s_addr)
+            send_raw_packet(punch_pkt.data(), punch_pkt.size(), ep2);
     } else if (msg_type == static_cast<uint8_t>(PpcsMsgType::PUNCH)) {
         // PUNCH from a candidate endpoint. Once connected, keep the winning
         // endpoint pinned instead of letting late LAN discovery steal it.
@@ -603,7 +609,7 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
 
         const bool first_handshake = !is_connected_.exchange(true);
         if (first_handshake) {
-            std::cout << "[P2P-Native] RDY Handshake OK with " << ip_str << ":" << ntohs(src.sin_port) << std::endl;
+            std::cerr << "[P2P-Native] RDY Handshake OK with " << ip_str << ":" << ntohs(src.sin_port) << std::endl;
             notify_connected(src);
         }
         // Cameras may repeat RDY while our ACK is in flight. Retry auth at most
@@ -703,14 +709,14 @@ void P2PClient::handle_channel0_data(const uint8_t* data, size_t len) {
 
 void P2PClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t body_len) {
     std::string body_str = (body && body_len > 0) ? std::string(reinterpret_cast<const char*>(body), body_len) : "";
-    std::cout << "[P2P-Native] Channel 0 frame for " << config_.did << " type=0x" << std::hex << type << std::dec
+    std::cerr << "[P2P-Native] Channel 0 frame for " << config_.did << " type=0x" << std::hex << type << std::dec
               << " body_len=" << body_len << " body=" << body_str << std::endl;
 
     if (type == static_cast<uint32_t>(LumiCmdType::LOGIN_RESP)) {
         // A DRW response may be retransmitted or even batched several times.
         // Advance the auth state exactly once, independently of session_ready_.
         if (!session_started_.exchange(true)) {
-            std::cout << "[P2P-Native] 0x1001 Login OK for " << config_.did
+            std::cerr << "[P2P-Native] 0x1001 Login OK for " << config_.did
                       << ", sending 0x101C stream start & 0x1002 session start" << std::endl;
             // Match official client ordering from Frida: channel 3
             // stream/record-list request first (0x101C), then channel 0 live-session start (0x1002).
@@ -723,7 +729,7 @@ void P2PClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
     } else if (type == static_cast<uint32_t>(LumiCmdType::SESSION_START_RESP)) {
         if (!session_ready_) {
             session_ready_ = true;
-            std::cout << "[P2P-Native] 0x1003 Session Ready for " << config_.did << ", requesting keyframe (0x1018)"
+            std::cerr << "[P2P-Native] 0x1003 Session Ready for " << config_.did << ", requesting keyframe (0x1018)"
                       << std::endl;
             session_ready_since_ms_ = current_time_ms();
             request_keyframe();
@@ -733,7 +739,7 @@ void P2PClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
             }
         }
     } else if (type == static_cast<uint32_t>(LumiCmdType::TALKBACK_RESP)) {
-        std::cout << "[P2P-Native] Talkback channel prepared (0x100B)" << std::endl;
+        std::cerr << "[P2P-Native] Talkback channel prepared (0x100B)" << std::endl;
         if (event_cb_) {
             event_cb_(to_json(EventTalkbackReady{.did = config_.did}));
         }
@@ -752,7 +758,7 @@ void P2PClient::watchdog_loop() {
             const int64_t now = current_time_ms();
             if (now - start_time_ms_.load() > 20000 && now - last_unhealthy_emitted_ms_.load() > 20000 && event_cb_) {
                 last_unhealthy_emitted_ms_ = now;
-                std::cout << "[P2P-Native] Connection establishment timed out (20s) for " << config_.did
+                std::cerr << "[P2P-Native] Connection establishment timed out (20s) for " << config_.did
                           << ", emitting unhealthy event" << std::endl;
                 event_cb_(to_json(EventUnhealthy{.did = config_.did}));
             }
@@ -760,6 +766,12 @@ void P2PClient::watchdog_loop() {
         }
 
         if (is_connected_) {
+            const int64_t now = current_time_ms();
+            if (!session_ready_ && now - start_time_ms_.load() > 30000 &&
+                now - last_unhealthy_emitted_ms_.load() > 20000 && event_cb_) {
+                last_unhealthy_emitted_ms_ = now;
+                event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+            }
             // Keepalive ALIVE every 2 seconds
             if (tick % 2 == 0) {
                 auto alive = PPCSCipher::build_pppp(PpcsMsgType::ALIVE);
@@ -786,7 +798,7 @@ void P2PClient::watchdog_loop() {
                 if (video_at == 0 && ready_at > 0 && now - ready_at > 4000 &&
                     now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
-                    std::cout << "[P2P-Native] No video after session ready for " << config_.did
+                    std::cerr << "[P2P-Native] No video after session ready for " << config_.did
                               << ", retrying stream start" << std::endl;
                     auto stream_frame =
                         PPCSCipher::build_lumi_frame(LumiCmdType::STREAM_START_REQ, nullptr, 0, cmd_seq_++);
@@ -798,13 +810,13 @@ void P2PClient::watchdog_loop() {
 
                     if (now - ready_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 && event_cb_) {
                         last_unhealthy_emitted_ms_ = now;
-                        std::cout << "[P2P-Native] No video received for " << config_.did
+                        std::cerr << "[P2P-Native] No video received for " << config_.did
                                   << " after 15s, emitting unhealthy event" << std::endl;
                         event_cb_(to_json(EventUnhealthy{.did = config_.did}));
                     }
                 } else if (video_at > 0 && now - video_at > 6000 && now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
-                    std::cout << "[P2P-Native] Video stream stalled (" << (now - video_at) / 1000 << "s) for "
+                    std::cerr << "[P2P-Native] Video stream stalled (" << (now - video_at) / 1000 << "s) for "
                               << config_.did << ", requesting keyframe" << std::endl;
                     request_keyframe();
 
@@ -819,7 +831,7 @@ void P2PClient::watchdog_loop() {
 
                     if (now - video_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 && event_cb_) {
                         last_unhealthy_emitted_ms_ = now;
-                        std::cout << "[P2P-Native] Video stream unresponsive for " << config_.did
+                        std::cerr << "[P2P-Native] Video stream unresponsive for " << config_.did
                                   << ", emitting unhealthy event" << std::endl;
                         event_cb_(to_json(EventUnhealthy{.did = config_.did}));
                     }

@@ -45,7 +45,8 @@ import { FallbackStreamManager } from "./fallback-stream.js";
 import { NativeMediaEngine } from "./native-engine.js";
 import { Device, MQTTDevice } from "./types.js";
 import { generateEnvExample, normalizeValue } from "./utils.js";
-import { loadP2PState, saveP2PState, getDataDir } from "./state.js";
+import { loadP2PState, saveP2PState, getDataDir, getCameraState, setCameraState } from "./state.js";
+import { StreamRecovery } from "./stream-recovery.js";
 import { closeDatabase } from "./db/data-source.js";
 
 if (process.env.NODE_ENV !== "production") {
@@ -84,6 +85,7 @@ const cameraData: Array<{
   device: Device;
   mqttDevice: MQTTDevice;
   hasSpotlight: boolean;
+  videoCodec: "h264" | "hevc";
   bridge?: AqaraCameraBridge;
   snapshotter?: FrameSnapshotter;
 }> = [];
@@ -108,11 +110,13 @@ for (let i = 0; i < cameras.length; i++) {
   const camera = cameras[i];
   const mqttDevice = aqaraDeviceToMQTT(camera);
   const capabilities = await checkDeviceCapabilities(camera.did);
+  const saved = await getCameraState(camera.did);
 
   cameraData.push({
     device: camera,
     mqttDevice,
     hasSpotlight: capabilities.hasSpotlight,
+    videoCodec: saved.video_codec === "hevc" ? "hevc" : "h264",
     bridge: undefined,
   });
   console.log(`📋 ${camera.deviceName}: spotlight=${capabilities.hasSpotlight ? "✅" : "❌"}`);
@@ -170,164 +174,56 @@ await httpServer.start();
 const client = createMQTTClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
 const talkbackFeeds = new Map<string, { ready: boolean; queue: Buffer[] }>();
-const reconnectAttempts = new Map<string, { count: number; lastAttempt: number }>();
-const reconnectTimers = new Map<string, NodeJS.Timeout>();
+const recoveries = new Map<string, StreamRecovery>();
 
 function cameraBySlug(name: string) {
   return cameraData.find((c) => slugMap[c.device.did] === name);
 }
 
-const activeReconnections = new Set<string>();
-
-function calculateFullJitter(attempt: number, baseMs = 15_000, maxMs = 60_000): number {
-  const cap = Math.min(maxMs, baseMs * Math.pow(1.4, Math.min(Math.max(attempt - 1, 0), 4)));
-  return Math.floor(cap * 0.75 + Math.random() * (cap * 0.25));
-}
-
-async function restartCameraStream(
-  cameraInfo: (typeof cameraData)[number],
-  reason: string,
-): Promise<void> {
+function restartCameraStream(cameraInfo: (typeof cameraData)[number], reason: string): void {
   const did = cameraInfo.device.did;
-  if (activeReconnections.has(did)) {
-    console.log(
-      `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnection already in progress, skipping duplicate call.`,
-    );
-    return;
-  }
-  activeReconnections.add(did);
-
-  try {
-    const now = Date.now();
-    const state = reconnectAttempts.get(did) || { count: 0, lastAttempt: 0 };
-
-    // Cooldown with exponential backoff & full jitter if camera is failing to reconnect
-    const cooldown = calculateFullJitter(state.count);
-    if (cameraInfo.bridge && state.lastAttempt > 0 && now - state.lastAttempt < cooldown) {
-      console.log(
-        `⏳ [Watchdog:${cameraInfo.device.deviceName}] Reconnect on cooldown (${Math.round((cooldown - (now - state.lastAttempt)) / 1000)}s remaining, attempt #${state.count})...`,
-      );
-      return;
-    }
-
-    state.count++;
-    state.lastAttempt = now;
-    reconnectAttempts.set(did, state);
-
-    console.warn(
-      `⚠️ [Watchdog:${cameraInfo.device.deviceName}] ${reason}. Reconnecting P2P stream (attempt #${state.count})...`,
-    );
-
-    const slug = slugMap[did];
-    const deviceId = cameraInfo.mqttDevice.id;
-    const idx = cameraData.indexOf(cameraInfo);
-    const rtspPort = rtspPorts[idx];
-    const rtpPort = 10000 + (rtspPort - rtspBasePort) * 4;
-    const audioRtpPort = rtpPort + 2;
-    const isHevc = cameraInfo.device.model.includes("agl004") || did.includes("lumi3");
-
-    OfflineCardManager.getInstance().setOffline({
-      slug,
-      deviceName: cameraInfo.device.deviceName,
-      deviceId,
-      reason: `Reconnecting P2P tunnel (attempt #${state.count})...`,
-      onFrameUpdate: (imgBuf) => {
-        client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
+  let recovery = recoveries.get(did);
+  if (!recovery) {
+    recovery = new StreamRecovery({
+      isEnabled: async () => (await loadP2PState())[did] !== false,
+      recover: async (signal, attempt, message) => {
+        const slug = slugMap[did];
+        const rtspPort = rtspPorts[cameraData.indexOf(cameraInfo)];
+        const rtpPort = 10000 + (rtspPort - rtspBasePort) * 4;
+        console.warn(`[Recovery:${cameraInfo.device.deviceName}] ${message} (attempt ${attempt})`);
+        OfflineCardManager.getInstance().setOffline({
+          slug,
+          deviceName: cameraInfo.device.deviceName,
+          deviceId: cameraInfo.mqttDevice.id,
+          reason: `Reconnecting camera (attempt ${attempt})`,
+          onFrameUpdate: (image) =>
+            client.publish(`homeassistant/camera/${cameraInfo.mqttDevice.id}/camera/image`, image),
+        });
+        cameraInfo.snapshotter?.stop();
+        cameraInfo.snapshotter = undefined;
+        FallbackStreamManager.getInstance().startFallback({
+          slug,
+          deviceName: cameraInfo.device.deviceName,
+          rtpPort,
+          audioRtpPort: rtpPort + 2,
+          isHevc: cameraInfo.videoCodec === "hevc",
+        });
+        if (cameraInfo.bridge) await cameraInfo.bridge.reconnect(signal);
+        else await ensureCameraBridge(cameraInfo, signal);
       },
+      onError: (error, attempt) =>
+        console.warn(
+          `[Recovery:${cameraInfo.device.deviceName}] Attempt ${attempt} failed; retry retained: ${error instanceof Error ? error.message : "Unknown error"}`,
+        ),
     });
-
-    // Start fallback video stream to native RTSP ingest port
-    FallbackStreamManager.getInstance().startFallback({
-      slug,
-      deviceName: cameraInfo.device.deviceName,
-      rtpPort,
-      audioRtpPort,
-      isHevc,
-    });
-
-    // Stop snapshotter while offline so ffmpeg is not executed on an empty/stalled stream
-    if (cameraInfo.snapshotter) {
-      cameraInfo.snapshotter.stop();
-      cameraInfo.snapshotter = undefined;
-    }
-
-    // Check if still wanted ON in state
-    const p2pState = await loadP2PState();
-    if (p2pState[did] === false) {
-      console.log(
-        `ℹ️ [Watchdog:${cameraInfo.device.deviceName}] P2P stream was turned OFF, skipping reconnect.`,
-      );
-      if (cameraInfo.bridge) {
-        cameraInfo.bridge.stop();
-        cameraInfo.bridge = undefined;
-      }
-      FallbackStreamManager.getInstance().stopFallback(slug);
-      OfflineCardManager.getInstance().setOffline({
-        slug,
-        deviceName: cameraInfo.device.deviceName,
-        deviceId,
-        reason: "P2P stream is turned OFF",
-        onFrameUpdate: (imgBuf) => {
-          client.publish(`homeassistant/camera/${deviceId}/camera/image`, imgBuf);
-        },
-      });
-      reconnectAttempts.delete(did);
-      return;
-    }
-
-    try {
-      if (cameraInfo.bridge) {
-        console.log(
-          `🔄 [Watchdog:${cameraInfo.device.deviceName}] Resurrecting P2P tunnel with fresh keys (attempt #${state.count})...`,
-        );
-        await cameraInfo.bridge.reconnect();
-      } else {
-        await ensureCameraBridge(cameraInfo);
-      }
-      console.log(
-        `📡 [Watchdog:${cameraInfo.device.deviceName}] Reconnection signal sent to native P2P engine (attempt #${state.count}), waiting for video packets...`,
-      );
-
-      // Supervisory timer: if stream does not recover within 35s, trigger next reconnect attempt
-      const existingTimer = reconnectTimers.get(did);
-      if (existingTimer) clearTimeout(existingTimer);
-      const supervisorTimer = setTimeout(() => {
-        reconnectTimers.delete(did);
-        if (OfflineCardManager.getInstance().isOffline(slug)) {
-          console.log(
-            `⏱️ [Watchdog:${cameraInfo.device.deviceName}] Reconnection attempt #${state.count} timed out waiting for video (35s), retrying...`,
-          );
-          void restartCameraStream(cameraInfo, "Reconnection response timeout");
-        }
-      }, 35_000);
-      supervisorTimer.unref();
-      reconnectTimers.set(did, supervisorTimer);
-    } catch (err: any) {
-      const delay = Math.min(15_000 * Math.pow(1.4, Math.min(state.count - 1, 4)), 60_000);
-      console.warn(
-        `❌ [Watchdog:${cameraInfo.device.deviceName}] Reconnection dispatch #${state.count} failed: ${err?.message || err}. Scheduling retry in ${Math.round(delay / 1000)}s...`,
-      );
-      OfflineCardManager.getInstance().updateStatus(
-        slug,
-        `Reconnecting in ${Math.round(delay / 1000)}s (attempt #${state.count})...`,
-      );
-      setTimeout(async () => {
-        const currentP2pState = await loadP2PState();
-        if (currentP2pState[did] !== false) {
-          void restartCameraStream(
-            cameraInfo,
-            `Scheduled retry after failed attempt #${state.count}`,
-          );
-        }
-      }, delay);
-    }
-  } finally {
-    activeReconnections.delete(did);
+    recoveries.set(did, recovery);
   }
+  recovery.request(reason);
 }
 
 async function ensureCameraBridge(
   cameraInfo: (typeof cameraData)[number],
+  signal?: AbortSignal,
 ): Promise<AqaraCameraBridge> {
   if (cameraInfo.bridge) return cameraInfo.bridge;
   const existing = bridgeStartPromises.get(cameraInfo.device.did);
@@ -363,6 +259,7 @@ async function ensureCameraBridge(
       udpVideoPort: rtpPort,
       udpAudioPort: audioRtpPort,
       model: cameraInfo.device.model,
+      videoCodec: cameraInfo.videoCodec,
       p2pQualityChannel: jsonQualityChannel(null, cameraInfo.device.model),
       videoKey: process.env.VIDEO_KEY,
       deviceName: cameraInfo.device.deviceName,
@@ -394,7 +291,7 @@ async function ensureCameraBridge(
             NativeMediaEngine.getInstance().getSnapshot(did, timeoutMs),
         });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
-          reconnectAttempts.delete(cameraInfo.device.did);
+          recoveries.get(cameraInfo.device.did)?.healthy();
           OfflineCardManager.getInstance().setOnline(frameSlug);
           const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
           client.publish(`homeassistant/sensor/${deviceId}/snapshot_url/state`, frameUrl, {
@@ -429,19 +326,10 @@ async function ensureCameraBridge(
       updateStreamEntities();
     });
 
-    bridge.on("keyframe", () => {
-      const state = reconnectAttempts.get(cameraInfo.device.did);
-      if (state) {
-        console.log(
-          `✅ [Watchdog:${cameraInfo.device.deviceName}] P2P stream restored with live video frames after ${state.count} attempt(s)!`,
-        );
-        reconnectAttempts.delete(cameraInfo.device.did);
-      }
-      const supervisorTimer = reconnectTimers.get(cameraInfo.device.did);
-      if (supervisorTimer) {
-        clearTimeout(supervisorTimer);
-        reconnectTimers.delete(cameraInfo.device.did);
-      }
+    bridge.on("keyframe", (codec: "h264" | "hevc") => {
+      cameraInfo.videoCodec = codec;
+      void setCameraState(cameraInfo.device.did, { video_codec: codec }).catch(() => {});
+      recoveries.get(cameraInfo.device.did)?.healthy();
       FallbackStreamManager.getInstance().stopFallback(slug);
       OfflineCardManager.getInstance().setOnline(slug);
       updateStreamEntities();
@@ -460,31 +348,27 @@ async function ensureCameraBridge(
       console.error(`❌ [${cameraInfo.device.deviceName}] ${e?.message || e}`),
     );
 
-    try {
-      const isHevc =
-        cameraInfo.device.model.includes("agl004") || cameraInfo.device.did.includes("lumi3");
-      FallbackStreamManager.getInstance().startFallback({
-        slug,
-        deviceName: cameraInfo.device.deviceName,
-        rtpPort,
-        audioRtpPort,
-        isHevc,
-      });
-      await bridge.start();
-      updateStreamEntities();
-      return bridge;
-    } catch (err) {
-      bridge.stop();
-      cameraInfo.bridge = undefined;
-      throw err;
-    }
+    const isHevc = cameraInfo.videoCodec === "hevc";
+    FallbackStreamManager.getInstance().startFallback({
+      slug,
+      deviceName: cameraInfo.device.deviceName,
+      rtpPort,
+      audioRtpPort,
+      isHevc,
+    });
+    bridge.prepareOutput();
+    updateStreamEntities();
+    await bridge.start(signal);
+    return bridge;
   })();
 
   bridgeStartPromises.set(cameraInfo.device.did, startPromise);
   try {
     return await startPromise;
   } finally {
-    bridgeStartPromises.delete(cameraInfo.device.did);
+    if (bridgeStartPromises.get(cameraInfo.device.did) === startPromise) {
+      bridgeStartPromises.delete(cameraInfo.device.did);
+    }
   }
 }
 
@@ -499,12 +383,7 @@ void (async () => {
       console.log(
         `🔄 [P2P Stream] Auto-restoring saved P2P stream (ON) for ${cam.device.deviceName}...`,
       );
-      ensureCameraBridge(cam).catch((err) => {
-        console.warn(
-          `⚠️ [P2P Stream] Failed to restore stream on startup for ${cam.device.deviceName}: ${err?.message || err}`,
-        );
-        void restartCameraStream(cam, "Initial boot stream restore failed");
-      });
+      restartCameraStream(cam, "Restoring saved camera stream");
     }
   });
 })();
@@ -735,24 +614,16 @@ client.on("message", async (topic, msg) => {
     if (value === "ON") {
       console.log(`🔌 [P2P Stream] Enabling P2P Stream for ${cameraInfo.device.deviceName}...`);
       await saveP2PState(cameraInfo.device.did, true);
-      try {
-        await ensureCameraBridge(cameraInfo);
-        client.publish(p2pSwitchTopic, "ON", { retain: true });
-      } catch (err: any) {
-        console.warn(
-          `⚠️ [P2P Bridge] Could not start P2P stream for ${cameraInfo.device.deviceName}: ${err?.message || err}`,
-        );
-        await saveP2PState(cameraInfo.device.did, false);
-        client.publish(p2pSwitchTopic, "OFF", { retain: true });
-        client.publish(p2pRtspTopic, "null", { retain: true });
-        client.publish(snapshotUrlTopic, "null", { retain: true });
-        client.publish(talkbackRtmpTopic, "null", { retain: true });
-      }
+      client.publish(p2pSwitchTopic, "ON", { retain: true });
+      restartCameraStream(cameraInfo, "Stream enabled by user");
     } else {
       console.log(`🛑 [P2P Stream] Disabling P2P Stream for ${cameraInfo.device.deviceName}...`);
       await saveP2PState(cameraInfo.device.did, false);
-      reconnectAttempts.delete(cameraInfo.device.did);
+      recoveries.get(cameraInfo.device.did)?.stop();
+      recoveries.delete(cameraInfo.device.did);
+      bridgeStartPromises.delete(cameraInfo.device.did);
       const slug = slugMap[cameraInfo.device.did];
+      FallbackStreamManager.getInstance().stopFallback(slug);
       OfflineCardManager.getInstance().setOffline({
         slug,
         deviceName: cameraInfo.device.deviceName,
@@ -833,26 +704,30 @@ async function publishRTSPState(subjectId: string, cameraInfo: (typeof cameraDat
 }
 
 // === POLLING ===
-async function poll() {
+const pollingCameras = new Set<string>();
+function poll(): void {
   const attrs = ENTITIES.map((e) => e.attr).concat(["white_light_enable", "white_light_level"]);
-
   for (const cameraInfo of cameraData) {
-    try {
-      const res = await queryAttrs(attrs, cameraInfo.device.did);
-      for (const r of res.result || []) {
-        await publishAttr(r.attr, r.value, cameraInfo);
+    const did = cameraInfo.device.did;
+    if (pollingCameras.has(did)) continue;
+    pollingCameras.add(did);
+    // One bounded poll per camera; an offline camera cannot pile up polls or block its peers.
+    void (async () => {
+      try {
+        const res = await queryAttrs(attrs, did);
+        for (const r of res.result || []) await publishAttr(r.attr, r.value, cameraInfo);
+        const events = await queryAttrs(EVENT_ATTRS, did);
+        if (events.code === 0)
+          processEventAttrs(client, cameraInfo.mqttDevice, events.result || []);
+        await publishRTSPState(did, cameraInfo);
+      } catch (error) {
+        console.warn(
+          `[Poll:${cameraInfo.device.deviceName}] ${error instanceof Error ? error.message : "Request failed"}`,
+        );
+      } finally {
+        pollingCameras.delete(did);
       }
-      const events = await queryAttrs(EVENT_ATTRS, cameraInfo.device.did);
-      if (events.code === 0) {
-        processEventAttrs(client, cameraInfo.mqttDevice, events.result || []);
-      }
-      await publishRTSPState(cameraInfo.device.did, cameraInfo);
-    } catch (error: any) {
-      console.error(
-        `❌ Polling failed for ${cameraInfo.device.deviceName}:`,
-        error?.message || error,
-      );
-    }
+    })();
   }
 }
 
@@ -961,6 +836,7 @@ async function publishAttr(
 async function shutdown(signal: string) {
   console.log(`\n🛑 [App] Received ${signal}, performing graceful shutdown...`);
   try {
+    for (const recovery of recoveries.values()) recovery.stop();
     for (const c of cameraData) {
       c.snapshotter?.stop();
       c.bridge?.stop();
