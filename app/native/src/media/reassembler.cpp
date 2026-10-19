@@ -1,6 +1,7 @@
 #include "reassembler.hpp"
 #include "../crypto/chacha20.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 
@@ -45,6 +46,7 @@ void AVIOReassembler::set_keys(const uint8_t video_key[32], const uint8_t audio_
 }
 
 void AVIOReassembler::reset() {
+    last_video_frame_ms_ = 0;
     channels_.clear();
     last_audio_ts_ms_ = 0;
 }
@@ -428,6 +430,9 @@ void AVIOReassembler::process_completed_avio(const uint8_t* data, size_t len) {
     }
 
     if (video_cb_) {
+        last_video_frame_ms_ =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
         video_frames_++;
         VideoFrame vf;
         vf.annex_b_data = std::move(annex_b);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -35,6 +36,7 @@ public:
     void set_keys(const uint8_t video_key[32], const uint8_t audio_key[32]);
     void push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len);
     void reset();
+    int64_t last_video_frame_ms() const { return last_video_frame_ms_.load(); }
 
 private:
     struct ChannelState {
@@ -65,6 +67,7 @@ private:
     std::vector<uint8_t> pps_;
     std::vector<uint8_t> vps_;
 
+    std::atomic<int64_t> last_video_frame_ms_{0};
     uint64_t packets_received_ = 0;
     uint64_t packets_duplicate_ = 0;
     uint64_t sequence_gaps_ = 0;

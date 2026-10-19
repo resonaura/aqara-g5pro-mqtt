@@ -291,6 +291,7 @@ async function ensureCameraBridge(
             NativeMediaEngine.getInstance().getSnapshot(did, timeoutMs),
         });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
+          if (cameraInfo.snapshotter !== snap) return;
           recoveries.get(cameraInfo.device.did)?.healthy();
           OfflineCardManager.getInstance().setOnline(frameSlug);
           const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
