@@ -43,6 +43,7 @@ function aqaraSign(opts: { nonce: string; time: string; token?: string; body?: s
 }
 
 export const api = axios.create({
+  timeout: 12_000,
   headers: {
     "Content-Type": "application/json; charset=utf-8",
     lang: "en",
@@ -281,16 +282,20 @@ export async function getCameraStreamQualities(did: string): Promise<CameraStrea
   return parseCloudStreamQualities(raw);
 }
 
-export async function getP2PInfo(did: string): Promise<{
+export async function getP2PInfo(
+  did: string,
+  signal?: AbortSignal,
+): Promise<{
   p2pId: string;
   devP2pPublicKey: string;
   initStringApp: string;
 }> {
   const res = await api.get("/app/v1.0/lumi/devex/camera/p2p/info", {
     params: { did },
+    signal,
   });
   if (res.data?.code !== 0 || !res.data?.result) {
-    throw new Error(`Failed to get P2P info for ${did}: ${JSON.stringify(res.data)}`);
+    throw new Error(`P2P info unavailable (cloud code ${res.data?.code ?? "unknown"})`);
   }
   return res.data.result;
 }
@@ -298,14 +303,19 @@ export async function getP2PInfo(did: string): Promise<{
 export async function signP2PKey(
   did: string,
   appPublicKey: string,
+  signal?: AbortSignal,
 ): Promise<{ sign: string; p2pDevPublicKey?: string; time: string }> {
-  const res = await api.post("/app/v1.0/lumi/devex/camera/p2p/sign", {
-    did,
-    p2pAppPublicKey: appPublicKey,
-    app_public_key: appPublicKey,
-  });
+  const res = await api.post(
+    "/app/v1.0/lumi/devex/camera/p2p/sign",
+    {
+      did,
+      p2pAppPublicKey: appPublicKey,
+      app_public_key: appPublicKey,
+    },
+    { signal },
+  );
   if (res.data?.code !== 0 || !res.data?.result) {
-    throw new Error(`Failed to sign P2P key for ${did}: ${JSON.stringify(res.data)}`);
+    throw new Error(`P2P authentication unavailable (cloud code ${res.data?.code ?? "unknown"})`);
   }
   return res.data.result;
 }

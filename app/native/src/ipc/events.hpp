@@ -39,6 +39,7 @@ struct EventSessionReady {
 struct EventKeyframe {
     std::string event = "keyframe";
     std::string did;
+    std::string video_codec;
 };
 
 struct EventKeyframeRequested {

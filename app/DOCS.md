@@ -201,3 +201,11 @@ pnpm run talkback:sample
 
 MIT License — Created and maintained by [resonaura](https://github.com/resonaura) and contributors.
 Contributions and pull requests are warmly welcome!
+
+## Stream recovery
+
+An enabled stream keeps its RTSP outlet and a clearly labelled offline video while camera authentication is retried. Recovery uses one cancellable loop per camera, bounded cloud requests and backoff. Turning the stream off cancels pending authentication and retries; outages do not rewrite the saved ON/OFF choice.
+
+The native media worker is supervised separately from MQTT and HTTP. Missing startup/pong responses cause a bounded worker restart; RTSP outlets are recreated before fresh camera authentication. Clients may need to reconnect across an actual worker crash. Normal camera reconnections preserve the existing outlet and per-reader RTP sequence/timestamps. A fallback encoder has its own progress watchdog.
+
+For isolated tests, set `DATA_DIR` and `SQLITE_PATH` to a disposable directory before `pnpm test`. Native tests include H264/HEVC offline decoding, per-reader RTP continuity, worker hangs, cancellation and cooldown retries. Do not point these tests at an add-on's persistent database.

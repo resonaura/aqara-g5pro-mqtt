@@ -101,7 +101,7 @@ bool RTSPServer::start() {
 
     running_ = true;
     accept_thread_ = std::thread(&RTSPServer::accept_loop, this);
-    std::cout << "[RTSP-Native] Server listening on port " << port_ << " path /" << path_ << std::endl;
+    std::cerr << "[RTSP-Native] Server listening on port " << port_ << " path /" << path_ << std::endl;
     return true;
 }
 
@@ -140,11 +140,14 @@ void RTSPServer::stop() {
         audio_udp_thread_.join();
     }
 
-    std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
-    for (auto& pair : clients_) {
-        close(pair.second->socket_fd);
+    {
+        std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
+        for (auto& pair : clients_)
+            shutdown(pair.second->socket_fd, SHUT_RDWR);
     }
-    clients_.clear();
+    // Detached readers still reference this server. Let them release sockets before destruction.
+    std::unique_lock<std::mutex> lock(handlers_mutex_);
+    handlers_done_.wait(lock, [this]() { return active_handlers_ == 0; });
 }
 
 bool RTSPServer::start_udp_ingest(int video_port, int audio_port) {
@@ -168,7 +171,8 @@ bool RTSPServer::start_udp_ingest(int video_port, int audio_port) {
             if (bind(udp_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
                 udp_video_port_ = video_port;
                 udp_thread_ = std::thread(&RTSPServer::udp_ingest_loop, this, udp_fd_, true);
-                std::cout << "[RTSP-Native] Ingest video RTP receiver listening on 127.0.0.1:" << video_port << std::endl;
+                std::cerr << "[RTSP-Native] Ingest video RTP receiver listening on 127.0.0.1:" << video_port
+                          << std::endl;
             } else {
                 std::cerr << "[RTSP-Native] Failed to bind UDP video ingest on port " << video_port << std::endl;
                 close(udp_fd_);
@@ -194,7 +198,8 @@ bool RTSPServer::start_udp_ingest(int video_port, int audio_port) {
             if (bind(audio_udp_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
                 udp_audio_port_ = audio_port;
                 audio_udp_thread_ = std::thread(&RTSPServer::udp_ingest_loop, this, audio_udp_fd_, false);
-                std::cout << "[RTSP-Native] Ingest audio RTP receiver listening on 127.0.0.1:" << audio_port << std::endl;
+                std::cerr << "[RTSP-Native] Ingest audio RTP receiver listening on 127.0.0.1:" << audio_port
+                          << std::endl;
             } else {
                 std::cerr << "[RTSP-Native] Failed to bind UDP audio ingest on port " << audio_port << std::endl;
                 close(audio_udp_fd_);
@@ -215,10 +220,11 @@ void RTSPServer::udp_ingest_loop(int socket_fd, bool is_video) {
                 break;
             continue;
         }
-        if (len < 12)
+        if (len <= 12)
             continue;
 
         if (is_video) {
+            std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
             const uint8_t nal_type_h264 = packet[12] & 0x1F;
             const bool is_fu_h264 = (nal_type_h264 == 28 && len >= 14);
             const uint8_t fu_type_h264 = is_fu_h264 ? (packet[13] & 0x1F) : 0;
@@ -234,12 +240,11 @@ void RTSPServer::udp_ingest_loop(int socket_fd, bool is_video) {
                                      (is_fu_hevc && (fu_type_hevc == 19 || fu_type_hevc == 20));
             const bool is_param_hevc = (nal_type_hevc >= 32 && nal_type_hevc <= 34);
 
-            const bool is_idr = is_idr_h264 || is_idr_hevc;
-            const bool is_param = is_param_h264 || is_param_hevc;
-            const bool is_end = (nal_type_h264 == 5) || fu_end_h264 ||
-                                (nal_type_hevc == 19 || nal_type_hevc == 20) || fu_end_hevc;
+            const bool is_idr = is_hevc_ ? is_idr_hevc : is_idr_h264;
+            const bool is_param = is_hevc_ ? is_param_hevc : is_param_h264;
+            const bool is_end = is_hevc_ ? ((nal_type_hevc == 19 || nal_type_hevc == 20) || fu_end_hevc)
+                                         : ((nal_type_h264 == 5) || fu_end_h264);
 
-            std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
             for (auto& pair : clients_) {
                 RTSPClient& client = *(pair.second);
                 if (!client.is_playing || client.video_interleaved_channel < 0)
@@ -247,7 +252,7 @@ void RTSPServer::udp_ingest_loop(int socket_fd, bool is_video) {
 
                 if (client.wait_idr) {
                     if (is_param || is_idr) {
-                        send_interleaved_rtp(client, client.video_interleaved_channel, packet, static_cast<size_t>(len));
+                        send_ingest_rtp(client, true, packet, static_cast<size_t>(len));
                         if (is_end) {
                             client.wait_idr = false;
                             client.received_keyframe = true;
@@ -255,7 +260,7 @@ void RTSPServer::udp_ingest_loop(int socket_fd, bool is_video) {
                     }
                     continue;
                 }
-                send_interleaved_rtp(client, client.video_interleaved_channel, packet, static_cast<size_t>(len));
+                send_ingest_rtp(client, true, packet, static_cast<size_t>(len));
             }
         } else {
             std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
@@ -263,7 +268,7 @@ void RTSPServer::udp_ingest_loop(int socket_fd, bool is_video) {
                 RTSPClient& client = *(pair.second);
                 if (!client.is_playing || client.audio_interleaved_channel < 0)
                     continue;
-                send_interleaved_rtp(client, client.audio_interleaved_channel, packet, static_cast<size_t>(len));
+                send_ingest_rtp(client, false, packet, static_cast<size_t>(len));
             }
         }
     }
@@ -295,6 +300,12 @@ void RTSPServer::accept_loop() {
             continue;
         }
 
+        timeval send_timeout{};
+        send_timeout.tv_usec = 250000;
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+        timeval receive_timeout{};
+        receive_timeout.tv_sec = 1;
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
         int flag = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
         int sndbuf = 1048576;
@@ -311,10 +322,23 @@ void RTSPServer::accept_loop() {
 
         {
             std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
+            if (!running_ || clients_.size() >= 32) {
+                close(client_fd);
+                continue;
+            }
             clients_[client_fd] = std::move(client);
         }
 
-        std::thread([this, client_fd]() { handle_client(client_fd); }).detach();
+        {
+            std::lock_guard<std::mutex> lock(handlers_mutex_);
+            ++active_handlers_;
+        }
+        std::thread([this, client_fd]() {
+            handle_client(client_fd);
+            std::lock_guard<std::mutex> lock(handlers_mutex_);
+            --active_handlers_;
+            handlers_done_.notify_all();
+        }).detach();
     }
 }
 
@@ -324,9 +348,10 @@ void RTSPServer::handle_client(int client_fd) {
 
     while (running_) {
         ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-        if (n <= 0)
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+            continue;
+        if (n <= 0 || accumulated.size() + static_cast<size_t>(n) > 65536)
             break;
-
         accumulated.append(buf, n);
 
         while (!accumulated.empty()) {
@@ -475,16 +500,10 @@ void RTSPServer::process_rtsp_request(RTSPClient& client, const std::string& req
             client.wait_idr = false;
             client.received_keyframe = true;
             for (const auto& frame : gop) {
-                if (frame.timestamp_ms > 0) {
-                    if (client.base_timestamp_ms == 0)
-                        client.base_timestamp_ms = frame.timestamp_ms;
-                    const uint64_t delta_ms = frame.timestamp_ms >= client.base_timestamp_ms
-                                                  ? (frame.timestamp_ms - client.base_timestamp_ms)
-                                                  : 0;
-                    client.video_rtp_timestamp = client.base_video_rtp_ts + static_cast<uint32_t>(delta_ms * 90);
-                } else {
-                    client.video_rtp_timestamp += 4500;
-                }
+                client.video_rtp_timestamp =
+                    frame.timestamp_ms > 0
+                        ? client.video_clock.map(static_cast<uint32_t>(frame.timestamp_ms * 90), 0, 4500)
+                        : client.video_clock.advance(4500);
                 send_video_to_client(client, frame);
             }
         } else if (kf_req_cb_) {
@@ -568,6 +587,27 @@ std::string RTSPServer::generate_sdp(const std::string& host_ip) {
     return sdp.str();
 }
 
+void RTSPServer::send_ingest_rtp(RTSPClient& client, bool video, const uint8_t* packet, size_t len) {
+    std::vector<uint8_t> rewritten(packet, packet + len);
+    const uint32_t input =
+        (uint32_t(packet[4]) << 24) | (uint32_t(packet[5]) << 16) | (uint32_t(packet[6]) << 8) | packet[7];
+    const uint32_t source =
+        (uint32_t(packet[8]) << 24) | (uint32_t(packet[9]) << 16) | (uint32_t(packet[10]) << 8) | packet[11];
+    auto& clock = video ? client.video_clock : client.audio_clock;
+    auto& timestamp = video ? client.video_rtp_timestamp : client.audio_rtp_timestamp;
+    auto& sequence = video ? client.video_rtp_seq : client.audio_rtp_seq;
+    timestamp = clock.map(input, uint64_t(source) + 1, video ? 90000 : 1024);
+    const uint32_t ssrc = video ? client.video_ssrc : client.audio_ssrc;
+    rewritten[2] = static_cast<uint8_t>(sequence >> 8);
+    rewritten[3] = static_cast<uint8_t>(sequence++);
+    for (int i = 0; i < 4; ++i) {
+        rewritten[4 + i] = static_cast<uint8_t>(timestamp >> (24 - i * 8));
+        rewritten[8 + i] = static_cast<uint8_t>(ssrc >> (24 - i * 8));
+    }
+    send_interleaved_rtp(client, video ? client.video_interleaved_channel : client.audio_interleaved_channel,
+                         rewritten.data(), rewritten.size());
+}
+
 void RTSPServer::send_interleaved_rtp(RTSPClient& client, int channel, const uint8_t* rtp_pkt, size_t len) {
     if (!client.is_playing || channel < 0 || client.socket_fd < 0 || !rtp_pkt || len == 0 || len > 0xffff)
         return;
@@ -595,6 +635,8 @@ void RTSPServer::send_interleaved_rtp(RTSPClient& client, int channel, const uin
             continue;
         const bool was_playing = client.is_playing;
         client.is_playing = false;
+        // A stalled reader must not keep blocking the media callback on every frame.
+        shutdown(client.socket_fd, SHUT_RDWR);
         if (was_playing) {
             std::cerr << "[RTSP-Native] RTP send failed for " << client.ip << ":" << client.port << " sent=" << offset
                       << "/" << framed.size() << " err=" << (written < 0 ? std::strerror(errno) : "peer closed")
@@ -755,6 +797,7 @@ void RTSPServer::send_video_to_client(RTSPClient& client, const VideoFrame& vf) 
 void RTSPServer::broadcast_video(const VideoFrame& vf) {
     if (vf.annex_b_data.empty())
         return;
+    std::lock_guard<std::recursive_mutex> clients_lock(clients_mutex_);
     is_hevc_ = (vf.codec_id == 0x004F);
 
     {
@@ -836,16 +879,9 @@ void RTSPServer::broadcast_video(const VideoFrame& vf) {
             }
         }
 
-        if (vf.timestamp_ms > 0) {
-            if (client.base_timestamp_ms == 0) {
-                client.base_timestamp_ms = vf.timestamp_ms;
-            }
-            const uint64_t delta_ms =
-                vf.timestamp_ms >= client.base_timestamp_ms ? (vf.timestamp_ms - client.base_timestamp_ms) : 0;
-            client.video_rtp_timestamp = client.base_video_rtp_ts + static_cast<uint32_t>(delta_ms * 90);
-        } else {
-            client.video_rtp_timestamp += 4500;
-        }
+        client.video_rtp_timestamp = vf.timestamp_ms > 0
+                                         ? client.video_clock.map(static_cast<uint32_t>(vf.timestamp_ms * 90), 0, 4500)
+                                         : client.video_clock.advance(4500);
         send_video_to_client(client, vf);
     }
 }
@@ -892,7 +928,7 @@ void RTSPServer::broadcast_audio(const AudioFrame& af) {
         // AAC frames contain exactly 1024 PCM audio samples (64ms at 16000 Hz).
         // Increment by exactly 1024 per frame so RTP timestamp matches PCM sample count
         // 100% accurately with 0 drift or buffer overflow in WebRTC / VLC / go2rtc.
-        client.audio_rtp_timestamp += 1024;
+        client.audio_rtp_timestamp = client.audio_clock.advance(1024);
 
         uint8_t rtp_pkt[16 + 2048];
         rtp_pkt[0] = 0x80;

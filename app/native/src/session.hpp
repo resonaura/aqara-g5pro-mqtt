@@ -23,6 +23,7 @@ struct SessionConfig {
     int camera_port = 0;
     int rtsp_port = 8555;
     std::string rtsp_path;
+    std::string video_codec;
     int p2p_quality_channel = 0;
     int udp_video_port = 0;
     int udp_audio_port = 0;
@@ -34,6 +35,7 @@ public:
     ~StreamSession();
 
     bool start();
+    bool start_output();
     bool restart_p2p(const SessionConfig& new_cfg);
     void stop();
 
@@ -54,9 +56,10 @@ private:
     std::shared_ptr<AVIOReassembler> reassembler_;
     std::unique_ptr<RTSPServer> rtsp_server_;
     std::unique_ptr<P2PClient> p2p_client_;
+    bool output_started_ = false;
     bool seen_first_keyframe_ = false;
     bool quality_switched_ = false;
     int current_height_ = 0;
 };
 
-} // namespace aqara
+}  // namespace aqara

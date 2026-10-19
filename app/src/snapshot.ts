@@ -11,7 +11,16 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, copyFileSync, writeFileSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  copyFileSync,
+  writeFileSync,
+  unlinkSync,
+} from "node:fs";
 import path from "node:path";
 import { getDataDir } from "./state.js";
 

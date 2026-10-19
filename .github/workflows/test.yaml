@@ -1,0 +1,28 @@
+name: Test stream recovery
+on:
+  pull_request:
+    paths: ["app/**", ".github/workflows/test.yaml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      DATA_DIR: ${{ runner.temp }}/aqara-test-data
+      SQLITE_PATH: ${{ runner.temp }}/aqara-test-data/storage.sqlite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg cmake build-essential
+      - run: corepack enable && corepack prepare pnpm@11.21.0 --activate
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - run: pnpm build && pnpm build:native
+        working-directory: app
+      - run: ctest --test-dir native/build --output-on-failure
+        working-directory: app
+      - run: pnpm test && pnpm lint
+        working-directory: app
