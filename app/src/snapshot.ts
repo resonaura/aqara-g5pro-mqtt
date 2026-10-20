@@ -257,7 +257,10 @@ export class FrameSnapshotter extends EventEmitter {
       proc.stderr?.on("data", (d: Buffer) => {
         stderrBuf += d.toString();
       });
+      let settled = false;
       proc.on("error", (err) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(killTimer);
         if (!this.stopped) {
           console.warn(`⚠️ [Snapshot:${this.slug}] ffmpeg error: ${err.message}`);
@@ -268,6 +271,8 @@ export class FrameSnapshotter extends EventEmitter {
       proc.on("exit", (code) => {
         clearTimeout(killTimer);
         if (this.proc === proc) this.proc = null;
+        if (settled) return;
+        settled = true;
         if (this.stopped) {
           resolve(false);
           return;

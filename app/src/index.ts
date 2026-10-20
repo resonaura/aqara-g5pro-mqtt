@@ -175,6 +175,7 @@ const client = createMQTTClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
 const talkbackFeeds = new Map<string, { ready: boolean; queue: Buffer[] }>();
 const recoveries = new Map<string, StreamRecovery>();
+const lastCameraProgress = new Map<string, number>();
 
 function cameraBySlug(name: string) {
   return cameraData.find((c) => slugMap[c.device.did] === name);
@@ -191,14 +192,20 @@ function restartCameraStream(cameraInfo: (typeof cameraData)[number], reason: st
         const rtspPort = rtspPorts[cameraData.indexOf(cameraInfo)];
         const rtpPort = 10000 + (rtspPort - rtspBasePort) * 4;
         console.warn(`[Recovery:${cameraInfo.device.deviceName}] ${message} (attempt ${attempt})`);
-        OfflineCardManager.getInstance().setOffline({
-          slug,
-          deviceName: cameraInfo.device.deviceName,
-          deviceId: cameraInfo.mqttDevice.id,
-          reason: `Reconnecting camera (attempt ${attempt})`,
-          onFrameUpdate: (image) =>
-            client.publish(`homeassistant/camera/${cameraInfo.mqttDevice.id}/camera/image`, image),
-        });
+        OfflineCardManager.getInstance().setRecovering(
+          {
+            slug,
+            deviceName: cameraInfo.device.deviceName,
+            deviceId: cameraInfo.mqttDevice.id,
+            reason: `Reconnecting camera (attempt ${attempt})`,
+            onFrameUpdate: (image) =>
+              client.publish(
+                `homeassistant/camera/${cameraInfo.mqttDevice.id}/camera/image`,
+                image,
+              ),
+          },
+          lastCameraProgress.get(did),
+        );
         cameraInfo.snapshotter?.stop();
         cameraInfo.snapshotter = undefined;
         FallbackStreamManager.getInstance().startFallback({
@@ -292,6 +299,7 @@ async function ensureCameraBridge(
         });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
           if (cameraInfo.snapshotter !== snap) return;
+          lastCameraProgress.set(cameraInfo.device.did, Date.now());
           recoveries.get(cameraInfo.device.did)?.healthy();
           OfflineCardManager.getInstance().setOnline(frameSlug);
           const frameUrl = `http://${host}:${httpServer.listenPort}/api/cameras/${frameSlug}/snapshot`;
@@ -328,6 +336,7 @@ async function ensureCameraBridge(
     });
 
     bridge.on("keyframe", (codec: "h264" | "hevc") => {
+      lastCameraProgress.set(cameraInfo.device.did, Date.now());
       cameraInfo.videoCodec = codec;
       void setCameraState(cameraInfo.device.did, { video_codec: codec }).catch(() => {});
       recoveries.get(cameraInfo.device.did)?.healthy();

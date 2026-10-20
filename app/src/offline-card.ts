@@ -13,9 +13,10 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, promises as fs, statSync } from "node:fs";
+import { existsSync, promises as fs, renameSync, statSync } from "node:fs";
 import path from "node:path";
 import { getDataDir } from "./state.js";
+import { RecoveryGrace } from "./recovery-grace.js";
 
 export interface OfflineCardOptions {
   slug: string;
@@ -23,6 +24,7 @@ export interface OfflineCardOptions {
   reason?: string;
   startedAt?: number;
   dataDir?: string;
+  isCurrent?: () => boolean;
 }
 
 export function escapeFfmpegText(text: string): string {
@@ -39,6 +41,7 @@ export async function generateOfflineCardImage(options: {
   statusText: string;
   durationSeconds: number;
   dataDir?: string;
+  isCurrent?: () => boolean;
 }): Promise<Buffer | null> {
   const dataDir = options.dataDir || getDataDir();
   const framesDir = path.join(dataDir, "frames");
@@ -132,7 +135,14 @@ export async function generateOfflineCardImage(options: {
       clearTimeout(timer);
       if (code === 0 && existsSync(tempPath)) {
         try {
-          await fs.rename(tempPath, outputPath);
+          if (options.isCurrent && !options.isCurrent()) {
+            await fs.rm(tempPath, { force: true });
+            resolve(null);
+            return;
+          }
+          // Commit in the same turn as the generation check so a live snapshot
+          // cannot be replaced by an already-cancelled offline renderer.
+          renameSync(tempPath, outputPath);
           const buf = await fs.readFile(outputPath);
           resolve(buf);
           return;
@@ -150,6 +160,7 @@ export async function generateOfflineCardImage(options: {
 
 export class OfflineCardManager {
   private static instance: OfflineCardManager | null = null;
+  private grace = new RecoveryGrace();
   private offlineStates = new Map<
     string,
     {
@@ -174,6 +185,17 @@ export class OfflineCardManager {
     return this.offlineStates.has(slug);
   }
 
+  public setRecovering(
+    options: Parameters<OfflineCardManager["setOffline"]>[0],
+    lastProgressAt?: number,
+  ): void {
+    if (this.isOffline(options.slug)) {
+      this.updateStatus(options.slug, options.reason);
+      return;
+    }
+    this.grace.defer(options.slug, lastProgressAt, () => this.setOffline(options));
+  }
+
   public setOffline(options: {
     slug: string;
     deviceName: string;
@@ -181,6 +203,7 @@ export class OfflineCardManager {
     reason: string;
     onFrameUpdate?: (buf: Buffer) => void;
   }): void {
+    this.grace.cancel(options.slug);
     const existing = this.offlineStates.get(options.slug);
     const startedAt = existing ? existing.startedAt : Date.now();
 
@@ -209,8 +232,9 @@ export class OfflineCardManager {
           deviceName: state.deviceName,
           statusText: state.reason,
           durationSeconds,
+          isCurrent: () => this.offlineStates.get(state.slug) === state,
         });
-        if (buf && state.onFrameUpdate) {
+        if (buf && this.offlineStates.get(state.slug) === state && state.onFrameUpdate) {
           state.onFrameUpdate(buf);
         }
       } finally {
@@ -232,6 +256,7 @@ export class OfflineCardManager {
   }
 
   public setOnline(slug: string): void {
+    this.grace.cancel(slug);
     const state = this.offlineStates.get(slug);
     if (state) {
       if (state.timer) {
@@ -242,6 +267,7 @@ export class OfflineCardManager {
   }
 
   public stopAll(): void {
+    this.grace.clear();
     for (const slug of Array.from(this.offlineStates.keys())) {
       this.setOnline(slug);
     }
