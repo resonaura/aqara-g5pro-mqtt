@@ -21,13 +21,15 @@ int main() {
 
     aqara::AVIOReassembler reassembler(key, key);
     int audio_frames = 0;
+    int gap_requests = 0;
     std::vector<uint8_t> decoded;
-    reassembler.set_callbacks({},
-                              [&](const aqara::AudioFrame& frame) {
-                                  ++audio_frames;
-                                  decoded = frame.aac_adts_data;
-                              },
-                              {});
+    reassembler.set_callbacks(
+        {},
+        [&](const aqara::AudioFrame& frame) {
+            ++audio_frames;
+            decoded = frame.aac_adts_data;
+        },
+        [&]() { ++gap_requests; });
 
     const std::vector<uint8_t> plaintext = {0xff, 0xf1, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x11, 0x22};
     std::vector<uint8_t> frame(32 + 8 + plaintext.size(), 0);
@@ -44,6 +46,7 @@ int main() {
     reassembler.push_packet(4, 11, frame.data() + 17, 17);
     assert(audio_frames == 1);
     assert(decoded == plaintext);
+    assert(gap_requests == 0);  // Jitter must not interrupt healthy video readers.
 
     // Independent PPCS channels have independent 16-bit sequence spaces.
     // Different timestamps pass through.
@@ -127,6 +130,19 @@ int main() {
     validated.push_packet(4, 3, short_prefix.data(), short_prefix.size());
     assert(valid_frames == 2);
     assert(annex_b == std::vector<uint8_t>({0, 0, 1, 0x65, 1, 2, 3, 0x44}));
+
+    // Confirmed packet loss still requests one fresh IDR after the bounded
+    // reorder window is exhausted, discarding only the incomplete access unit.
+    aqara::AVIOReassembler lost(key, key);
+    int loss_requests = 0, recovered_frames = 0;
+    lost.set_callbacks([&](const aqara::VideoFrame&) { ++recovered_frames; }, {}, [&]() { ++loss_requests; });
+    lost.push_packet(4, 100, video.data(), 20);
+    for (uint16_t seq = 102; seq < 117; ++seq)
+        lost.push_packet(4, seq, video.data(), video.size());
+    assert(loss_requests == 0);
+    lost.push_packet(4, 117, video.data(), video.size());
+    assert(loss_requests == 1);
+    assert(recovered_frames == 16);
 
     // Test regional TUTK master decoding from InitString
     std::vector<std::string> masters;
