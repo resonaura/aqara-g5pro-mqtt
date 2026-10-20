@@ -329,7 +329,13 @@ void AVIOReassembler::process_completed_avio(const uint8_t* data, size_t len) {
 
     // Decrypt payload in-place
     std::vector<uint8_t> payload(data + 32, data + 32 + payload_len);
-    ChaCha20::decrypt_video_payload(payload.data(), payload.size(), video_key_);
+    if (!ChaCha20::decrypt_video_payload(payload.data(), payload.size(), video_key_)) {
+        // Discard the entire access unit and hold RTSP clients until the next
+        // IDR; forwarding the remaining slices poisons dependent decoder frames.
+        if (kf_req_cb_)
+            kf_req_cb_();
+        return;
+    }
 
     if (payload.empty())
         return;
@@ -340,7 +346,11 @@ void AVIOReassembler::process_completed_avio(const uint8_t* data, size_t len) {
     std::vector<uint8_t> annex_b;
     const uint8_t start_code[4] = {0, 0, 0, 1};
 
-    if (has_annex_b_prefix(payload.data() + table_end, payload.size() - table_end)) {
+    if (nal_count == 0 && has_annex_b_prefix(payload.data() + 8, payload.size() - 8)) {
+        // Untabled frames begin immediately after the nonce; preserve either
+        // a three- or four-byte start code rather than trimming its first byte.
+        annex_b.assign(payload.begin() + 8, payload.end());
+    } else if (has_annex_b_prefix(payload.data() + table_end, payload.size() - table_end)) {
         // Tail already has Annex-B start codes (typically IDR with SPS/PPS)
         annex_b.assign(payload.begin() + table_end, payload.end());
     } else if (nal_count > 0 && table_end < payload.size()) {
@@ -360,7 +370,7 @@ void AVIOReassembler::process_completed_avio(const uint8_t* data, size_t len) {
         for (uint8_t i = 0; i < nal_count; ++i) {
             uint32_t off = read_u32_le(table + i * 8);
             uint32_t nal_len = read_u32_le(table + i * 8 + 4);
-            if (nal_len == 0 || off + nal_len > tail_len)
+            if (nal_len == 0 || off > tail_len || nal_len > tail_len - off)
                 continue;
 
             const uint8_t* nal = tail + off;

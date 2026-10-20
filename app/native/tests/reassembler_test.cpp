@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
@@ -67,7 +68,8 @@ int main() {
     for (int i = 0; i < 8; ++i)
         video[32 + i] = static_cast<uint8_t>(0x10 + i);
     const std::vector<uint8_t> video_plain = {0, 0, 0, 1, 0x65, 1, 2, 3};
-    aqara::ChaCha20::xor_stream(key, video.data() + 32, 0, video_plain.data(), video.data() + 40, video_plain.size());
+    // Untabled video keeps its short Annex-B NAL clear after the nonce.
+    std::copy(video_plain.begin(), video_plain.end(), video.begin() + 40);
     interleaved.push_packet(4, 100, video.data(), 20);
     std::vector<uint8_t> mixed;
     mixed.insert(mixed.end(), video.begin() + 20, video.begin() + 27);
@@ -79,6 +81,52 @@ int main() {
     interleaved.reset();
     assert(interleaved.last_video_frame_ms() == 0);
     assert(reassembler.last_video_frame_ms() == 0);  // Audio and raw datagrams cannot mark video healthy.
+
+    // Malformed encryption tables are rejected before offset arithmetic or
+    // partial decryption. Bad access units must request a fresh IDR, not reach RTSP.
+    aqara::AVIOReassembler validated(key, key);
+    int valid_frames = 0;
+    int idr_requests = 0;
+    std::vector<uint8_t> annex_b;
+    validated.set_callbacks(
+        [&](const aqara::VideoFrame& frame) {
+            ++valid_frames;
+            annex_b = frame.annex_b_data;
+        },
+        {}, [&]() { ++idr_requests; });
+    auto malformed = video;
+    malformed[40] = 255;  // Table would extend beyond this complete AVIO frame.
+    validated.push_packet(4, 1, malformed.data(), malformed.size());
+    assert(valid_frames == 0);
+    assert(idr_requests == 1);
+    assert(validated.last_video_frame_ms() == 0);
+
+    std::vector<uint8_t> table_payload(9 + 8 + 64, 0);
+    table_payload[8] = 1;
+    put_u32_le(table_payload, 9, 0xfffffff0);
+    put_u32_le(table_payload, 13, 64);
+    const auto before = table_payload;
+    assert(!aqara::ChaCha20::decrypt_video_payload(table_payload.data(), table_payload.size(), key));
+    assert(table_payload == before);
+    put_u32_le(table_payload, 9, 48);
+    put_u32_le(table_payload, 13, 32);  // Truncated NAL, with no integer overflow.
+    assert(!aqara::ChaCha20::decrypt_video_payload(table_payload.data(), table_payload.size(), key));
+    put_u32_le(table_payload, 9, 0);
+    put_u32_le(table_payload, 13, 64);
+    assert(aqara::ChaCha20::decrypt_video_payload(table_payload.data(), table_payload.size(), key));
+
+    // A clean keyframe still passes after a rejected frame, without resetting
+    // the packet sequence. Both legal start-code lengths remain byte-exact.
+    validated.push_packet(4, 2, video.data(), video.size());
+    assert(valid_frames == 1);
+    assert(annex_b == video_plain);
+    auto short_prefix = video;
+    short_prefix.erase(short_prefix.begin() + 40);
+    short_prefix.push_back(0x44);
+    put_u32_le(short_prefix, 28, 16);
+    validated.push_packet(4, 3, short_prefix.data(), short_prefix.size());
+    assert(valid_frames == 2);
+    assert(annex_b == std::vector<uint8_t>({0, 0, 1, 0x65, 1, 2, 3, 0x44}));
 
     // Test regional TUTK master decoding from InitString
     std::vector<std::string> masters;

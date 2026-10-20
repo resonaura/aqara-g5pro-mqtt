@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.10 — Reject damaged video access units
+
+- Validate all NAL offsets and lengths before decryption; discard incomplete or overflowing tables as a whole and request a fresh keyframe. RTSP clients wait for that keyframe instead of receiving dependent damaged slices.
+- Preserve both valid Annex-B start-code lengths on untabled frames. Add malformed-packet, byte-exact recovery and sanitizer checks.
+
 ## v1.6.9 — Preserve snapshots during short reconnects
 
 - Keep the last successful image until roughly 30 seconds without a usable frame during recovery. Stream recovery still begins immediately; repeated attempts do not postpone the deadline.

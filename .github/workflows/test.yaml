@@ -24,5 +24,13 @@ jobs:
         working-directory: app
       - run: ctest --test-dir native/build --output-on-failure
         working-directory: app
+      - name: Check malformed media under address and undefined-behavior sanitizers
+        working-directory: app
+        run: |
+          c++ -std=c++23 -g -fsanitize=address,undefined -I native/src \
+            native/tests/reassembler_test.cpp native/src/crypto/chacha20.cpp \
+            native/src/media/reassembler.cpp native/src/p2p/cipher.cpp \
+            -o /tmp/aqara-reassembler-sanitized
+          /tmp/aqara-reassembler-sanitized
       - run: pnpm test && pnpm lint
         working-directory: app
