@@ -91,26 +91,34 @@ bool ChaCha20::decrypt_video_payload(uint8_t* payload, size_t len, const uint8_t
     uint8_t nal_count = payload[8];
     size_t table_end = 9 + nal_count * 8;
 
-    if (nal_count == 0 || table_end >= len) {
+    if (nal_count == 0) {
         return true;  // No encryption table, payload is raw
+    }
+    if (table_end >= len)
+        return false;
+
+    const uint8_t* table = payload + 9;
+    uint8_t* tail = payload + table_end;
+    const size_t tail_len = len - table_end;
+    // Validate the complete table before touching encrypted bytes. A damaged
+    // datagram must not wrap offsets or produce a partially decrypted frame.
+    for (uint8_t i = 0; i < nal_count; ++i) {
+        const size_t off = read_u32_le(table + i * 8);
+        const size_t nal_len = read_u32_le(table + i * 8 + 4);
+        if (off > tail_len || nal_len > tail_len - off)
+            return false;
     }
 
     uint8_t block[64];
     generate_block(key, nonce, 0, block);
     const uint8_t* ks = block;  // 16 bytes keystream slice
 
-    const uint8_t* table = payload + 9;
-    uint8_t* tail = payload + table_end;
-    size_t tail_len = len - table_end;
-
     for (uint8_t i = 0; i < nal_count; ++i) {
-        uint32_t off = read_u32_le(table + i * 8);
-        uint32_t nal_len = read_u32_le(table + i * 8 + 4);
+        const size_t off = read_u32_le(table + i * 8);
+        const size_t nal_len = read_u32_le(table + i * 8 + 4);
 
-        for (uint32_t pos = 32; pos + 16 <= nal_len; pos += 160) {
-            uint32_t abs_off = off + pos;
-            if (abs_off + 16 > tail_len)
-                break;
+        for (size_t pos = 32; pos + 16 <= nal_len; pos += 160) {
+            const size_t abs_off = off + pos;
             for (int k = 0; k < 16; ++k) {
                 tail[abs_off + k] ^= ks[k];
             }
