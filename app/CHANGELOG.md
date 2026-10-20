@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.11 — Keep long-lived audio and video clocks aligned
+
+- Retain real forward video timestamp gaps while waiting for a clean keyframe. The previous ten-frame threshold compressed those waits into one frame, letting continuous audio drift ahead in persistent RTSP clients.
+- Use the correct RTP clock rate for each medium; preserve bounded recovery for source changes, backward clocks and implausible jumps. Add a one-hour deterministic dropped-frame regression.
+
 ## v1.6.10 — Reject damaged video access units
 
 - Validate all NAL offsets and lengths before decryption; discard incomplete or overflowing tables as a whole and request a fresh keyframe. RTSP clients wait for that keyframe instead of receiving dependent damaged slices.

@@ -40,7 +40,7 @@ struct RTSPClient {
     uint16_t audio_rtp_seq = 0;
     uint32_t audio_rtp_timestamp = 0x20000000;
     uint32_t audio_ssrc = 0x87654321;
-    RtpTimeline audio_clock{0x20000000};
+    RtpTimeline audio_clock{0x20000000, 16000};
 
     uint64_t base_timestamp_ms = 0;
     uint32_t base_video_rtp_ts = 0x10000000;
