@@ -59,3 +59,26 @@ test("OfflineCardManager manages lifecycle and updates state", async () => {
   mgr.setOnline("camera-1");
   assert.equal(mgr.isOffline("camera-1"), false);
 });
+
+test("a cancelled offline renderer never overwrites the recovered live snapshot", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "offline-cancel-"));
+  const frames = path.join(dataDir, "frames");
+  fs.mkdirSync(frames);
+  const file = path.join(frames, "recovered.jpg");
+  const live = Buffer.from("last successful frame");
+  fs.writeFileSync(file, live);
+  try {
+    const image = await generateOfflineCardImage({
+      slug: "recovered",
+      deviceName: "Recovered",
+      statusText: "Reconnecting",
+      durationSeconds: 30,
+      dataDir,
+      isCurrent: () => false,
+    });
+    assert.equal(image, null);
+    assert.deepEqual(fs.readFileSync(file), live);
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});

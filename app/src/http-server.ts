@@ -70,7 +70,10 @@ export class FrameHTTPServer {
           url.match(/^\/api\/cameras\/([^/]+)\/snapshot$/);
         if (match) {
           const slug = match[1];
-          const filePath = path.join(this.framesDir, `${slug}.jpg`);
+          const currentPath = path.join(this.framesDir, `${slug}.jpg`);
+          const filePath = existsSync(currentPath)
+            ? currentPath
+            : path.join(this.framesDir, `${slug}.last_live.jpg`);
           if (!existsSync(filePath)) {
             res.writeHead(404, { "Content-Type": "text/plain" });
             res.end("Not found");

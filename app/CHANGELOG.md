@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.9 — Preserve snapshots during short reconnects
+
+- Keep the last successful image until roughly 30 seconds without a usable frame during recovery. Stream recovery still begins immediately; repeated attempts do not postpone the deadline.
+- Cancel pending offline cards on recovery and reject stale image renders. Reuse the last live image when the current cache is missing.
+- Count FFmpeg launch failures once and add timeout/recovery regressions.
+
 ## v1.6.8 — Detect stalled decoded video
 
 - Recover when P2P packets keep arriving but no complete video frame is produced; stale cached snapshots cannot hide this failure.
