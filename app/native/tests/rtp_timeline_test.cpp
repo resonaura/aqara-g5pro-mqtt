@@ -19,4 +19,18 @@ int main() {
     check(wrap.map(0xfffffff0, 0, 100) == 100);
     check(wrap.map(0x10, 0, 100) == 132);
     check(wrap.advance(1024) == 1156);
+
+    // One hour with repeated two-second video losses: audio keeps sampling.
+    // Every retained picture must stay on its original capture clock.
+    aqara::RtpTimeline video(0);
+    const auto first = video.map(0, 0, 4500);
+    for (uint32_t frame = 1; frame <= 72000; ++frame) {
+        if (frame % 200 < 40)
+            continue;
+        check(video.map(frame * 4500, 0, 4500) - first == frame * 4500);
+    }
+    aqara::RtpTimeline audio(0, 16000);
+    check(audio.map(0, 1, 1024) == 1024);
+    check(audio.map(32000, 1, 1024) == 33024);     // Two-second source gap is retained.
+    check(audio.map(10000000, 1, 1024) == 34048);  // Implausible clock jump stays bounded.
 }
