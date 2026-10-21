@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.18 — Keep P2P recovery safe during viewer requests
+
+- Unpublish the old P2P client before stopping it and let in-flight RTSP/keyframe requests retain it until they finish. Join the old receiver before changing session keys, camera configuration or quality flags. Avoid holding the publication lock during receiver shutdown.
+- Serialize UDP sends with socket shutdown, keep the descriptor alive until receive/discovery threads have joined, reject late writes after stop and synchronize camera endpoint updates. Send datagrams without blocking the receive/ACK path when socket buffers fill.
+- Cover retained-client lifetime, simultaneous viewer requests and reconnects, callback re-entry during shutdown, concurrent UDP sends/stops, endpoint updates and descriptor reuse with isolated fixtures and sanitizers.
+
 ## v1.6.17 — Isolate slow RTSP readers
 
 - Send each client through an independent, ordered TCP writer. Slow or stopped viewers no longer block camera receive/ACKs, other viewers or recordings. RTSP replies and RTP share the same writer so partial writes cannot interleave them.

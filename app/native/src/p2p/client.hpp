@@ -29,6 +29,8 @@ struct P2PConfig {
 };
 
 class P2PClient {
+    friend struct P2PClientTestAccess;
+
 public:
     P2PClient(const P2PConfig& config, std::shared_ptr<AVIOReassembler> reassembler,
               std::function<void(const std::string&)> event_cb);
@@ -60,6 +62,8 @@ private:
     void send_enc_drw(uint8_t channel, uint16_t seq, const uint8_t* payload, size_t len);
     void send_raw_packet(const uint8_t* data, size_t len, const sockaddr_in& dest);
     void send_raw_packet(const uint8_t* data, size_t len, const std::string& ip, int port);
+    sockaddr_in camera_endpoint() const;
+    void set_camera_endpoint(const sockaddr_in& endpoint);
 
     void queue_ack(uint8_t channel, uint16_t seq);
     void flush_acks(uint8_t channel);
@@ -73,6 +77,8 @@ private:
     std::vector<std::string> master_servers_;
 
     int udp_fd_ = -1;
+    std::mutex lifecycle_mutex_;
+    std::mutex send_mutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> is_connected_{false};
     std::atomic<bool> session_started_{false};
@@ -88,6 +94,7 @@ private:
     std::atomic<int64_t> start_time_ms_{0};
 
     sockaddr_in camera_addr_{};
+    mutable std::mutex camera_mutex_;
     std::vector<sockaddr_in> endpoints_;
     std::mutex endpoints_mutex_;
 
