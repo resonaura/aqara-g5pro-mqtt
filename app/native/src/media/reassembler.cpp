@@ -81,9 +81,11 @@ void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
     state.pending_audio_expected = 0;
     state.expected_seq = next_seq;
     std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " sequence gap, resync at seq=" << next_seq
-              << " gaps=" << sequence_gaps_ << std::endl;
-    if (kf_req_cb_)
+              << " gaps=" << sequence_gaps_.load() << std::endl;
+    if (kf_req_cb_) {
+        ++keyframe_requests_;
         kf_req_cb_();
+    }
 }
 
 void AVIOReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
@@ -120,7 +122,10 @@ void AVIOReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* 
         // Ordinary UDP reordering is not packet loss. Requesting an IDR here
         // also gates every RTSP reader and discards otherwise recoverable video.
         // Only the exhausted jitter window below confirms a damaged frame.
-        state.reorder_buf.try_emplace(seq, data, data + len);
+        if (state.reorder_buf.try_emplace(seq, data, data + len).second)
+            ++packets_reordered_;
+        else
+            ++packets_duplicate_;
         if (state.reorder_buf.size() < 16)
             return;
 
@@ -168,8 +173,10 @@ void AVIOReassembler::handle_packet_immediate(uint8_t channel, ChannelState& sta
         if (state.stream_buf.size() + count > MAX_STREAM_BUFFER) {
             discarded_bytes_ += state.stream_buf.size();
             state.stream_buf.clear();
-            if (kf_req_cb_)
+            if (kf_req_cb_) {
+                ++keyframe_requests_;
                 kf_req_cb_();
+            }
         }
         state.stream_buf.insert(state.stream_buf.end(), bytes, bytes + count);
         parse_stream_buffer(channel, state);
@@ -284,8 +291,10 @@ void AVIOReassembler::process_completed_audio(const uint8_t* data, size_t len) {
     last_audio_ts_ms_ = ts_ms;
 
     std::vector<uint8_t> frame(data, data + len);
-    if (!ChaCha20::decrypt_audio_payload(frame.data(), frame.size(), audio_key_))
+    if (!ChaCha20::decrypt_audio_payload(frame.data(), frame.size(), audio_key_)) {
+        ++malformed_frames_;
         return;
+    }
 
     const uint32_t payload_len = read_u32_le(frame.data() + 28);
     if (payload_len <= 8 || 32ULL + payload_len > frame.size())
@@ -327,8 +336,11 @@ void AVIOReassembler::process_completed_avio(const uint8_t* data, size_t len) {
     if (!ChaCha20::decrypt_video_payload(payload.data(), payload.size(), video_key_)) {
         // Discard the entire access unit and hold RTSP clients until the next
         // IDR; forwarding the remaining slices poisons dependent decoder frames.
-        if (kf_req_cb_)
+        ++malformed_frames_;
+        if (kf_req_cb_) {
+            ++keyframe_requests_;
             kf_req_cb_();
+        }
         return;
     }
 

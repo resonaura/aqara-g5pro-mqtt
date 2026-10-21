@@ -143,6 +143,11 @@ int main() {
     lost.push_packet(4, 117, video.data(), video.size());
     assert(loss_requests == 1);
     assert(recovered_frames == 16);
+    const auto health = lost.statistics();
+    assert(health.packets == 17);
+    assert(health.reordered == 16 && health.sequence_gaps == 1);
+    assert(health.video_frames == 16 && health.keyframe_requests == 1);
+    assert(health.discarded_bytes == 20 && health.malformed_frames == 0);
 
     // Test regional TUTK master decoding from InitString
     std::vector<std::string> masters;

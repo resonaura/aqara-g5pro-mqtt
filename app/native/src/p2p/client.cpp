@@ -753,6 +753,28 @@ void P2PClient::watchdog_loop() {
         if (!running_)
             break;
         tick++;
+        if ((tick == 1 || tick % 30 == 0) && event_cb_) {
+            const auto stats = reassembler_->statistics();
+            const int64_t sample_at = current_time_ms();
+            const auto age = [sample_at](int64_t at) -> int64_t {
+                return at > 0 ? std::max<int64_t>(0, sample_at - at) : -1;
+            };
+            event_cb_(to_json(EventMediaHealth{.did = config_.did,
+                                               .connected = is_connected_.load(),
+                                               .session_ready = session_ready_.load(),
+                                               .packets = stats.packets,
+                                               .duplicates = stats.duplicates,
+                                               .reordered = stats.reordered,
+                                               .sequence_gaps = stats.sequence_gaps,
+                                               .video_frames = stats.video_frames,
+                                               .audio_frames = stats.audio_frames,
+                                               .discarded_bytes = stats.discarded_bytes,
+                                               .malformed_frames = stats.malformed_frames,
+                                               .keyframe_requests = stats.keyframe_requests,
+                                               .video_age_ms = age(last_video_traffic_ms_.load()),
+                                               .audio_age_ms = age(last_audio_traffic_ms_.load()),
+                                               .decoded_age_ms = age(reassembler_->last_video_frame_ms())}));
+        }
 
         if (!is_connected_) {
             const int64_t now = current_time_ms();
@@ -760,7 +782,7 @@ void P2PClient::watchdog_loop() {
                 last_unhealthy_emitted_ms_ = now;
                 std::cerr << "[P2P-Native] Connection establishment timed out (20s) for " << config_.did
                           << ", emitting unhealthy event" << std::endl;
-                event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+                event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "connection_timeout"}));
             }
             continue;
         }
@@ -770,7 +792,7 @@ void P2PClient::watchdog_loop() {
             if (!session_ready_ && now - start_time_ms_.load() > 30000 &&
                 now - last_unhealthy_emitted_ms_.load() > 20000 && event_cb_) {
                 last_unhealthy_emitted_ms_ = now;
-                event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+                event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "session_not_ready"}));
             }
             // Keepalive ALIVE every 2 seconds
             if (tick % 2 == 0) {
@@ -797,7 +819,7 @@ void P2PClient::watchdog_loop() {
                     last_unhealthy_emitted_ms_ = now;
                     std::cerr << "[P2P-Native] No decoded video frames for " << config_.did
                               << "; encrypted packets alone are not a healthy stream" << std::endl;
-                    event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+                    event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "no_complete_video_frames"}));
                 }
                 const int64_t video_at = last_video_traffic_ms_.load();
                 const int64_t ready_at = session_ready_since_ms_.load();
@@ -820,7 +842,7 @@ void P2PClient::watchdog_loop() {
                         last_unhealthy_emitted_ms_ = now;
                         std::cerr << "[P2P-Native] No video received for " << config_.did
                                   << " after 15s, emitting unhealthy event" << std::endl;
-                        event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+                        event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "first_video_timeout"}));
                     }
                 } else if (video_at > 0 && now - video_at > 6000 && now - last_stream_retry_ms_.load() > 5000) {
                     last_stream_retry_ms_ = now;
@@ -841,7 +863,7 @@ void P2PClient::watchdog_loop() {
                         last_unhealthy_emitted_ms_ = now;
                         std::cerr << "[P2P-Native] Video stream unresponsive for " << config_.did
                                   << ", emitting unhealthy event" << std::endl;
-                        event_cb_(to_json(EventUnhealthy{.did = config_.did}));
+                        event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "video_traffic_stalled"}));
                     }
                 }
             }

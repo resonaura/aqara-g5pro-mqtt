@@ -48,6 +48,30 @@ import { generateEnvExample, normalizeValue } from "./utils.js";
 import { loadP2PState, saveP2PState, getDataDir, getCameraState, setCameraState } from "./state.js";
 import { StreamRecovery } from "./stream-recovery.js";
 import { closeDatabase } from "./db/data-source.js";
+import { diagnostics, cameraDiagnosticId } from "./diagnostics.js";
+
+const journal = diagnostics.start(path.join(getDataDir(), "diagnostics"));
+journal.captureConsole();
+const diagnosticVersion = await fs
+  .readFile(new URL("../package.json", import.meta.url), "utf8")
+  .then((value) => JSON.parse(value).version)
+  .catch(() => "unknown");
+diagnostics.record("app.start", {
+  version: diagnosticVersion,
+  pid: process.pid,
+  node: process.version,
+  arch: process.arch,
+});
+process.on("uncaughtExceptionMonitor", (error, origin) => {
+  journal.crash(error, origin);
+  // Previous journal batches are durable; the crash itself is saved synchronously.
+});
+process.on("uncaughtException", (error) => {
+  // Exit nonzero for the add-on watchdog, but do not let Node print raw secrets
+  // from an HTTP error/config object in its default exception formatter.
+  console.error("[App] Fatal exception:", error);
+  process.exit(1);
+});
 
 if (process.env.NODE_ENV !== "production") {
   await generateEnvExample();
@@ -188,6 +212,16 @@ function restartCameraStream(cameraInfo: (typeof cameraData)[number], reason: st
     recovery = new StreamRecovery({
       isEnabled: async () => (await loadP2PState())[did] !== false,
       recover: async (signal, attempt, message) => {
+        diagnostics.record(
+          "camera.recovery",
+          {
+            camera: cameraDiagnosticId(did),
+            name: cameraInfo.device.deviceName,
+            attempt,
+            reason: message,
+          },
+          "warn",
+        );
         const slug = slugMap[did];
         const rtspPort = rtspPorts[cameraData.indexOf(cameraInfo)];
         const rtpPort = 10000 + (rtspPort - rtspBasePort) * 4;
@@ -844,6 +878,7 @@ async function publishAttr(
 
 // === GRACEFUL SHUTDOWN ===
 async function shutdown(signal: string) {
+  diagnostics.record("app.shutdown", { signal });
   console.log(`\n🛑 [App] Received ${signal}, performing graceful shutdown...`);
   try {
     for (const recovery of recoveries.values()) recovery.stop();
@@ -861,11 +896,30 @@ async function shutdown(signal: string) {
   } catch (err) {
     console.error("❌ Error during shutdown:", err);
   }
+  await diagnostics.flush();
   process.exit(0);
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+const diagnosticTimer = setInterval(() => {
+  const memory = process.memoryUsage();
+  diagnostics.record("app.health", {
+    uptimeSeconds: Math.round(process.uptime()),
+    rssBytes: memory.rss,
+    heapBytes: memory.heapUsed,
+    workerReady: NativeMediaEngine.getInstance().ready,
+    cameras: cameraData.map(({ device }) => ({
+      camera: cameraDiagnosticId(device.did),
+      name: device.deviceName,
+      snapshotAgeMs: lastCameraProgress.has(device.did)
+        ? Date.now() - lastCameraProgress.get(device.did)!
+        : null,
+    })),
+  });
+}, 30_000);
+diagnosticTimer.unref();
 
 // === START ===
 setInterval(poll, interval);
