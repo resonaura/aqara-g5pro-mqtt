@@ -26,7 +26,13 @@ static inline bool has_annex_b_prefix(const uint8_t* data, size_t len) {
     return false;
 }
 
-AVIOReassembler::AVIOReassembler(const uint8_t video_key[32], const uint8_t audio_key[32]) {
+static int64_t monotonic_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+AVIOReassembler::AVIOReassembler(const uint8_t video_key[32], const uint8_t audio_key[32], Clock clock)
+    : clock_(clock ? std::move(clock) : Clock(monotonic_ms)) {
     std::memcpy(video_key_, video_key, 32);
     std::memcpy(audio_key_, audio_key, 32);
 }
@@ -81,6 +87,7 @@ void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
     state.pending_audio.clear();
     state.pending_audio_expected = 0;
     state.expected_seq = next_seq;
+    state.gap_since_ms = -1;
     std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " sequence gap, resync at seq=" << next_seq
               << " gaps=" << sequence_gaps_.load() << std::endl;
     if (kf_req_cb_) {
@@ -89,79 +96,99 @@ void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
     }
 }
 
+void AVIOReassembler::drain_reordered(uint8_t channel, ChannelState& state) {
+    while (true) {
+        auto it = state.reorder_buf.find(static_cast<uint16_t>(state.expected_seq));
+        if (it == state.reorder_buf.end())
+            break;
+        const auto sequence = it->first;
+        auto packet = std::move(it->second);
+        state.reorder_bytes -= packet.size();
+        state.reorder_buf.erase(it);
+        handle_packet_immediate(channel, state, sequence, packet.data(), packet.size());
+        state.expected_seq = static_cast<uint16_t>(state.expected_seq + 1);
+    }
+    if (state.reorder_buf.empty())
+        state.gap_since_ms = -1;
+    else if (state.gap_since_ms < 0)
+        state.gap_since_ms = clock_();
+}
+
+void AVIOReassembler::recover_reordered(uint8_t channel, ChannelState& state) {
+    if (state.reorder_buf.empty())
+        return;
+    auto nearest = state.reorder_buf.begin();
+    uint16_t best_distance = 0xffff;
+    const uint16_t expected = static_cast<uint16_t>(state.expected_seq);
+    for (auto it = state.reorder_buf.begin(); it != state.reorder_buf.end(); ++it) {
+        const uint16_t distance = static_cast<uint16_t>(it->first - expected);
+        if (distance < best_distance) {
+            best_distance = distance;
+            nearest = it;
+        }
+    }
+    recover_from_sequence_gap(channel, state, nearest->first);
+    drain_reordered(channel, state);
+}
+
+void AVIOReassembler::flush_expired() {
+    const int64_t now = clock_();
+    for (auto& [channel, state] : channels_)
+        if (state.gap_since_ms >= 0 && now - state.gap_since_ms >= 150)
+            recover_reordered(channel, state);
+}
+
 void AVIOReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
-    if (!data || len == 0)
+    // PPCS has a fixed channel range and UDP payload bound. Reject malformed
+    // input before allocating per-channel state or a reorder buffer.
+    if (!data || len == 0 || len > 65536 || channel >= 8)
         return;
     packets_received_++;
-    ChannelState& state = channels_[channel];
+    accept_packet(channel, seq, data, len);
+}
 
+void AVIOReassembler::accept_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
+    ChannelState& state = channels_[channel];
     if (state.expected_seq == -1)
         state.expected_seq = seq;
-
     const int16_t diff = static_cast<int16_t>(seq - static_cast<uint16_t>(state.expected_seq));
     if (diff == 0) {
         handle_packet_immediate(channel, state, seq, data, len);
         state.expected_seq = static_cast<uint16_t>(seq + 1);
-
-        while (true) {
-            auto it = state.reorder_buf.find(static_cast<uint16_t>(state.expected_seq));
-            if (it == state.reorder_buf.end())
-                break;
-            handle_packet_immediate(channel, state, it->first, it->second.data(), it->second.size());
-            state.reorder_buf.erase(it);
-            state.expected_seq = static_cast<uint16_t>(state.expected_seq + 1);
-        }
-        return;
-    }
-
-    if (diff < 0) {
+        drain_reordered(channel, state);
+    } else if (diff < 0) {
         packets_duplicate_++;
-        return;
-    }
-
-    if (diff < 64) {
-        // Ordinary UDP reordering is not packet loss. Requesting an IDR here
-        // also gates every RTSP reader and discards otherwise recoverable video.
-        // Only the exhausted jitter window below confirms a damaged frame.
-        if (state.reorder_buf.try_emplace(seq, data, data + len).second)
-            ++packets_reordered_;
-        else
+    } else if (diff < 512) {
+        if (state.reorder_buf.contains(seq)) {
             ++packets_duplicate_;
-        if (state.reorder_buf.size() < 16)
+            flush_expired();
             return;
-
-        // The missing datagram did not arrive within the jitter window. Never
-        // concatenate later fragments onto a damaged frame: discard residue,
-        // request an IDR, then resume at the nearest buffered sequence.
-        auto nearest = state.reorder_buf.begin();
-        uint16_t best_distance = 0xffff;
-        const uint16_t expected = static_cast<uint16_t>(state.expected_seq);
-        for (auto it = state.reorder_buf.begin(); it != state.reorder_buf.end(); ++it) {
-            const uint16_t distance = static_cast<uint16_t>(it->first - expected);
-            if (distance < best_distance) {
-                best_distance = distance;
-                nearest = it;
-            }
         }
-        const uint16_t restart_seq = nearest->first;
-        recover_from_sequence_gap(channel, state, restart_seq);
-
-        while (true) {
-            auto it = state.reorder_buf.find(static_cast<uint16_t>(state.expected_seq));
-            if (it == state.reorder_buf.end())
-                break;
-            handle_packet_immediate(channel, state, it->first, it->second.data(), it->second.size());
-            state.reorder_buf.erase(it);
-            state.expected_seq = static_cast<uint16_t>(state.expected_seq + 1);
+        // A keyframe burst can deliver >16 later datagrams before the missing
+        // one is retransmitted. Bound jitter by elapsed time AND memory rather
+        // than declaring loss solely because a busy camera sent 16 packets.
+        if (state.reorder_bytes + len > 512 * 1024 || state.reorder_buf.size() >= 256) {
+            recover_reordered(channel, state);
+            // Pressure recovery can change expected_seq: recompute before
+            // accepting this packet instead of silently skipping a new gap.
+            accept_packet(channel, seq, data, len);
+            return;
         }
-        return;
+        if (state.reorder_buf.try_emplace(seq, data, data + len).second) {
+            ++packets_reordered_;
+            state.reorder_bytes += len;
+        } else
+            ++packets_duplicate_;
+        if (state.gap_since_ms < 0)
+            state.gap_since_ms = clock_();
+    } else {
+        state.reorder_buf.clear();
+        state.reorder_bytes = 0;
+        recover_from_sequence_gap(channel, state, seq);
+        handle_packet_immediate(channel, state, seq, data, len);
+        state.expected_seq = static_cast<uint16_t>(seq + 1);
     }
-
-    // Session reset or a jump larger than the reorder window.
-    state.reorder_buf.clear();
-    recover_from_sequence_gap(channel, state, seq);
-    handle_packet_immediate(channel, state, seq, data, len);
-    state.expected_seq = static_cast<uint16_t>(seq + 1);
+    flush_expired();
 }
 
 void AVIOReassembler::handle_packet_immediate(uint8_t channel, ChannelState& state, uint16_t, const uint8_t* data,

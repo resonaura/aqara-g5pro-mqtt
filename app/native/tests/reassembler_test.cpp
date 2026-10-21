@@ -1,3 +1,7 @@
+// These regressions must execute in Release builds as well as sanitizer builds.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -133,7 +137,8 @@ int main() {
 
     // Confirmed packet loss still requests one fresh IDR after the bounded
     // reorder window is exhausted, discarding only the incomplete access unit.
-    aqara::AVIOReassembler lost(key, key);
+    int64_t jitter_now = 0;
+    aqara::AVIOReassembler lost(key, key, [&]() { return jitter_now; });
     int loss_requests = 0, recovered_frames = 0;
     lost.set_callbacks([&](const aqara::VideoFrame&) { ++recovered_frames; }, {}, [&]() { ++loss_requests; });
     lost.push_packet(4, 100, video.data(), 20);
@@ -141,6 +146,12 @@ int main() {
         lost.push_packet(4, seq, video.data(), video.size());
     assert(loss_requests == 0);
     lost.push_packet(4, 117, video.data(), video.size());
+    assert(loss_requests == 0);
+    jitter_now = 149;
+    lost.flush_expired();
+    assert(loss_requests == 0);
+    jitter_now = 150;
+    lost.flush_expired();
     assert(loss_requests == 1);
     assert(recovered_frames == 16);
     const auto health = lost.statistics();
@@ -148,6 +159,47 @@ int main() {
     assert(health.reordered == 16 && health.sequence_gaps == 1);
     assert(health.video_frames == 16 && health.keyframe_requests == 1);
     assert(health.discarded_bytes == 20 && health.malformed_frames == 0);
+
+    // A retransmission after a 48-packet keyframe burst must not be treated
+    // as loss just because the previous sixteen-packet limit was exceeded.
+    int64_t reorder_now = 0;
+    aqara::AVIOReassembler burst(key, key, [&]() { return reorder_now; });
+    int burst_frames = 0, burst_requests = 0;
+    burst.set_callbacks([&](const aqara::VideoFrame&) { ++burst_frames; }, {}, [&]() { ++burst_requests; });
+    burst.push_packet(4, 65500, video.data(), video.size());
+    for (uint32_t seq = 65502; seq <= 65549; ++seq)
+        burst.push_packet(4, static_cast<uint16_t>(seq), video.data(), video.size());
+    assert(burst_frames == 1 && burst_requests == 0);
+    reorder_now = 100;
+    burst.push_packet(4, 65501, video.data(), video.size());
+    assert(burst_frames == 50 && burst_requests == 0);
+    assert(burst.statistics().sequence_gaps == 0);
+    burst.flush_expired();
+    assert(burst_requests == 0);
+
+    // Sparse traffic still has a deadline, and recovered late duplicates must
+    // not request another IDR or advance media twice.
+    burst.push_packet(4, 15, video.data(), video.size());  // expected=14 after wrap
+    reorder_now = 250;
+    burst.flush_expired();
+    assert(burst_requests == 1 && burst_frames == 51);
+    burst.push_packet(4, 14, video.data(), video.size());
+    assert(burst_requests == 1 && burst_frames == 51);
+    assert(burst.statistics().duplicates == 1);
+
+    // A producer cannot grow the reorder queue indefinitely at a fixed clock.
+    aqara::AVIOReassembler pressure(key, key, []() { return int64_t(0); });
+    int pressure_requests = 0;
+    pressure.set_callbacks({}, {}, [&]() { ++pressure_requests; });
+    pressure.push_packet(4, 0, video.data(), video.size());
+    for (uint16_t seq = 2; seq < 260; ++seq)
+        pressure.push_packet(4, seq, video.data(), video.size());
+    assert(pressure_requests == 1);
+    assert(pressure.statistics().packets == 259);
+    // Reject unsupported channel IDs and impossible datagrams before allocation.
+    pressure.push_packet(255, 1, video.data(), video.size());
+    pressure.push_packet(4, 1, video.data(), 65537);
+    assert(pressure.statistics().packets == 259);
 
     // Test regional TUTK master decoding from InitString
     std::vector<std::string> masters;

@@ -150,6 +150,10 @@ bool P2PClient::start() {
     setsockopt(udp_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     setsockopt(udp_fd_, SOL_SOCKET, SO_BROADCAST, &opt, sizeof(opt));
 
+    // Receiver-thread expiry bounds a missing datagram even if traffic stops.
+    timeval receive_timeout{};
+    receive_timeout.tv_usec = 20000;
+    setsockopt(udp_fd_, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
     int rcvbuf = 8 * 1024 * 1024;
     setsockopt(udp_fd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
@@ -485,6 +489,8 @@ void P2PClient::receiver_loop() {
         if (n <= 0) {
             if (!running_)
                 break;
+            if (reassembler_)
+                reassembler_->flush_expired();
             continue;
         }
 

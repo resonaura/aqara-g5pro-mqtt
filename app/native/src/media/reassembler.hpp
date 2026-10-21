@@ -35,13 +35,16 @@ struct MediaStatistics {
 
 class AVIOReassembler {
 public:
-    AVIOReassembler(const uint8_t video_key[32], const uint8_t audio_key[32]);
+    using Clock = std::function<int64_t()>;
+    AVIOReassembler(const uint8_t video_key[32], const uint8_t audio_key[32], Clock clock = {});
     ~AVIOReassembler() = default;
 
     void set_callbacks(VideoCallback video_cb, AudioCallback audio_cb, KeyframeRequestCallback kf_req_cb);
     void set_keys(const uint8_t video_key[32], const uint8_t audio_key[32]);
     void push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len);
     void reset();
+    // Call only on the receiver thread; expiry never races packet reassembly.
+    void flush_expired();
     int64_t last_video_frame_ms() const { return last_video_frame_ms_.load(); }
     int64_t last_audio_frame_ms() const { return last_audio_frame_ms_.load(); }
     MediaStatistics statistics() const {
@@ -53,12 +56,18 @@ public:
 private:
     struct ChannelState {
         int expected_seq = -1;
+        int64_t gap_since_ms = -1;
+        size_t reorder_bytes = 0;
         std::map<uint16_t, std::vector<uint8_t>> reorder_buf;
         std::vector<uint8_t> stream_buf;
         std::vector<uint8_t> pending_audio;
         size_t pending_audio_expected = 0;
     };
 
+    void accept_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len);
+    void drain_reordered(uint8_t channel, ChannelState& state);
+    void recover_reordered(uint8_t channel, ChannelState& state);
+    Clock clock_;
     void handle_packet_immediate(uint8_t channel, ChannelState& state, uint16_t seq, const uint8_t* data, size_t len);
     void parse_stream_buffer(uint8_t channel, ChannelState& state);
     void process_completed_avio(const uint8_t* data, size_t len);
