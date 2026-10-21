@@ -220,6 +220,7 @@ export class NativeMediaEngine extends EventEmitter {
       "unhealthy",
       "error",
       "media_health",
+      "media_recovery",
     ];
     if (tracked.includes(msg.event)) {
       // Explicit allowlist: never persist IPC configs, keys or snapshot/audio payloads.
@@ -230,6 +231,7 @@ export class NativeMediaEngine extends EventEmitter {
         "session_ready",
         "reason",
         "operation",
+        "action",
         "message",
         "packets",
         "duplicates",

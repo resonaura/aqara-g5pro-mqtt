@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.16 — Make stream recovery stages reachable
+
+- Escalate from a keyframe request after 3 seconds without a complete picture to a stream/session retry at 6 seconds, then P2P reconnect at 15 seconds. The previous 6/11-second cooldown skipped the stream-restart stage before reconnecting.
+- Measure complete-frame progress, including first-frame timeouts; duplicate/encrypted packets cannot hide a stalled decoder input. Keep ordinary jitter and active recordings untouched.
+- Persist each soft recovery stage with packet/frame ages. Allocate command sequences atomically and avoid concurrent duplicate IDR requests. Add deterministic deadline and real native-worker journal regressions.
+
 ## v1.6.15 — Bounded time-based camera jitter recovery
 
 - Allow a missing UDP datagram up to 150 milliseconds to arrive instead of declaring loss after sixteen later packets in a keyframe burst. Preserve byte-exact packet ordering and independent channel/sequence-wrap handling.

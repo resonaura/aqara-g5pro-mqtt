@@ -52,3 +52,6 @@ add_test(NAME aqara-reassembler-test COMMAND aqara-reassembler-test)
 
 add_executable(aqara-rtp-timeline-test tests/rtp_timeline_test.cpp)
 add_test(NAME aqara-rtp-timeline-test COMMAND aqara-rtp-timeline-test)
+
+add_executable(aqara-frame-watchdog-test tests/frame_watchdog_test.cpp)
+add_test(NAME aqara-frame-watchdog-test COMMAND aqara-frame-watchdog-test)

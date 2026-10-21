@@ -128,7 +128,7 @@ test("native telemetry uses a field allowlist and native stderr is sanitized bef
       command: process.execPath,
       args: [
         "-e",
-        `console.error('rtsp://secret:password@10.9.8.7/live token=private-native');console.log(JSON.stringify({event:'media_health', did:'private-camera', video_frames:20,audio_frames:30,video_key_hex:'private-key',data_base64:'private-media'}));console.log(JSON.stringify({event:'ready'}));setInterval(()=>{},1000);`,
+        `console.error('rtsp://secret:password@10.9.8.7/live token=private-native');console.log(JSON.stringify({event:'media_health', did:'private-camera', video_frames:20,audio_frames:30,video_key_hex:'private-key',data_base64:'private-media'}));console.log(JSON.stringify({event:'media_recovery',did:'private-camera',action:'restart_stream',video_age_ms:6100,decoded_age_ms:6300,data_base64:'private-media'}));console.log(JSON.stringify({event:'ready'}));setInterval(()=>{},1000);`,
       ],
       killMs: 20,
     });
@@ -159,6 +159,15 @@ test("native telemetry uses a field allowlist and native stderr is sanitized bef
       assert.equal(health.fields.video_frames, 20);
       assert.equal(health.fields.audio_frames, 30);
       assert.equal(health.fields.camera, cameraDiagnosticId("private-camera"));
+      const recovery = raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .find((row) => row.event === "native.media_recovery");
+      assert.equal(recovery.fields.action, "restart_stream");
+      assert.equal(recovery.fields.video_age_ms, 6100);
+      assert.equal(recovery.fields.decoded_age_ms, 6300);
+      assert.equal(recovery.fields.camera, cameraDiagnosticId("private-camera"));
     } finally {
       engine.stop();
       restore();
