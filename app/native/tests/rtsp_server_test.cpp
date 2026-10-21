@@ -23,7 +23,7 @@ static void request(int fd, const std::string& text) {
     }
     check(response.starts_with("RTSP/1.0 200 OK"));
 }
-static int viewer(int port, bool slow) {
+static int viewer(int port, bool slow, bool audio = false) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     check(fd >= 0);
     if (slow) {
@@ -40,11 +40,81 @@ static int viewer(int port, bool slow) {
     const auto url = "rtsp://127.0.0.1:" + std::to_string(port) + "/live/test";
     request(fd,
             "SETUP " + url + "/track0 RTSP/1.0\r\nCSeq: 1\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n");
-    request(fd, "PLAY " + url + " RTSP/1.0\r\nCSeq: 2\r\nSession: test\r\n\r\n");
+    if (audio)
+        request(fd, "SETUP " + url +
+                        "/track1 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3\r\n\r\n");
+    request(fd, "PLAY " + url + " RTSP/1.0\r\nCSeq: 3\r\nSession: test\r\n\r\n");
     return fd;
+}
+static uint32_t timestamp(int fd, uint8_t channel, size_t audio_bytes = 0) {
+    const auto read = [fd](uint8_t* out, size_t size) {
+        while (size) {
+            const auto n = recv(fd, out, size, 0);
+            check(n > 0);
+            out += n;
+            size -= static_cast<size_t>(n);
+        }
+    };
+    uint8_t header[4];
+    read(header, sizeof(header));
+    check(header[0] == '$' && header[1] == channel);
+    std::vector<uint8_t> packet((size_t(header[2]) << 8) | header[3]);
+    check(packet.size() >= 12);
+    read(packet.data(), packet.size());
+    if (audio_bytes) {
+        check(packet.size() == 16 + audio_bytes);
+        check(((size_t(packet[14]) << 5) | (packet[15] >> 3)) == audio_bytes);
+    }
+    return (uint32_t(packet[4]) << 24) | (uint32_t(packet[5]) << 16) | (uint32_t(packet[6]) << 8) | packet[7];
 }
 int main() {
     using namespace std::chrono;
+    {
+        aqara::RTSPServer clock_server(0, "live/test");
+        check(clock_server.start());
+        aqara::VideoFrame video{.annex_b_data = {0, 0, 0, 1, 0x65, 0x11},
+                                .is_keyframe = true,
+                                .width = 1920,
+                                .height = 1080,
+                                .codec_id = 0x4e,
+                                .timestamp_ms = 1000};
+        clock_server.broadcast_video(video);
+        const int reader = viewer(clock_server.get_port(), false, true);
+        const auto first_video = timestamp(reader, 0);
+        aqara::AudioFrame audio{.aac_adts_data = {0x21, 0x10}, .timestamp_ms = 1000};
+        clock_server.broadcast_audio(audio);
+        const auto first_audio = timestamp(reader, 2);
+        // A camera outage discards audio as well as pictures. Both tracks must
+        // retain the same two seconds rather than compressing the missing AAC.
+        video.timestamp_ms = audio.timestamp_ms = 3000;
+        clock_server.broadcast_video(video);
+        clock_server.broadcast_audio(audio);
+        check(timestamp(reader, 0) - first_video == 2 * 90000);
+        check(timestamp(reader, 2) - first_audio == 2 * 16000);
+        audio.timestamp_ms += 64;
+        clock_server.broadcast_audio(audio);
+        check(timestamp(reader, 2) - first_audio == 2 * 16000 + 1024);
+        // Large legal AAC units must reach the reader complete, rather than
+        // advertising their full length while sending only 2,048 bytes.
+        audio.aac_adts_data.assign(3000, 0x21);
+        audio.timestamp_ms += 64;
+        clock_server.broadcast_audio(audio);
+        check(timestamp(reader, 2, 3000) - first_audio == 2 * 16000 + 2048);
+        // Malformed/truncated ADTS and oversized AUs must not poison the next
+        // valid packet or consume its timestamp/sequence position.
+        audio.aac_adts_data = {0xff, 0xf1, 0x60};
+        clock_server.broadcast_audio(audio);
+        audio.aac_adts_data = {0xff, 0xf1, 0x60, 0x40, 0x01, 0x7f, 0xfc, 0x11, 0x22};
+        clock_server.broadcast_audio(audio);
+        audio.aac_adts_data.assign(8192, 0x21);
+        clock_server.broadcast_audio(audio);
+        audio.aac_adts_data = {0x21, 0x10};
+        audio.timestamp_ms += 64;
+        clock_server.broadcast_audio(audio);
+        check(timestamp(reader, 2, 2) - first_audio == 2 * 16000 + 3072);
+        clock_server.stop();
+        close(reader);
+    }
     aqara::RTSPServer server(0, "live/test");
     check(server.start());
     aqara::RTSPServer conflict(server.get_port(), "live/another-camera");

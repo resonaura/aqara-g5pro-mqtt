@@ -75,7 +75,8 @@ bool RTSPServer::start() {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port_);
     if (bind(server_fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
-        std::cerr << "[RTSP-Native] Assigned port " << port_ << " is unavailable: " << std::strerror(errno) << std::endl;
+        std::cerr << "[RTSP-Native] Assigned port " << port_ << " is unavailable: " << std::strerror(errno)
+                  << std::endl;
         close(server_fd_);
         server_fd_ = -1;
         return false;
@@ -891,7 +892,9 @@ void RTSPServer::broadcast_audio(const AudioFrame& af) {
     const uint8_t* raw_aac = data;
     size_t raw_len = len;
 
-    if (len >= 7 && data[0] == 0xff && (data[1] & 0xf0) == 0xf0) {
+    if (len >= 2 && data[0] == 0xff && (data[1] & 0xf0) == 0xf0) {
+        if (len < 7)
+            return;
         // Has ADTS header: parse ADTS frame length
         bool has_crc = (data[1] & 0x01) == 0;
         size_t hdr_len = has_crc ? 9 : 7;
@@ -901,13 +904,13 @@ void RTSPServer::broadcast_audio(const AudioFrame& af) {
         if (frame_len >= hdr_len && frame_len <= len) {
             raw_aac = data + hdr_len;
             raw_len = frame_len - hdr_len;
-        } else if (len > hdr_len) {
-            raw_aac = data + hdr_len;
-            raw_len = len - hdr_len;
-        }
+        } else
+            return;  // A partial ADTS unit cannot be repaired by stripping its header.
     }
 
-    if (raw_len == 0)
+    // RFC 3640's configured AU-size field has thirteen bits. Never advertise
+    // one length and silently truncate the compressed unit to a smaller buffer.
+    if (raw_len == 0 || raw_len > 8191)
         return;
 
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
@@ -919,12 +922,14 @@ void RTSPServer::broadcast_audio(const AudioFrame& af) {
         if (ch < 0)
             continue;
 
-        // AAC frames contain exactly 1024 PCM audio samples (64ms at 16000 Hz).
-        // Increment by exactly 1024 per frame so RTP timestamp matches PCM sample count
-        // 100% accurately with 0 drift or buffer overflow in WebRTC / VLC / go2rtc.
-        client.audio_rtp_timestamp = client.audio_clock.advance(1024);
+        // Retain capture time when an outage/loss removes AAC units, just as
+        // video does. Counting only received units compresses audio gaps and
+        // permanently separates the clocks of a long-lived A/V reader.
+        client.audio_rtp_timestamp = af.timestamp_ms > 0
+                                         ? client.audio_clock.map(static_cast<uint32_t>(af.timestamp_ms * 16), 0, 1024)
+                                         : client.audio_clock.advance(1024);
 
-        uint8_t rtp_pkt[16 + 2048];
+        std::vector<uint8_t> rtp_pkt(16 + raw_len);
         rtp_pkt[0] = 0x80;
         rtp_pkt[1] = 0x80 | 97;
         rtp_pkt[2] = static_cast<uint8_t>((client.audio_rtp_seq >> 8) & 0xff);
@@ -946,10 +951,9 @@ void RTSPServer::broadcast_audio(const AudioFrame& af) {
         rtp_pkt[14] = static_cast<uint8_t>((au_hdr >> 8) & 0xff);
         rtp_pkt[15] = static_cast<uint8_t>(au_hdr & 0xff);
 
-        size_t copy_len = std::min(raw_len, static_cast<size_t>(2048));
-        std::memcpy(rtp_pkt + 16, raw_aac, copy_len);
+        std::memcpy(rtp_pkt.data() + 16, raw_aac, raw_len);
 
-        send_interleaved_rtp(client, ch, rtp_pkt, 16 + copy_len);
+        send_interleaved_rtp(client, ch, rtp_pkt.data(), rtp_pkt.size());
     }
 }
 

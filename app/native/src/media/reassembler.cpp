@@ -82,7 +82,7 @@ static inline bool is_avio_audio_header_safe(const uint8_t* data, size_t len) {
 
 void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& state, uint16_t next_seq) {
     sequence_gaps_++;
-    discarded_bytes_ += state.stream_buf.size();
+    discarded_bytes_ += state.stream_buf.size() + state.pending_audio.size();
     state.stream_buf.clear();
     state.pending_audio.clear();
     state.pending_audio_expected = 0;
@@ -90,7 +90,9 @@ void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
     state.gap_since_ms = -1;
     std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " sequence gap, resync at seq=" << next_seq
               << " gaps=" << sequence_gaps_.load() << std::endl;
-    if (kf_req_cb_) {
+    // Channel 2 carries audio only. An IDR cannot recover missing AAC and
+    // would unnecessarily gate video readers and stress the camera encoder.
+    if (channel != 2 && kf_req_cb_) {
         ++keyframe_requests_;
         kf_req_cb_();
     }
