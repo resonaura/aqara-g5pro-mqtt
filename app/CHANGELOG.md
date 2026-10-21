@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.15 — Bounded time-based camera jitter recovery
+
+- Allow a missing UDP datagram up to 150 milliseconds to arrive instead of declaring loss after sixteen later packets in a keyframe burst. Preserve byte-exact packet ordering and independent channel/sequence-wrap handling.
+- Bound each reorder queue by 256 datagrams and 512 KiB; expire sparse/stopped traffic on the receiver thread. Confirmed loss still discards damaged residue and requests a clean keyframe.
+- Add deterministic burst retransmission, timeout, wrap, duplicate and queue-pressure regressions with sanitizer coverage.
+
 ## v1.6.14 — Isolate transient snapshot errors from live streams
 
 - A missing cached snapshot now rejects only that capture. It no longer restarts an otherwise flowing P2P stream; the snapshotter retains its normal RTSP fallback, retry and prolonged-failure recovery.
