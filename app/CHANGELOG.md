@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.17 — Isolate slow RTSP readers
+
+- Send each client through an independent, ordered TCP writer. Slow or stopped viewers no longer block camera receive/ACKs, other viewers or recordings. RTSP replies and RTP share the same writer so partial writes cannot interleave them.
+- Bound queued and in-flight bytes to 8 MiB per reader and close readers that exceed a two-second write deadline. Keep shutdown interruptible and idempotent; poll nonblocking descriptors rather than spinning. Request a new keyframe instead of replaying an oversized cached GOP.
+- Keep each camera on its assigned port: reject conflicts instead of sharing a listener or silently moving to another camera port. Persist reader shutdown reasons with the camera server port. Add byte-order, partial-write, backlog, deadline, cancellation and actual RTSP slow-reader isolation regressions with sanitizer coverage.
+
 ## v1.6.16 — Make stream recovery stages reachable
 
 - Escalate from a keyframe request after 3 seconds without a complete picture to a stream/session retry at 6 seconds, then P2P reconnect at 15 seconds. The previous 6/11-second cooldown skipped the stream-restart stage before reconnecting.

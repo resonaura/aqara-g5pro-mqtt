@@ -68,26 +68,14 @@ bool RTSPServer::start() {
 
     int opt = 1;
     setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-#ifdef SO_REUSEPORT
-    setsockopt(server_fd_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-#endif
-
-    bool bound = false;
-    for (int offset = 0; offset < 20; ++offset) {
-        int try_port = port_ + offset;
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port = htons(try_port);
-
-        if (bind(server_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-            port_ = try_port;
-            bound = true;
-            break;
-        }
-    }
-
-    if (!bound) {
+    // Each persistent camera URL must retain its assigned port. Sharing a
+    // listener or silently taking the next camera's port can return wrong video.
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(port_);
+    if (bind(server_fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
+        std::cerr << "[RTSP-Native] Assigned port " << port_ << " is unavailable: " << std::strerror(errno) << std::endl;
         close(server_fd_);
         server_fd_ = -1;
         return false;
@@ -97,6 +85,17 @@ bool RTSPServer::start() {
         close(server_fd_);
         server_fd_ = -1;
         return false;
+    }
+
+    if (port_ == 0) {
+        sockaddr_in bound_address{};
+        socklen_t length = sizeof(bound_address);
+        if (getsockname(server_fd_, reinterpret_cast<sockaddr*>(&bound_address), &length) < 0) {
+            close(server_fd_);
+            server_fd_ = -1;
+            return false;
+        }
+        port_ = ntohs(bound_address.sin_port);
     }
 
     running_ = true;
@@ -326,6 +325,9 @@ void RTSPServer::accept_loop() {
                 close(client_fd);
                 continue;
             }
+            client->writer = std::make_unique<RTSPWriter>(client_fd, [port = port_](const char* reason) {
+                std::cerr << "[RTSP-Native] Reader closed on server port " << port << " reason=" << reason << std::endl;
+            });
             clients_[client_fd] = std::move(client);
         }
 
@@ -348,8 +350,13 @@ void RTSPServer::handle_client(int client_fd) {
 
     while (running_) {
         ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+        if (n < 0 && errno == EINTR)
             continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            pollfd readable{client_fd, POLLIN, 0};
+            poll(&readable, 1, 1000);
+            continue;
+        }
         if (n <= 0 || accumulated.size() + static_cast<size_t>(n) > 65536)
             break;
         accumulated.append(buf, n);
@@ -388,6 +395,7 @@ void RTSPServer::handle_client(int client_fd) {
     std::lock_guard<std::recursive_mutex> lock(clients_mutex_);
     auto it = clients_.find(client_fd);
     if (it != clients_.end()) {
+        it->second->writer->stop();
         close(client_fd);
         clients_.erase(it);
     }
@@ -484,7 +492,8 @@ void RTSPServer::process_rtsp_request(RTSPClient& client, const std::string& req
              << "track1;seq=" << client.audio_rtp_seq << ";rtptime=" << client.audio_rtp_timestamp << "\r\n\r\n";
 
         std::string str = resp.str();
-        send(client.socket_fd, str.data(), str.length(), 0);
+        if (!write_response(client, str))
+            return;
 
         // Replaying one cached IDR followed by live P-frames is invalid because
         // those P-frames can reference intermediate pictures the client missed.
@@ -493,7 +502,8 @@ void RTSPServer::process_rtsp_request(RTSPClient& client, const std::string& req
         std::vector<VideoFrame> gop;
         {
             std::lock_guard<std::mutex> key_lock(keyframe_mutex_);
-            gop = cached_gop_;
+            if (cached_gop_bytes_ <= 4 * 1024 * 1024)
+                gop = cached_gop_;
         }
         if (!gop.empty() && gop.front().is_keyframe) {
             std::lock_guard<std::recursive_mutex> clients_lock(clients_mutex_);
@@ -530,7 +540,7 @@ void RTSPServer::process_rtsp_request(RTSPClient& client, const std::string& req
     }
 
     std::string str = resp.str();
-    send(client.socket_fd, str.data(), str.length(), 0);
+    write_response(client, str);
 }
 
 std::string RTSPServer::generate_sdp(const std::string& host_ip) {
@@ -608,6 +618,13 @@ void RTSPServer::send_ingest_rtp(RTSPClient& client, bool video, const uint8_t* 
                          rewritten.data(), rewritten.size());
 }
 
+bool RTSPServer::write_response(RTSPClient& client, const std::string& response) {
+    if (client.writer && client.writer->enqueue({response.begin(), response.end()}))
+        return true;
+    client.is_playing = false;
+    return false;
+}
+
 void RTSPServer::send_interleaved_rtp(RTSPClient& client, int channel, const uint8_t* rtp_pkt, size_t len) {
     if (!client.is_playing || channel < 0 || client.socket_fd < 0 || !rtp_pkt || len == 0 || len > 0xffff)
         return;
@@ -619,31 +636,8 @@ void RTSPServer::send_interleaved_rtp(RTSPClient& client, int channel, const uin
     framed[3] = static_cast<uint8_t>(len & 0xff);
     std::memcpy(framed.data() + 4, rtp_pkt, len);
 
-    size_t offset = 0;
-    while (offset < framed.size()) {
-#ifdef MSG_NOSIGNAL
-        const int flags = MSG_NOSIGNAL;
-#else
-        const int flags = 0;
-#endif
-        const ssize_t written = send(client.socket_fd, framed.data() + offset, framed.size() - offset, flags);
-        if (written > 0) {
-            offset += static_cast<size_t>(written);
-            continue;
-        }
-        if (written < 0 && errno == EINTR)
-            continue;
-        const bool was_playing = client.is_playing;
+    if (!client.writer || !client.writer->enqueue(std::move(framed)))
         client.is_playing = false;
-        // A stalled reader must not keep blocking the media callback on every frame.
-        shutdown(client.socket_fd, SHUT_RDWR);
-        if (was_playing) {
-            std::cerr << "[RTSP-Native] RTP send failed for " << client.ip << ":" << client.port << " sent=" << offset
-                      << "/" << framed.size() << " err=" << (written < 0 ? std::strerror(errno) : "peer closed")
-                      << std::endl;
-        }
-        return;
-    }
 }
 
 void RTSPServer::send_video_to_client(RTSPClient& client, const VideoFrame& vf) {
