@@ -20,11 +20,15 @@ jobs:
   # 1. Home Assistant Add-on Multi-Arch Builder
   publish-addon:
     name: Build & Publish HA Add-on (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64, amd64]
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,6 +43,7 @@ jobs:
       - name: Build & Publish Home Assistant Add-on Image
         uses: home-assistant/builder@master
         with:
+          image: ${{ matrix.arch }}
           args: |
             --${{ matrix.arch }} \
             --target /data/app \

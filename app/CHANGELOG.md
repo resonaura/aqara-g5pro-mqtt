@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.12 — Preserve video through ordinary network jitter
+
+- Wait for the bounded UDP reorder window before declaring packet loss. Harmless out-of-order audio/video datagrams no longer gate all RTSP readers while waiting for an unnecessary keyframe.
+- A new RTSP viewer requests a keyframe without pausing existing viewers or recordings. Confirmed loss still discards the incomplete access unit and requests an IDR.
+- Add benign-jitter/confirmed-loss regressions and build each add-on architecture on its native runner.
+
 ## v1.6.11 — Keep long-lived audio and video clocks aligned
 
 - Retain real forward video timestamp gaps while waiting for a clean keyframe. The previous ten-frame threshold compressed those waits into one frame, letting continuous audio drift ahead in persistent RTSP clients.
