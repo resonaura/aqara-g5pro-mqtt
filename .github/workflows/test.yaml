@@ -32,5 +32,12 @@ jobs:
             native/src/media/reassembler.cpp native/src/p2p/cipher.cpp \
             -o /tmp/aqara-reassembler-sanitized
           /tmp/aqara-reassembler-sanitized
+          c++ -std=c++23 -g -fsanitize=address,undefined -pthread -I native/src \
+            native/tests/rtsp_writer_test.cpp -o /tmp/aqara-writer-sanitized
+          /tmp/aqara-writer-sanitized
+          c++ -std=c++23 -g -fsanitize=address,undefined -pthread -DAQARA_SANITIZED_TEST=1 -I native/src \
+            native/tests/rtsp_server_test.cpp native/src/rtsp/server.cpp \
+            -o /tmp/aqara-rtsp-server-sanitized
+          /tmp/aqara-rtsp-server-sanitized
       - run: pnpm test && pnpm lint
         working-directory: app

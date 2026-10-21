@@ -55,3 +55,11 @@ add_test(NAME aqara-rtp-timeline-test COMMAND aqara-rtp-timeline-test)
 
 add_executable(aqara-frame-watchdog-test tests/frame_watchdog_test.cpp)
 add_test(NAME aqara-frame-watchdog-test COMMAND aqara-frame-watchdog-test)
+
+add_executable(aqara-rtsp-writer-test tests/rtsp_writer_test.cpp)
+target_link_libraries(aqara-rtsp-writer-test PRIVATE pthread)
+add_test(NAME aqara-rtsp-writer-test COMMAND aqara-rtsp-writer-test)
+
+add_executable(aqara-rtsp-server-test tests/rtsp_server_test.cpp src/rtsp/server.cpp)
+target_link_libraries(aqara-rtsp-server-test PRIVATE pthread)
+add_test(NAME aqara-rtsp-server-test COMMAND aqara-rtsp-server-test)

@@ -11,11 +11,13 @@
 #include <vector>
 #include "../media/reassembler.hpp"
 #include "rtp-timeline.hpp"
+#include "writer.hpp"
 
 namespace aqara {
 
 struct RTSPClient {
     int socket_fd;
+    std::unique_ptr<RTSPWriter> writer;
     std::string ip;
     int port;
     bool is_playing = false;
@@ -78,6 +80,7 @@ private:
 
     std::string generate_sdp(const std::string& host_ip);
     void send_ingest_rtp(RTSPClient& client, bool video, const uint8_t* packet, size_t len);
+    bool write_response(RTSPClient& client, const std::string& response);
     void send_interleaved_rtp(RTSPClient& client, int channel, const uint8_t* rtp_pkt, size_t len);
     void send_video_to_client(RTSPClient& client, const VideoFrame& vf);
 
