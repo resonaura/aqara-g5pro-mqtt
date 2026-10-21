@@ -143,6 +143,9 @@ P2PClient::~P2PClient() {
 }
 
 bool P2PClient::start() {
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
+    if (running_)
+        return true;
     udp_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd_ < 0)
         return false;
@@ -182,6 +185,7 @@ bool P2PClient::start() {
 }
 
 void P2PClient::stop() {
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     if (!running_)
         return;
 
@@ -195,17 +199,19 @@ void P2PClient::stop() {
     if (udp_fd_ >= 0) {
         auto close_pkt = PPCSCipher::build_pppp(PpcsMsgType::CLOSE);
         PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), close_pkt.data(), close_pkt.size());
-        if (camera_addr_.sin_port != 0) {
-            send_raw_packet(close_pkt.data(), close_pkt.size(), camera_addr_);
+        const auto endpoint = camera_endpoint();
+        if (endpoint.sin_port != 0) {
+            send_raw_packet(close_pkt.data(), close_pkt.size(), endpoint);
         }
         if (!config_.camera_ip.empty()) {
             send_raw_packet(close_pkt.data(), close_pkt.size(), config_.camera_ip, 32108);
         }
         // Shutdown packets must be sent while send_raw_packet still accepts writes.
         running_ = false;
-        shutdown(udp_fd_, SHUT_RDWR);
-        close(udp_fd_);
-        udp_fd_ = -1;
+        {
+            std::lock_guard<std::mutex> sending(send_mutex_);
+            shutdown(udp_fd_, SHUT_RDWR);
+        }
     }
 
     running_ = false;
@@ -215,12 +221,22 @@ void P2PClient::stop() {
         discovery_thread_.join();
     if (watchdog_thread_.joinable())
         watchdog_thread_.join();
+    // Receive/discovery keep a stable descriptor until they have joined. A
+    // retained viewer reference may still send; serialize close with that send
+    // and reject writes once running_ is false, before the descriptor can reuse.
+    std::lock_guard<std::mutex> sending(send_mutex_);
+    if (udp_fd_ >= 0) {
+        close(udp_fd_);
+        udp_fd_ = -1;
+    }
+    is_connected_ = false;
 }
 
 void P2PClient::send_raw_packet(const uint8_t* data, size_t len, const sockaddr_in& dest) {
+    std::lock_guard<std::mutex> sending(send_mutex_);
     if (running_ && udp_fd_ >= 0 && data && len > 0) {
-        ssize_t ret = sendto(udp_fd_, data, len, 0, reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
-        if (ret < 0 && running_ && errno != EBADF) {
+        ssize_t ret = sendto(udp_fd_, data, len, MSG_DONTWAIT, reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
+        if (ret < 0 && running_ && errno != EAGAIN && errno != EWOULDBLOCK) {
             char ip_str[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &(dest.sin_addr), ip_str, INET_ADDRSTRLEN);
             std::cerr << "[P2P-Native] sendto failed to " << ip_str << ":" << ntohs(dest.sin_port)
@@ -237,8 +253,18 @@ void P2PClient::send_raw_packet(const uint8_t* data, size_t len, const std::stri
     send_raw_packet(data, len, dest);
 }
 
+sockaddr_in P2PClient::camera_endpoint() const {
+    std::lock_guard<std::mutex> lock(camera_mutex_);
+    return camera_addr_;
+}
+
+void P2PClient::set_camera_endpoint(const sockaddr_in& endpoint) {
+    std::lock_guard<std::mutex> lock(camera_mutex_);
+    camera_addr_ = endpoint;
+}
+
 void P2PClient::send_enc_drw(uint8_t channel, uint16_t seq, const uint8_t* payload, size_t len) {
-    if (!is_connected_ || udp_fd_ < 0)
+    if (!is_connected_)
         return;
 
     std::vector<uint8_t> drw(4 + len);
@@ -252,7 +278,7 @@ void P2PClient::send_enc_drw(uint8_t channel, uint16_t seq, const uint8_t* paylo
 
     auto pkt = PPCSCipher::build_pppp(0xD0, drw.data(), drw.size());
     PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), pkt.data(), pkt.size());
-    send_raw_packet(pkt.data(), pkt.size(), camera_addr_);
+    send_raw_packet(pkt.data(), pkt.size(), camera_endpoint());
 }
 
 void P2PClient::queue_ack(uint8_t channel, uint16_t seq) {
@@ -293,7 +319,7 @@ void P2PClient::flush_acks(uint8_t channel) {
 
         auto ack_pkt = PPCSCipher::build_pppp(0xD1, ack_payload.data(), ack_payload.size());
         PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), ack_pkt.data(), ack_pkt.size());
-        send_raw_packet(ack_pkt.data(), ack_pkt.size(), camera_addr_);
+        send_raw_packet(ack_pkt.data(), ack_pkt.size(), camera_endpoint());
         i += chunk_size;
     }
 }
@@ -581,8 +607,8 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
     } else if (msg_type == static_cast<uint8_t>(PpcsMsgType::PUNCH)) {
         // PUNCH from a candidate endpoint. Once connected, keep the winning
         // endpoint pinned instead of letting late LAN discovery steal it.
-        if (!is_connected_ && (is_lan_ip(src) || !is_lan_ip(camera_addr_))) {
-            camera_addr_ = src;
+        if (!is_connected_ && (is_lan_ip(src) || !is_lan_ip(camera_endpoint()))) {
+            set_camera_endpoint(src);
         }
 
         auto punch_pkt = PPCSCipher::build_pppp(PpcsMsgType::PUNCH, punch_buf_.data(), punch_buf_.size());
@@ -596,15 +622,15 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         // RDY establishes the endpoint. Ignore late RDY packets from other
         // discovery candidates after a session is already active.
         const bool already_connected = is_connected_.load();
-        if (already_connected && !same_endpoint(src, camera_addr_)) {
+        if (already_connected && !same_endpoint(src, camera_endpoint())) {
             if (!session_started_ && is_lan_ip(src)) {
-                camera_addr_ = src;
+                set_camera_endpoint(src);
                 last_login_sent_ms_ = 0;
             } else {
                 return;
             }
         } else if (!already_connected) {
-            camera_addr_ = src;
+            set_camera_endpoint(src);
         }
 
         auto rdy_ack = PPCSCipher::build_pppp(PpcsMsgType::READY_ACK);
@@ -627,22 +653,22 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
     } else if (msg_type == static_cast<uint8_t>(PpcsMsgType::READY_ACK)) {
         // Ignore late RDY_ACK packets from non-winning endpoints.
         const bool already_connected = is_connected_.load();
-        if (already_connected && !same_endpoint(src, camera_addr_)) {
+        if (already_connected && !same_endpoint(src, camera_endpoint())) {
             if (!session_started_ && is_lan_ip(src)) {
-                camera_addr_ = src;
+                set_camera_endpoint(src);
                 last_login_sent_ms_ = 0;
             } else {
                 return;
             }
         } else if (!already_connected) {
-            camera_addr_ = src;
+            set_camera_endpoint(src);
         }
         const bool first_handshake = !is_connected_.exchange(true);
         if (first_handshake) {
             notify_connected(src);
             auto alive = PPCSCipher::build_pppp(PpcsMsgType::ALIVE);
             PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), alive.data(), alive.size());
-            send_raw_packet(alive.data(), alive.size(), camera_addr_);
+            send_raw_packet(alive.data(), alive.size(), camera_endpoint());
         }
         send_login_if_due();
     } else if (msg_type == static_cast<uint8_t>(PpcsMsgType::ALIVE)) {
@@ -654,11 +680,11 @@ void P2PClient::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
                 msg_type == static_cast<uint8_t>(PpcsMsgType::DRW_EXTRA) ||
                 msg_type == static_cast<uint8_t>(PpcsMsgType::ALT_DRW)) &&
                payload_len >= 4 && payload[0] == static_cast<uint8_t>(PpcsMsgType::DRW_ACK)) {
-        // flush_acks() targets camera_addr_. Reject data from a late candidate,
+        // flush_acks() targets camera_endpoint(). Reject data from a late candidate,
         // otherwise ACKs go to a different peer and the camera retries forever.
-        if (is_connected_ && !same_endpoint(src, camera_addr_)) {
+        if (is_connected_ && !same_endpoint(src, camera_endpoint())) {
             if (!session_ready_ && is_lan_ip(src)) {
-                camera_addr_ = src;
+                set_camera_endpoint(src);
             } else {
                 return;
             }
@@ -807,7 +833,7 @@ void P2PClient::watchdog_loop() {
             if (tick % 2 == 0) {
                 auto alive = PPCSCipher::build_pppp(PpcsMsgType::ALIVE);
                 PPCSCipher::encrypt(ppcs_key_.data(), ppcs_key_.size(), alive.data(), alive.size());
-                send_raw_packet(alive.data(), alive.size(), camera_addr_);
+                send_raw_packet(alive.data(), alive.size(), camera_endpoint());
             }
 
             if (!session_started_) {

@@ -3,6 +3,8 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <mutex>
+#include <utility>
 #include "p2p/client.hpp"
 #include "media/reassembler.hpp"
 #include "rtsp/server.hpp"
@@ -55,7 +57,16 @@ private:
 
     std::shared_ptr<AVIOReassembler> reassembler_;
     std::unique_ptr<RTSPServer> rtsp_server_;
-    std::unique_ptr<P2PClient> p2p_client_;
+    mutable std::mutex p2p_mutex_;
+    std::shared_ptr<P2PClient> p2p_client_;
+    std::shared_ptr<P2PClient> p2p_client() const {
+        std::lock_guard<std::mutex> lock(p2p_mutex_);
+        return p2p_client_;
+    }
+    std::shared_ptr<P2PClient> exchange_p2p(std::shared_ptr<P2PClient> next) {
+        std::lock_guard<std::mutex> lock(p2p_mutex_);
+        return std::exchange(p2p_client_, std::move(next));
+    }
     bool output_started_ = false;
     bool seen_first_keyframe_ = false;
     bool quality_switched_ = false;

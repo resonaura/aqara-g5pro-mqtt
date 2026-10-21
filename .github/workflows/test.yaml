@@ -39,5 +39,13 @@ jobs:
             native/tests/rtsp_server_test.cpp native/src/rtsp/server.cpp \
             -o /tmp/aqara-rtsp-server-sanitized
           /tmp/aqara-rtsp-server-sanitized
+          c++ -std=c++23 -g -O1 -fsanitize=address,undefined -pthread -I native/src -I native/build/_deps/glaze-src/include \
+            native/tests/session_lifetime_test.cpp native/src/session.cpp native/src/crypto/chacha20.cpp \
+            native/src/media/reassembler.cpp native/src/rtsp/server.cpp -o /tmp/aqara-session-lifetime-sanitized
+          /tmp/aqara-session-lifetime-sanitized
+          c++ -std=c++23 -g -O1 -fsanitize=address,undefined -pthread -I native/src -I native/build/_deps/glaze-src/include \
+            native/tests/p2p_transport_test.cpp native/src/p2p/client.cpp native/src/p2p/cipher.cpp \
+            native/src/crypto/chacha20.cpp native/src/media/reassembler.cpp -o /tmp/aqara-p2p-transport-sanitized
+          /tmp/aqara-p2p-transport-sanitized
       - run: pnpm test && pnpm lint
         working-directory: app

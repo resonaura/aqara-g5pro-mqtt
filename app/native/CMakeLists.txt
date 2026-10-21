@@ -63,3 +63,25 @@ add_test(NAME aqara-rtsp-writer-test COMMAND aqara-rtsp-writer-test)
 add_executable(aqara-rtsp-server-test tests/rtsp_server_test.cpp src/rtsp/server.cpp)
 target_link_libraries(aqara-rtsp-server-test PRIVATE pthread)
 add_test(NAME aqara-rtsp-server-test COMMAND aqara-rtsp-server-test)
+
+add_executable(aqara-session-lifetime-test
+    tests/session_lifetime_test.cpp
+    src/session.cpp
+    src/crypto/chacha20.cpp
+    src/media/reassembler.cpp
+    src/rtsp/server.cpp
+)
+target_link_libraries(aqara-session-lifetime-test PRIVATE glaze::glaze pthread)
+add_test(NAME aqara-session-lifetime-test COMMAND aqara-session-lifetime-test)
+set_tests_properties(aqara-session-lifetime-test PROPERTIES TIMEOUT 20)
+
+add_executable(aqara-p2p-transport-test
+    tests/p2p_transport_test.cpp
+    src/p2p/client.cpp
+    src/p2p/cipher.cpp
+    src/crypto/chacha20.cpp
+    src/media/reassembler.cpp
+)
+target_link_libraries(aqara-p2p-transport-test PRIVATE glaze::glaze pthread)
+add_test(NAME aqara-p2p-transport-test COMMAND aqara-p2p-transport-test)
+set_tests_properties(aqara-p2p-transport-test PROPERTIES TIMEOUT 20)

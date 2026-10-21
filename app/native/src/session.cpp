@@ -34,8 +34,8 @@ StreamSession::StreamSession(const SessionConfig& config, std::function<void(con
         // RTSP PLAY may request an IDR, but it must not reset the shared P2P
         // reassembly state or gate existing readers. New clients have their own
         // wait_idr state; opening a preview must not pause ongoing recording.
-        if (p2p_client_)
-            p2p_client_->request_keyframe();
+        if (auto client = p2p_client())
+            client->request_keyframe();
     });
 
     rtsp_server_->set_initial_codec(config_.video_codec == "hevc");
@@ -81,8 +81,8 @@ StreamSession::StreamSession(const SessionConfig& config, std::function<void(con
                         std::cerr << "[NativeSession] Camera " << config_.did << " running at " << vf.width << "x"
                                   << vf.height << " (desired channel " << config_.p2p_quality_channel
                                   << "), upgrading resolution via 0x100E" << std::endl;
-                        if (p2p_client_) {
-                            p2p_client_->set_quality(config_.p2p_quality_channel);
+                        if (auto client = p2p_client()) {
+                            client->set_quality(config_.p2p_quality_channel);
                         }
                     }
                 }
@@ -98,8 +98,8 @@ StreamSession::StreamSession(const SessionConfig& config, std::function<void(con
         [this]() {
             if (rtsp_server_)
                 rtsp_server_->hold_for_new_idr();
-            if (p2p_client_)
-                p2p_client_->request_keyframe();
+            if (auto client = p2p_client())
+                client->request_keyframe();
             if (event_cb_)
                 event_cb_(to_json(EventRequestKeyframe{.did = config_.did}));
         });
@@ -118,7 +118,7 @@ StreamSession::StreamSession(const SessionConfig& config, std::function<void(con
     pcfg.camera_port = config_.camera_port;
     pcfg.p2p_quality_channel = config_.p2p_quality_channel;
 
-    p2p_client_ = std::make_unique<P2PClient>(pcfg, reassembler_, event_cb_);
+    p2p_client_ = std::make_shared<P2PClient>(pcfg, reassembler_, event_cb_);
 }
 
 StreamSession::~StreamSession() {
@@ -146,7 +146,8 @@ bool StreamSession::start_output() {
 bool StreamSession::start() {
     if (!start_output())
         return false;
-    if (!p2p_client_->start()) {
+    const auto client = p2p_client();
+    if (!client || !client->start()) {
         std::cerr << "[NativeSession] Failed to start P2P client for " << config_.did << std::endl;
         rtsp_server_->stop();
         return false;
@@ -158,18 +159,19 @@ bool StreamSession::start() {
 }
 
 bool StreamSession::restart_p2p(const SessionConfig& new_cfg) {
+    // Unpublish first. RTSP callbacks retain their own reference; never hold the
+    // publication lock while joining a receiver that may request a keyframe.
+    const auto previous = exchange_p2p(nullptr);
+    if (previous)
+        previous->stop();
+
+    // The old receiver has now joined: its frame callbacks can no longer read
+    // these keys/configuration or update the per-session quality flags.
     config_ = new_cfg;
     seen_first_keyframe_ = false;
     quality_switched_ = false;
-
-    if (rtsp_server_) {
+    if (rtsp_server_)
         rtsp_server_->hold_for_new_idr();
-    }
-
-    if (p2p_client_) {
-        p2p_client_->stop();
-        p2p_client_.reset();
-    }
 
     auto vkey = hex_to_bytes(config_.video_key_hex);
     auto akey = hex_to_bytes(config_.audio_key_hex);
@@ -199,14 +201,15 @@ bool StreamSession::restart_p2p(const SessionConfig& new_cfg) {
     std::cerr << "[NativeSession] Preserving RTSP server on port " << config_.rtsp_port
               << " while resurrecting P2P tunnel for " << config_.did << std::endl;
 
-    p2p_client_ = std::make_unique<P2PClient>(pcfg, reassembler_, event_cb_);
-    return p2p_client_->start();
+    auto client = std::make_shared<P2PClient>(pcfg, reassembler_, event_cb_);
+    exchange_p2p(client);
+    return client->start();
 }
 
 void StreamSession::stop() {
     output_started_ = false;
-    if (p2p_client_) {
-        p2p_client_->stop();
+    if (auto client = exchange_p2p(nullptr)) {
+        client->stop();
     }
     if (rtsp_server_) {
         rtsp_server_->stop();
@@ -216,33 +219,33 @@ void StreamSession::stop() {
 void StreamSession::request_keyframe() {
     if (rtsp_server_)
         rtsp_server_->hold_for_new_idr();
-    if (p2p_client_)
-        p2p_client_->request_keyframe();
+    if (auto client = p2p_client())
+        client->request_keyframe();
 }
 
 void StreamSession::set_quality(int channel) {
-    if (p2p_client_)
-        p2p_client_->set_quality(channel);
+    if (auto client = p2p_client())
+        client->set_quality(channel);
 }
 
 void StreamSession::ptz(int action, int speed) {
-    if (p2p_client_)
-        p2p_client_->ptz(action, speed);
+    if (auto client = p2p_client())
+        client->ptz(action, speed);
 }
 
 void StreamSession::start_talkback() {
-    if (p2p_client_)
-        p2p_client_->start_talkback();
+    if (auto client = p2p_client())
+        client->start_talkback();
 }
 
 void StreamSession::stop_talkback() {
-    if (p2p_client_)
-        p2p_client_->stop_talkback();
+    if (auto client = p2p_client())
+        client->stop_talkback();
 }
 
 void StreamSession::send_talkback(const uint8_t* adts, size_t len) {
-    if (p2p_client_)
-        p2p_client_->send_talkback_frame(adts, len);
+    if (auto client = p2p_client())
+        client->send_talkback_frame(adts, len);
 }
 
 std::vector<uint8_t> StreamSession::get_snapshot_annexb() const {
