@@ -83,7 +83,6 @@ private:
     std::atomic<int64_t> last_media_traffic_ms_{0};
     std::atomic<int64_t> last_video_traffic_ms_{0};
     std::atomic<int64_t> last_audio_traffic_ms_{0};
-    std::atomic<int64_t> last_stream_retry_ms_{0};
     std::atomic<int64_t> last_unhealthy_emitted_ms_{0};
     std::atomic<int64_t> last_kf_req_sent_ms_{0};
     std::atomic<int64_t> start_time_ms_{0};
@@ -96,9 +95,9 @@ private:
     std::thread receiver_thread_;
     std::thread watchdog_thread_;
 
-    uint32_t cmd_seq_ = 1;
-    uint16_t ch0_seq_ = 0;
-    uint16_t ch3_seq_ = 0;
+    std::atomic<uint32_t> cmd_seq_{1};
+    std::atomic<uint16_t> ch0_seq_{0};
+    std::atomic<uint16_t> ch3_seq_{0};
     uint16_t talk_seq_ = 0;
     size_t talk_frames_sent_ = 0;
 

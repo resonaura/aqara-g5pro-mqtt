@@ -11,6 +11,7 @@
 #include "../ipc/events.hpp"
 #include "cipher.hpp"
 #include "client.hpp"
+#include "frame-watchdog.hpp"
 #include "protocol.hpp"
 
 namespace aqara {
@@ -339,7 +340,8 @@ void P2PClient::request_keyframe() {
     if (prev != 0 && now - prev < 1500) {
         return;  // Rate limit: at most 1 IDR request every 1.5s to prevent encoder stress
     }
-    last_kf_req_sent_ms_ = now;
+    if (!last_kf_req_sent_ms_.compare_exchange_strong(prev, now))
+        return;  // Another reader/watchdog already requested this IDR.
     auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::KEYFRAME_REQ, nullptr, 0, cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
 }
@@ -754,6 +756,7 @@ void P2PClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
 
 void P2PClient::watchdog_loop() {
     int tick = 0;
+    FrameWatchdog frame_watchdog;
     while (running_) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!running_)
@@ -820,43 +823,21 @@ void P2PClient::watchdog_loop() {
             } else if (session_ready_) {
                 const int64_t now = current_time_ms();
                 const int64_t decoded_at = reassembler_->last_video_frame_ms();
-                if (decoded_at > 0 && now - decoded_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 &&
-                    event_cb_) {
-                    last_unhealthy_emitted_ms_ = now;
-                    std::cerr << "[P2P-Native] No decoded video frames for " << config_.did
-                              << "; encrypted packets alone are not a healthy stream" << std::endl;
-                    event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "no_complete_video_frames"}));
-                }
-                const int64_t video_at = last_video_traffic_ms_.load();
                 const int64_t ready_at = session_ready_since_ms_.load();
-
-                // Only retry if no video traffic has arrived within 4s of session ready, or if video stopped for > 6s
-                if (video_at == 0 && ready_at > 0 && now - ready_at > 4000 &&
-                    now - last_stream_retry_ms_.load() > 5000) {
-                    last_stream_retry_ms_ = now;
-                    std::cerr << "[P2P-Native] No video after session ready for " << config_.did
-                              << ", retrying stream start" << std::endl;
-                    auto stream_frame =
-                        PPCSCipher::build_lumi_frame(LumiCmdType::STREAM_START_REQ, nullptr, 0, cmd_seq_++);
-                    send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
-                    auto session_frame =
-                        PPCSCipher::build_lumi_frame(LumiCmdType::SESSION_START_REQ, nullptr, 0, cmd_seq_++);
-                    send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
-                    request_keyframe();
-
-                    if (now - ready_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 && event_cb_) {
-                        last_unhealthy_emitted_ms_ = now;
-                        std::cerr << "[P2P-Native] No video received for " << config_.did
-                                  << " after 15s, emitting unhealthy event" << std::endl;
-                        event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "first_video_timeout"}));
+                const auto action = frame_watchdog.poll(now, ready_at, decoded_at);
+                if (action == FrameWatchdog::Action::keyframe || action == FrameWatchdog::Action::restart_stream) {
+                    const bool restart = action == FrameWatchdog::Action::restart_stream;
+                    const int64_t age = std::max<int64_t>(0, now - std::max(ready_at, decoded_at));
+                    std::cerr << "[P2P-Native] No complete video for " << age << "ms on " << config_.did
+                              << (restart ? "; retrying stream/session start" : "; requesting keyframe") << std::endl;
+                    if (event_cb_) {
+                        event_cb_(to_json(EventMediaRecovery{
+                            .did = config_.did,
+                            .action = restart ? "restart_stream" : "keyframe",
+                            .video_age_ms = last_video_traffic_ms_ > 0 ? now - last_video_traffic_ms_.load() : -1,
+                            .decoded_age_ms = age}));
                     }
-                } else if (video_at > 0 && now - video_at > 6000 && now - last_stream_retry_ms_.load() > 5000) {
-                    last_stream_retry_ms_ = now;
-                    std::cerr << "[P2P-Native] Video stream stalled (" << (now - video_at) / 1000 << "s) for "
-                              << config_.did << ", requesting keyframe" << std::endl;
-                    request_keyframe();
-
-                    if (now - video_at > 12000) {
+                    if (restart) {
                         auto stream_frame =
                             PPCSCipher::build_lumi_frame(LumiCmdType::STREAM_START_REQ, nullptr, 0, cmd_seq_++);
                         send_enc_drw(3, ch3_seq_++, stream_frame.data(), stream_frame.size());
@@ -864,13 +845,13 @@ void P2PClient::watchdog_loop() {
                             PPCSCipher::build_lumi_frame(LumiCmdType::SESSION_START_REQ, nullptr, 0, cmd_seq_++);
                         send_enc_drw(0, ch0_seq_++, session_frame.data(), session_frame.size());
                     }
-
-                    if (now - video_at > 15000 && now - last_unhealthy_emitted_ms_.load() > 15000 && event_cb_) {
-                        last_unhealthy_emitted_ms_ = now;
-                        std::cerr << "[P2P-Native] Video stream unresponsive for " << config_.did
-                                  << ", emitting unhealthy event" << std::endl;
-                        event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = "video_traffic_stalled"}));
-                    }
+                    request_keyframe();
+                } else if (action == FrameWatchdog::Action::reconnect && event_cb_) {
+                    last_unhealthy_emitted_ms_ = now;
+                    const std::string reason = decoded_at > 0 ? "no_complete_video_frames" : "first_video_timeout";
+                    std::cerr << "[P2P-Native] Stream/session retry did not restore complete video for " << config_.did
+                              << "; requesting P2P reconnect" << std::endl;
+                    event_cb_(to_json(EventUnhealthy{.did = config_.did, .reason = reason}));
                 }
             }
         }

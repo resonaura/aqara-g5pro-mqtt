@@ -85,6 +85,13 @@ struct EventUnhealthy {
     std::string reason;
 };
 
+struct EventMediaRecovery {
+    std::string event = "media_recovery";
+    std::string did;
+    std::string action;
+    int64_t video_age_ms = -1, decoded_age_ms = -1;
+};
+
 struct EventMediaHealth {
     std::string event = "media_health";
     std::string did;
