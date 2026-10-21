@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
 #include <glaze/glaze.hpp>
 
 namespace aqara {
@@ -81,6 +82,17 @@ struct EventTalkbackStopped {
 struct EventUnhealthy {
     std::string event = "unhealthy";
     std::string did;
+    std::string reason;
+};
+
+struct EventMediaHealth {
+    std::string event = "media_health";
+    std::string did;
+    bool connected = false, session_ready = false;
+    uint64_t packets = 0, duplicates = 0, reordered = 0, sequence_gaps = 0;
+    uint64_t video_frames = 0, audio_frames = 0, discarded_bytes = 0;
+    uint64_t malformed_frames = 0, keyframe_requests = 0;
+    int64_t video_age_ms = -1, audio_age_ms = -1, decoded_age_ms = -1;
 };
 
 struct EventSnapshot {

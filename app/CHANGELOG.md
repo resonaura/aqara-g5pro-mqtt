@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.13 — Persistent camera diagnostics
+
+- Keep a private rotating diagnostic journal across add-on restarts, with boot IDs, UTC timestamps, crash summaries and bounded memory/disk use. Redact credentials and stream addresses from both journal and console output.
+- Record worker exit codes/signals, heartbeat failures, retry delays and per-camera recovery reasons. Every 30 seconds report complete video/audio frames, reordered/duplicate packets, confirmed sequence loss, malformed frames and media age without logging media payloads.
+- Disk errors do not stop camera streaming. Add rotation, redaction, queue-pressure and fatal-crash persistence tests.
+
 ## v1.6.12 — Preserve video through ordinary network jitter
 
 - Wait for the bounded UDP reorder window before declaring packet loss. Harmless out-of-order audio/video datagrams no longer gate all RTSP readers while waiting for an unnecessary keyframe.

@@ -209,3 +209,14 @@ An enabled stream keeps its RTSP outlet and a clearly labelled offline video whi
 The native media worker is supervised separately from MQTT and HTTP. Missing startup/pong responses cause a bounded worker restart; RTSP outlets are recreated before fresh camera authentication. Clients may need to reconnect across an actual worker crash. Normal camera reconnections preserve the existing outlet and per-reader RTP sequence/timestamps. A fallback encoder has its own progress watchdog.
 
 For isolated tests, set `DATA_DIR` and `SQLITE_PATH` to a disposable directory before `pnpm test`. Native tests include H264/HEVC offline decoding, per-reader RTP continuity, worker hangs, cancellation and cooldown retries. Do not point these tests at an add-on's persistent database.
+
+
+## Persistent diagnostics
+
+When reporting a stream or snapshot failure, include its approximate time and camera name, the Supervisor log, and `/data/diagnostics/` from a private add-on backup. Do not post a complete add-on backup publicly: other files contain credentials.
+
+`events.jsonl` and three rotated files retain a bounded recent history (about 4–5 MiB total; rotation can overshoot by one bounded batch). They survive restarts. Each JSON line has a UTC timestamp and boot identifier. `app.start` records the installed version. `camera.recovery` maps a hashed camera identifier to its friendly name and records each retry reason/attempt. `worker.exit`, heartbeat timeouts and forced termination distinguish a failed process from a camera outage. `crash.json` preserves the last fatal Node exception separately; the normal crash/watchdog policy is unchanged.
+
+Every 30 seconds `native.media_health` records per-session cumulative packet/frame counters and milliseconds since media progress (`-1` means not received). Rising `reordered` alone is ordinary network jitter; rising `sequence_gaps`, `malformed_frames` and `keyframe_requests` indicate actual recovery. `decoded_age_ms` measures a complete reassembled access unit, not proof that a downstream player decoded it. Counters reset when that P2P session is recreated. Node memory, worker readiness and snapshot age are also recorded. Native stderr and console output are sanitized before persistence. Credentials, full stream URLs, snapshot/audio data and private IP addresses are excluded/redacted. Camera friendly names remain so the report is useful; review before sharing.
+
+The journal uses private file permissions, batches durable writes, drops excess log messages instead of allowing an unbounded queue, and reports dropped counts. Disk failures produce a rate-limited warning and do not stop streaming. History is finite, so collect it promptly after a failure.

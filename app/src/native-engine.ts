@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as readline from "node:readline";
 import { EventEmitter } from "node:events";
+import { diagnostics, cameraDiagnosticId, redactDiagnostic } from "./diagnostics.js";
 import { ensureNativeBinary } from "./build-guard.js";
 
 export interface NativeSessionConfig {
@@ -81,7 +82,8 @@ export class NativeMediaEngine extends EventEmitter {
     if (this.process || this.restartTimer) return true;
     try {
       const command = this.options.command ?? NativeMediaEngine.getBinaryPath();
-      const child = spawn(command, this.options.args ?? [], { stdio: ["pipe", "pipe", "inherit"] });
+      const child = spawn(command, this.options.args ?? [], { stdio: ["pipe", "pipe", "pipe"] });
+      diagnostics.record("worker.start", { failures: this.failures });
       this.process = child;
       this.terminating = false;
       this.startedAt = this.lastPong = Date.now();
@@ -93,13 +95,25 @@ export class NativeMediaEngine extends EventEmitter {
           this.handleEvent(JSON.parse(line));
         } catch {
           // Native stdout is JSON-only. Never echo malformed, potentially key-bearing IPC.
+          diagnostics.record("worker.invalid_ipc", { bytes: Buffer.byteLength(line) }, "warn");
         }
       });
+      const errors = readline.createInterface({ input: child.stderr!, terminal: false });
+      errors.on("line", (line) => {
+        if (line.trim()) console.warn("[Native]", redactDiagnostic(line));
+      });
       child.once("error", () => {
+        diagnostics.record("worker.spawn_failed", {}, "error");
         console.warn("[NativeEngine] Media worker could not be started");
       });
-      child.once("close", () => {
+      child.once("close", (code, signal) => {
         reader.close();
+        errors.close();
+        diagnostics.record(
+          "worker.exit",
+          { code, signal, expected: !this.wanted, uptimeMs: Date.now() - this.startedAt },
+          this.wanted ? "warn" : "info",
+        );
         if (this.process !== child) return;
         clearInterval(this.heartbeat);
         clearTimeout(this.killTimer);
@@ -117,6 +131,11 @@ export class NativeMediaEngine extends EventEmitter {
         if (this.process !== child || this.terminating) return;
         if (Date.now() - this.lastPong > (this.options.timeoutMs ?? 15_000)) {
           console.warn("[NativeEngine] Media worker unresponsive; restarting only media worker");
+          diagnostics.record(
+            "worker.heartbeat_timeout",
+            { ageMs: Date.now() - this.lastPong },
+            "error",
+          );
           this.terminateWorker();
           return;
         }
@@ -136,6 +155,11 @@ export class NativeMediaEngine extends EventEmitter {
     const delay = Math.min(
       30_000,
       (this.options.restartMs ?? 1_000) * 2 ** Math.min(this.failures++, 5),
+    );
+    diagnostics.record(
+      "worker.restart_scheduled",
+      { delayMs: delay, failures: this.failures },
+      "warn",
     );
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
@@ -163,7 +187,10 @@ export class NativeMediaEngine extends EventEmitter {
     child.kill("SIGTERM");
     this.killTimer = setTimeout(() => {
       // Keep the child reference until close; never spawn a replacement on occupied ports.
-      if (this.process === child) child.kill("SIGKILL");
+      if (this.process === child) {
+        diagnostics.record("worker.force_kill", {}, "warn");
+        child.kill("SIGKILL");
+      }
     }, this.options.killMs ?? 1_500);
     this.killTimer.unref();
   }
@@ -184,6 +211,46 @@ export class NativeMediaEngine extends EventEmitter {
   }
 
   private handleEvent(msg: Record<string, any>): void {
+    const tracked = [
+      "ready",
+      "p2p_connected",
+      "session_ready",
+      "session_started",
+      "session_stopped",
+      "unhealthy",
+      "error",
+      "media_health",
+    ];
+    if (tracked.includes(msg.event)) {
+      // Explicit allowlist: never persist IPC configs, keys or snapshot/audio payloads.
+      const fields: Record<string, unknown> = {};
+      if (typeof msg.did === "string") fields.camera = cameraDiagnosticId(msg.did);
+      for (const key of [
+        "connected",
+        "session_ready",
+        "reason",
+        "message",
+        "packets",
+        "duplicates",
+        "reordered",
+        "sequence_gaps",
+        "video_frames",
+        "audio_frames",
+        "discarded_bytes",
+        "malformed_frames",
+        "keyframe_requests",
+        "video_age_ms",
+        "audio_age_ms",
+        "decoded_age_ms",
+      ]) {
+        if (["string", "number", "boolean"].includes(typeof msg[key])) fields[key] = msg[key];
+      }
+      diagnostics.record(
+        `native.${msg.event}`,
+        fields,
+        ["unhealthy", "error"].includes(msg.event) ? "warn" : "info",
+      );
+    }
     if (msg.event === "ready") {
       this.isReady = true;
       this.lastPong = Date.now();

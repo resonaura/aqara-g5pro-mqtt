@@ -27,6 +27,12 @@ using VideoCallback = std::function<void(const VideoFrame&)>;
 using AudioCallback = std::function<void(const AudioFrame&)>;
 using KeyframeRequestCallback = std::function<void()>;
 
+struct MediaStatistics {
+    uint64_t packets = 0, duplicates = 0, reordered = 0, sequence_gaps = 0;
+    uint64_t video_frames = 0, audio_frames = 0, discarded_bytes = 0;
+    uint64_t malformed_frames = 0, keyframe_requests = 0;
+};
+
 class AVIOReassembler {
 public:
     AVIOReassembler(const uint8_t video_key[32], const uint8_t audio_key[32]);
@@ -37,6 +43,11 @@ public:
     void push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len);
     void reset();
     int64_t last_video_frame_ms() const { return last_video_frame_ms_.load(); }
+    MediaStatistics statistics() const {
+        return {packets_received_.load(), packets_duplicate_.load(), packets_reordered_.load(),
+                sequence_gaps_.load(),    video_frames_.load(),      audio_frames_.load(),
+                discarded_bytes_.load(),  malformed_frames_.load(),  keyframe_requests_.load()};
+    }
 
 private:
     struct ChannelState {
@@ -67,12 +78,13 @@ private:
     std::vector<uint8_t> vps_;
 
     std::atomic<int64_t> last_video_frame_ms_{0};
-    uint64_t packets_received_ = 0;
-    uint64_t packets_duplicate_ = 0;
-    uint64_t sequence_gaps_ = 0;
-    uint64_t video_frames_ = 0;
-    uint64_t audio_frames_ = 0;
-    uint64_t discarded_bytes_ = 0;
+    std::atomic<uint64_t> packets_received_{0};
+    std::atomic<uint64_t> packets_duplicate_{0};
+    std::atomic<uint64_t> sequence_gaps_{0};
+    std::atomic<uint64_t> video_frames_{0};
+    std::atomic<uint64_t> audio_frames_{0};
+    std::atomic<uint64_t> discarded_bytes_{0};
+    std::atomic<uint64_t> packets_reordered_{0}, malformed_frames_{0}, keyframe_requests_{0};
     uint64_t last_audio_ts_ms_ = 0;
 };
 
