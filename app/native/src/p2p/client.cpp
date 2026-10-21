@@ -772,7 +772,7 @@ void P2PClient::watchdog_loop() {
                                                .malformed_frames = stats.malformed_frames,
                                                .keyframe_requests = stats.keyframe_requests,
                                                .video_age_ms = age(last_video_traffic_ms_.load()),
-                                               .audio_age_ms = age(last_audio_traffic_ms_.load()),
+                                               .audio_age_ms = age(reassembler_->last_audio_frame_ms()),
                                                .decoded_age_ms = age(reassembler_->last_video_frame_ms())}));
         }
 

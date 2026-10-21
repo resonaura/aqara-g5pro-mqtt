@@ -229,6 +229,7 @@ export class NativeMediaEngine extends EventEmitter {
         "connected",
         "session_ready",
         "reason",
+        "operation",
         "message",
         "packets",
         "duplicates",

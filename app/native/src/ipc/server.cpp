@@ -216,10 +216,12 @@ void IpcServer::handle_command(const std::string& line) {
                 std::string b64 = base64_encode(annexb.data(), annexb.size());
                 send_event(to_json(EventSnapshot{.did = cmd_dto.did, .data_base64 = b64}));
             } else {
-                send_event(to_json(EventError{.did = cmd_dto.did, .message = "snapshot annexb not ready"}));
+                send_event(to_json(
+                    EventError{.did = cmd_dto.did, .message = "snapshot annexb not ready", .operation = "snapshot"}));
             }
         } else {
-            send_event(to_json(EventError{.did = cmd_dto.did, .message = "no active session"}));
+            send_event(
+                to_json(EventError{.did = cmd_dto.did, .message = "no active session", .operation = "snapshot"}));
         }
     } else if (cmd == "exit") {
         running_ = false;
