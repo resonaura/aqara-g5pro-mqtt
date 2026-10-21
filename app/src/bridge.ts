@@ -427,10 +427,12 @@ export class AqaraCameraBridge extends EventEmitter {
       }
     });
 
-    registerListener("error", (message: { did?: string; message?: string }) => {
+    registerListener("error", (message: { did?: string; message?: string; operation?: string }) => {
       if (message.did === this.did) {
         this.emit("warn", message.message || "Native media operation failed");
-        this.emit("unhealthy");
+        // Snapshot capture owns its bounded retries and RTSP fallback. An IDR
+        // cache miss must not tear down an otherwise flowing camera session.
+        if (message.operation !== "snapshot") this.emit("unhealthy");
       }
     });
 

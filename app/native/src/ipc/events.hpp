@@ -105,6 +105,7 @@ struct EventError {
     std::string event = "error";
     std::string did;
     std::string message;
+    std::string operation;
 };
 
 template<typename T>

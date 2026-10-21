@@ -47,6 +47,7 @@ void AVIOReassembler::set_keys(const uint8_t video_key[32], const uint8_t audio_
 
 void AVIOReassembler::reset() {
     last_video_frame_ms_ = 0;
+    last_audio_frame_ms_ = 0;
     channels_.clear();
     last_audio_ts_ms_ = 0;
 }
@@ -305,6 +306,9 @@ void AVIOReassembler::process_completed_audio(const uint8_t* data, size_t len) {
     af.aac_adts_data.assign(frame.begin() + 40, frame.begin() + 40 + audio_len);
     af.timestamp_ms = ts_ms;
     audio_frames_++;
+    last_audio_frame_ms_ =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     if (audio_frames_ == 1) {
         const bool adts =
             af.aac_adts_data.size() >= 2 && af.aac_adts_data[0] == 0xff && (af.aac_adts_data[1] & 0xf0) == 0xf0;

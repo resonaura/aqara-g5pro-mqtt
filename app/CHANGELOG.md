@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.14 — Isolate transient snapshot errors from live streams
+
+- A missing cached snapshot now rejects only that capture. It no longer restarts an otherwise flowing P2P stream; the snapshotter retains its normal RTSP fallback, retry and prolonged-failure recovery.
+- Preserve stream recovery for actual session/native health failures and record the failed operation explicitly. Report audio age from complete AAC frames, including cameras multiplexing audio on their video channel.
+- Add bridge regressions for isolated snapshot misses and genuine session failures.
+
 ## v1.6.13 — Persistent camera diagnostics
 
 - Keep a private rotating diagnostic journal across add-on restarts, with boot IDs, UTC timestamps, crash summaries and bounded memory/disk use. Redact credentials and stream addresses from both journal and console output.

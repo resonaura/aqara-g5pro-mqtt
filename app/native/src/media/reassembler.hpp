@@ -43,6 +43,7 @@ public:
     void push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len);
     void reset();
     int64_t last_video_frame_ms() const { return last_video_frame_ms_.load(); }
+    int64_t last_audio_frame_ms() const { return last_audio_frame_ms_.load(); }
     MediaStatistics statistics() const {
         return {packets_received_.load(), packets_duplicate_.load(), packets_reordered_.load(),
                 sequence_gaps_.load(),    video_frames_.load(),      audio_frames_.load(),
@@ -77,7 +78,7 @@ private:
     std::vector<uint8_t> pps_;
     std::vector<uint8_t> vps_;
 
-    std::atomic<int64_t> last_video_frame_ms_{0};
+    std::atomic<int64_t> last_video_frame_ms_{0}, last_audio_frame_ms_{0};
     std::atomic<uint64_t> packets_received_{0};
     std::atomic<uint64_t> packets_duplicate_{0};
     std::atomic<uint64_t> sequence_gaps_{0};
