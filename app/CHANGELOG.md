@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.19 — Preserve audio timing through camera recovery
+
+- Keep audio on its capture clock when source outages or lost packets remove AAC frames. Video and audio now preserve the same missing time instead of accumulating drift on a long-lived reader.
+- Recover lost audio-only channel fragments without requesting a video keyframe or pausing otherwise healthy video. Include discarded partial audio in diagnostic byte counts.
+- Send legal AAC access units in full, bounded by the negotiated thirteen-bit size field; reject truncated ADTS and oversized units rather than poisoning the decoder with clipped data.
+- Verify A/V gap timing and AAC byte sizes on an actual loopback RTSP socket, isolate audio-channel loss, and retain sanitizer coverage.
+
 ## v1.6.18 — Keep P2P recovery safe during viewer requests
 
 - Unpublish the old P2P client before stopping it and let in-flight RTSP/keyframe requests retain it until they finish. Join the old receiver before changing session keys, camera configuration or quality flags. Avoid holding the publication lock during receiver shutdown.

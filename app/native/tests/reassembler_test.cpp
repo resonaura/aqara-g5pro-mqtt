@@ -196,6 +196,25 @@ int main() {
         pressure.push_packet(4, seq, video.data(), video.size());
     assert(pressure_requests == 1);
     assert(pressure.statistics().packets == 259);
+
+    // Losing an audio-only channel fragment cannot invalidate healthy video
+    // or force its readers to wait for another (large) keyframe.
+    int64_t audio_now = 0;
+    aqara::AVIOReassembler audio_loss(key, key, [&]() { return audio_now; });
+    int continuing_video = 0, continuing_audio = 0, audio_loss_idrs = 0;
+    audio_loss.set_callbacks([&](const aqara::VideoFrame&) { ++continuing_video; },
+                             [&](const aqara::AudioFrame&) { ++continuing_audio; }, [&]() { ++audio_loss_idrs; });
+    audio_loss.push_packet(4, 0, video.data(), video.size());
+    audio_loss.push_packet(2, 10, frame.data(), 40);
+    audio_loss.push_packet(2, 12, frame.data(), frame.size());
+    audio_now = 150;
+    audio_loss.flush_expired();
+    audio_loss.push_packet(4, 1, video.data(), video.size());
+    assert(continuing_video == 2 && continuing_audio == 1);
+    assert(audio_loss_idrs == 0);
+    assert(audio_loss.statistics().sequence_gaps == 1);
+    assert(audio_loss.statistics().discarded_bytes == 40);
+    assert(audio_loss.statistics().keyframe_requests == 0);
     // Reject unsupported channel IDs and impossible datagrams before allocation.
     pressure.push_packet(255, 1, video.data(), video.size());
     pressure.push_packet(4, 1, video.data(), 65537);
