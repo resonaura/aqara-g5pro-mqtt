@@ -1,3 +1,7 @@
+// These regressions must execute in Release builds as well as sanitizer builds.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
