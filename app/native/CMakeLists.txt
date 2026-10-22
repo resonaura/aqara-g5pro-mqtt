@@ -85,3 +85,14 @@ add_executable(aqara-p2p-transport-test
 target_link_libraries(aqara-p2p-transport-test PRIVATE glaze::glaze pthread)
 add_test(NAME aqara-p2p-transport-test COMMAND aqara-p2p-transport-test)
 set_tests_properties(aqara-p2p-transport-test PROPERTIES TIMEOUT 20)
+
+add_executable(aqara-ptz-command-test
+    tests/ptz_command_test.cpp
+    src/p2p/client.cpp
+    src/p2p/cipher.cpp
+    src/crypto/chacha20.cpp
+    src/media/reassembler.cpp
+)
+target_link_libraries(aqara-ptz-command-test PRIVATE glaze::glaze pthread)
+add_test(NAME aqara-ptz-command-test COMMAND aqara-ptz-command-test)
+set_tests_properties(aqara-ptz-command-test PROPERTIES TIMEOUT 5)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 namespace aqara {
 
@@ -31,10 +32,9 @@ enum class PpcsMsgType : uint8_t {
  *
  * Frame structure:
  *  - 4 bytes: Magic ASCII "lumi"
- *  - 2 bytes (LE): uint16 command/message type
- *  - 2 bytes (LE): uint16 payload length
+ *  - 4 bytes (LE): uint32 command/message type
  *  - 4 bytes (LE): uint32 sequence number
- *  - 4 bytes (LE): reserved / zero
+ *  - 4 bytes (LE): uint32 payload length
  *  - N bytes: JSON or binary payload
  */
 enum class LumiCmdType : uint32_t {
@@ -43,13 +43,21 @@ enum class LumiCmdType : uint32_t {
     SESSION_START_REQ = 0x1002,   // Initiate live stream session on channel 0
     SESSION_START_RESP = 0x1003,  // Stream pipeline ready acknowledgment
     SESSION_STOP = 0x1004,        // Terminate active live stream session cleanly
-    PTZ_OR_TALK_START = 0x100A,   // PTZ motor control (JSON) or Start Two-Way Talkback (binary)
+    TALK_START = 0x100A,          // Start Two-Way Talkback (not motor control)
     TALKBACK_RESP = 0x100B,       // Talkback audio channel prepared confirmation
     TALK_STOP = 0x100C,           // Stop Two-Way Talkback audio transmission
     SET_QUALITY = 0x100E,         // Switch live stream resolution / quality channel
     KEYFRAME_REQ = 0x1018,        // Force immediate IDR (Instantaneous Decoder Refresh) keyframe
     KEYFRAME_RESP = 0x1019,       // Keyframe generation acknowledgment
-    STREAM_START_REQ = 0x101C     // Request Channel 3 video stream delivery
+    STREAM_START_REQ = 0x101C,    // Request Channel 3 video stream delivery
+    PTZ_REQ = 0x102A,             // Motor nudge/stop: {"action":"left"}, etc.
+    PTZ_RESP = 0x102B             // Motor command response
 };
+
+// Only momentary nudges and stop are exposed. Never accept unbounded *_always moves.
+inline bool is_ptz_direction(std::string_view direction) {
+    return direction == "up" || direction == "down" || direction == "left" || direction == "right" ||
+           direction == "stop";
+}
 
 }  // namespace aqara

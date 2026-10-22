@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.24 — Separate camera movement from Talk
+
+- Send PTZ nudges and Stop through motor IOCTL 0x102A with string actions; the previous numeric payload incorrectly used Talk 0x100A. Keep Talk and all P2P media paths unchanged.
+- Reject unsupported/continuous directions and commands before the session is ready. Never queue or replay motor commands after worker recovery.
+- Persist redacted `ptz_sent`, `ptz_rejected` and `ptz_response` diagnostics; dispatch is no longer reported as physical execution.
+- Verify encrypted loopback packets for all five commands, Talk isolation, readiness/invalid-command rejection and worker restart behavior. No real camera movement was used for this acceptance; physical motor confirmation remains pending.
+
 ## v1.6.23 — Learn bounded P2P fragment recovery from real arrivals
 
 - Real Outdoor telemetry observed retransmissions as late as 1,135 ms. Learn a per-video-channel missing-fragment deadline from actual late arrivals, with 100 ms headroom and a hard 1,250 ms cap. Forget old conditions after ten minutes and reset the policy with each session.

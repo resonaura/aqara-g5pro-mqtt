@@ -221,6 +221,9 @@ export class NativeMediaEngine extends EventEmitter {
       "error",
       "media_health",
       "media_recovery",
+      "ptz_sent",
+      "ptz_rejected",
+      "ptz_response",
     ];
     if (tracked.includes(msg.event)) {
       // Explicit allowlist: never persist IPC configs, keys or snapshot/audio payloads.
@@ -254,13 +257,15 @@ export class NativeMediaEngine extends EventEmitter {
         "video_age_ms",
         "audio_age_ms",
         "decoded_age_ms",
+        "direction",
+        "body_bytes",
       ]) {
         if (["string", "number", "boolean"].includes(typeof msg[key])) fields[key] = msg[key];
       }
       diagnostics.record(
         `native.${msg.event}`,
         fields,
-        ["unhealthy", "error"].includes(msg.event) ? "warn" : "info",
+        ["unhealthy", "error", "ptz_rejected"].includes(msg.event) ? "warn" : "info",
       );
     }
     if (msg.event === "ready") {
@@ -363,6 +368,19 @@ export class NativeMediaEngine extends EventEmitter {
   }
 
   public ptz(did: string, direction: string): void {
+    const valid = ["up", "down", "left", "right", "stop"].includes(direction);
+    if (!valid || !this.isReady) {
+      diagnostics.record(
+        "native.ptz_rejected",
+        {
+          camera: cameraDiagnosticId(did),
+          direction,
+          reason: valid ? "worker_not_ready" : "invalid_direction",
+        },
+        "warn",
+      );
+      return; // Never queue a motor command to replay after reconnection.
+    }
     const payload = JSON.stringify({
       cmd: "ptz",
       did,

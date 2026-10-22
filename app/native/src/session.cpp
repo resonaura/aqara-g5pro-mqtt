@@ -228,9 +228,10 @@ void StreamSession::set_quality(int channel) {
         client->set_quality(channel);
 }
 
-void StreamSession::ptz(int action, int speed) {
+bool StreamSession::ptz(const std::string& direction) {
     if (auto client = p2p_client())
-        client->ptz(action, speed);
+        return client->ptz(direction);
+    return false;
 }
 
 void StreamSession::start_talkback() {

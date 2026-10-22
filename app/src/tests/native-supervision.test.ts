@@ -53,8 +53,18 @@ test("unresponsive media worker is killed; RTSP outputs replay without expired a
       .map((line) => JSON.parse(line));
   try {
     engine.startP2P({ did: "fixture", rtsp_port: 18888, app_sign: "expired-fixture-auth" });
+    engine.ptz("fixture", "right"); // Not ready: do not retain a stale move.
+    await until(() => engine.ready);
+    engine.ptz("fixture", "left");
+    engine.ptz("fixture", "left_always"); // Continuous motion is never accepted.
     await until(() => commands().some((c) => c.generation === 2 && c.cmd === "ensure_output"));
     assert.equal(unhealthy, 1);
+    assert.deepEqual(
+      commands()
+        .filter((c) => c.cmd === "ptz")
+        .map((c) => [c.generation, c.direction]),
+      [[1, "left"]],
+    );
     assert.ok(commands().some((c) => c.generation === 1 && c.cmd === "start_p2p"));
     assert.ok(!commands().some((c) => c.generation === 2 && c.cmd === "start_p2p"));
     assert.ok(!commands().some((c) => c.cmd.includes("talkback")));
