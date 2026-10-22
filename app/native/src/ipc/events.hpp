@@ -100,6 +100,7 @@ struct EventMediaHealth {
     uint64_t video_frames = 0, audio_frames = 0, discarded_bytes = 0;
     uint64_t malformed_frames = 0, keyframe_requests = 0;
     uint64_t missing_packets = 0, late_packets = 0, max_late_ms = 0, max_gap_wait_ms = 0;
+    uint64_t recovered_gaps = 0, max_recovered_wait_ms = 0, max_video_wait_ms = 500;
     int receive_buffer_bytes = 0;
     uint64_t max_packet_work_us = 0;
     int64_t video_age_ms = -1, audio_age_ms = -1, decoded_age_ms = -1;

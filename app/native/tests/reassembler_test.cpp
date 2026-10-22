@@ -172,7 +172,7 @@ int main() {
     lost.push_packet(4, 101, video.data(), video.size());
     lost.push_packet(4, 102, video.data(), video.size());
     assert(lost.statistics().late_packets == 1);           // Duplicate retransmits are not new late fragments.
-    assert(recovered_frames == 16 && loss_requests == 1);  // Diagnostics never change media recovery.
+    assert(recovered_frames == 16 && loss_requests == 1);  // Never replay discarded frames or duplicate IDR requests.
 
     // Late tracking is bounded across wrap, expires, and cannot leak between sessions.
     aqara::AVIOReassembler late(key, key, [&]() { return jitter_now; });
@@ -257,6 +257,72 @@ int main() {
     assert(large_decoded == std::vector<uint8_t>(large_video.begin() + 40, large_video.end()));
     assert(large_burst.statistics().sequence_gaps == 0);
 
+    // Observed Outdoor retransmissions reached 1,135 ms. A discarded fragment
+    // teaches this channel a bounded window for the next burst, preserving a
+    // complete 600 KiB IDR instead of discarding it again at 500 ms.
+    int64_t adaptive_now = 0;
+    aqara::AVIOReassembler adaptive(key, key, [&]() { return adaptive_now; });
+    int adaptive_frames = 0, adaptive_requests = 0;
+    std::vector<uint8_t> adaptive_decoded;
+    adaptive.set_callbacks(
+        [&](const aqara::VideoFrame& item) {
+            ++adaptive_frames;
+            adaptive_decoded = item.annex_b_data;
+        },
+        {}, [&]() { ++adaptive_requests; });
+    adaptive.push_packet(4, 0, video.data(), video.size());
+    adaptive.push_packet(4, 2, video.data(), video.size());
+    adaptive_now = 500;
+    adaptive.flush_expired();
+    assert(adaptive_requests == 1);
+    adaptive_now = 1135;
+    adaptive.push_packet(4, 1, video.data(), video.size());
+    adaptive_now = 1200;
+    adaptive.push_packet(4, 3, large_video.data(), fragment_bytes);
+    uint16_t adaptive_sequence = 5;
+    for (size_t offset = fragment_bytes * 2; offset < large_video.size(); offset += fragment_bytes)
+        adaptive.push_packet(4, adaptive_sequence++, large_video.data() + offset,
+                             std::min(fragment_bytes, large_video.size() - offset));
+    adaptive_now = 1700;
+    adaptive.flush_expired();
+    assert(adaptive_requests == 1);
+    adaptive_now = 2335;
+    adaptive.push_packet(4, 4, large_video.data() + fragment_bytes, fragment_bytes);
+    assert(adaptive_frames == 3 && adaptive_requests == 1);
+    assert(adaptive_decoded == std::vector<uint8_t>(large_video.begin() + 40, large_video.end()));
+    assert(adaptive.statistics().sequence_gaps == 1);
+    assert(adaptive.statistics().recovered_gaps == 1);
+    assert(adaptive.statistics().max_recovered_wait_ms == 1135);
+    assert(adaptive.statistics().max_video_wait_ms == 1235);
+    adaptive.push_packet(4, adaptive_sequence, video.data(), video.size());
+    assert(adaptive_frames == 4);  // Healthy in-order traffic is still immediate.
+    adaptive.push_packet(4, static_cast<uint16_t>(adaptive_sequence + 2), video.data(), video.size());
+    adaptive_now += 1234;
+    adaptive.flush_expired();
+    assert(adaptive_requests == 1);
+    ++adaptive_now;
+    adaptive.flush_expired();
+    assert(adaptive_requests == 2);  // Genuine loss still has a finite deadline.
+    adaptive.reset();
+    adaptive.push_packet(4, 0, video.data(), video.size());
+    adaptive.push_packet(4, 2, video.data(), video.size());
+    adaptive_now += 500;
+    adaptive.flush_expired();
+    assert(adaptive_requests == 3);  // Session reset forgets the learned deadline.
+
+    aqara::VideoReorderWindow window;
+    assert(window.wait_ms(0) == 500);
+    window.observe(-1, 0);
+    window.observe(400, 0);
+    window.observe(2001, 0);
+    assert(window.wait_ms(0) == 500);
+    window.observe(1135, 0);
+    assert(window.wait_ms(100) == 1235);
+    window.observe(1999, 100);
+    assert(window.wait_ms(599999) == 1250);  // A hard cap, even for later arrivals.
+    assert(window.wait_ms(600100) == 500);   // Forget old network conditions.
+    assert(window.wait_ms(99) == 500);       // Never retain a future clock sample.
+
     // Sparse traffic still has a deadline, and recovered late duplicates must
     // not request another IDR or advance media twice.
     burst.push_packet(4, 15, video.data(), video.size());  // expected=14 after wrap
@@ -304,6 +370,14 @@ int main() {
     assert(audio_loss.statistics().sequence_gaps == 1);
     assert(audio_loss.statistics().discarded_bytes == 40);
     assert(audio_loss.statistics().keyframe_requests == 0);
+    audio_now = 1135;
+    audio_loss.push_packet(2, 11, frame.data(), frame.size());
+    audio_loss.push_packet(2, 14, frame.data(), frame.size());
+    audio_now += 150;
+    audio_loss.flush_expired();
+    assert(audio_loss.statistics().sequence_gaps == 2);
+    assert(audio_loss.statistics().max_video_wait_ms == 500);
+    assert(audio_loss_idrs == 0);  // Audio cannot learn the video deadline.
     // Reject unsupported channel IDs and impossible datagrams before allocation.
     pressure.push_packet(255, 1, video.data(), video.size());
     pressure.push_packet(4, 1, video.data(), 65537);

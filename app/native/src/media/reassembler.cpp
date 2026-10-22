@@ -127,8 +127,10 @@ void AVIOReassembler::drain_reordered(uint8_t channel, ChannelState& state) {
     }
     if (state.reorder_buf.empty())
         state.gap_since_ms = -1;
-    else if (state.gap_since_ms < 0)
+    else if (state.gap_since_ms < 0) {
         state.gap_since_ms = clock_();
+        state.gap_wait_ms = channel == 2 ? 150 : state.video_window.wait_ms(state.gap_since_ms);
+    }
 }
 
 void AVIOReassembler::recover_reordered(uint8_t channel, ChannelState& state) {
@@ -151,13 +153,23 @@ void AVIOReassembler::recover_reordered(uint8_t channel, ChannelState& state) {
 void AVIOReassembler::flush_expired() {
     const int64_t now = clock_();
     for (auto& [channel, state] : channels_) {
-        // Real video fragments can be retransmitted after 472 ms. Only a
-        // sequence hole waits; in-order media remains immediate. Audio-only
-        // traffic retains its shorter expiry and cannot gate video readers.
-        const int64_t recovery_ms = channel == 2 ? 150 : 500;
-        if (state.gap_since_ms >= 0 && now - state.gap_since_ms >= recovery_ms)
+        // Freeze the bounded deadline when a hole starts. Normal media never
+        // waits; audio-only traffic retains its independent 150-ms expiry.
+        if (state.gap_since_ms >= 0 && now - state.gap_since_ms >= state.gap_wait_ms)
             recover_reordered(channel, state);
     }
+}
+
+void AVIOReassembler::learn_video_wait(uint8_t channel, ChannelState& state, int64_t wait, int64_t now) {
+    if (channel == 2)
+        return;
+    const auto previous = state.video_window.wait_ms(now);
+    state.video_window.observe(wait, now);
+    const auto learned = state.video_window.wait_ms(now);
+    max_video_wait_ms_ = std::max(max_video_wait_ms_.load(), static_cast<uint64_t>(learned));
+    if (learned > previous)
+        std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " recovery_wait_ms=" << learned
+                  << " observed_retransmission_ms=" << wait << std::endl;
 }
 
 void AVIOReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
@@ -175,6 +187,13 @@ void AVIOReassembler::accept_packet(uint8_t channel, uint16_t seq, const uint8_t
         state.expected_seq = seq;
     const int16_t diff = static_cast<int16_t>(seq - static_cast<uint16_t>(state.expected_seq));
     if (diff == 0) {
+        if (state.gap_since_ms >= 0 && !state.reorder_buf.empty()) {
+            const auto now = clock_();
+            const auto waited = std::max<int64_t>(0, now - state.gap_since_ms);
+            ++recovered_gaps_;
+            max_recovered_wait_ms_ = std::max(max_recovered_wait_ms_.load(), static_cast<uint64_t>(waited));
+            learn_video_wait(channel, state, waited, now);
+        }
         handle_packet_immediate(channel, state, seq, data, len);
         state.expected_seq = static_cast<uint16_t>(seq + 1);
         drain_reordered(channel, state);
@@ -185,6 +204,7 @@ void AVIOReassembler::accept_packet(uint8_t channel, uint16_t seq, const uint8_t
             if (age >= 0 && age <= 2000) {
                 ++late_packets_;
                 max_late_ms_ = std::max(max_late_ms_.load(), static_cast<uint64_t>(age));
+                learn_video_wait(channel, state, age, clock_());
             }
             state.recent_missing.erase(missing);
         }
@@ -212,8 +232,10 @@ void AVIOReassembler::accept_packet(uint8_t channel, uint16_t seq, const uint8_t
             state.reorder_bytes += len;
         } else
             ++packets_duplicate_;
-        if (state.gap_since_ms < 0)
+        if (state.gap_since_ms < 0) {
             state.gap_since_ms = clock_();
+            state.gap_wait_ms = channel == 2 ? 150 : state.video_window.wait_ms(state.gap_since_ms);
+        }
     } else {
         state.reorder_buf.clear();
         state.reorder_bytes = 0;

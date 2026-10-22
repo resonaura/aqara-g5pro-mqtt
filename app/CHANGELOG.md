@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.23 — Learn bounded P2P fragment recovery from real arrivals
+
+- Real Outdoor telemetry observed retransmissions as late as 1,135 ms. Learn a per-video-channel missing-fragment deadline from actual late arrivals, with 100 ms headroom and a hard 1,250 ms cap. Forget old conditions after ten minutes and reset the policy with each session.
+- Only a missing sequence waits: in-order packets remain immediate, audio-only expiry remains 150 ms, and existing 2-MiB / 2,048-packet pressure recovery stays active. Freeze each hole’s deadline so later observations cannot prolong it indefinitely. Keep the camera connection on P2P and retain source resolution.
+- Count recovered sequence holes, maximum recovered delay and the maximum learned video deadline in the redacted persistent journal. Reproduce byte-exact recovery of a 600-KiB IDR after a 1,135-ms retransmission; verify genuine-loss expiry, policy cap/expiry, session reset, unchanged audio and immediate healthy traffic.
+
 ## v1.6.22 — Keep recoverable video through late retransmissions
 
 - Real Outdoor diagnostics found 70 missing fragments and all 70 later arrived, up to 472 ms after the hole began. Wait up to 500 ms for missing video fragments instead of discarding their complete frame at 150 ms. In-order media still forwards immediately; audio-only expiry remains 150 ms.
