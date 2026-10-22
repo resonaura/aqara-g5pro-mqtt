@@ -152,6 +152,12 @@ int main() {
     assert(loss_requests == 0);
     jitter_now = 150;
     lost.flush_expired();
+    assert(loss_requests == 0);
+    jitter_now = 499;
+    lost.flush_expired();
+    assert(loss_requests == 0);
+    jitter_now = 500;
+    lost.flush_expired();
     assert(loss_requests == 1);
     assert(recovered_frames == 16);
     const auto health = lost.statistics();
@@ -159,10 +165,10 @@ int main() {
     assert(health.reordered == 16 && health.sequence_gaps == 1);
     assert(health.video_frames == 16 && health.keyframe_requests == 1);
     assert(health.discarded_bytes == 20 && health.malformed_frames == 0);
-    assert(health.missing_packets == 1 && health.max_gap_wait_ms == 150);
-    jitter_now = 250;
+    assert(health.missing_packets == 1 && health.max_gap_wait_ms == 500);
+    jitter_now = 750;
     lost.push_packet(4, 101, video.data(), video.size());
-    assert(lost.statistics().late_packets == 1 && lost.statistics().max_late_ms == 250);
+    assert(lost.statistics().late_packets == 1 && lost.statistics().max_late_ms == 750);
     lost.push_packet(4, 101, video.data(), video.size());
     lost.push_packet(4, 102, video.data(), video.size());
     assert(lost.statistics().late_packets == 1);           // Duplicate retransmits are not new late fragments.
@@ -172,19 +178,19 @@ int main() {
     aqara::AVIOReassembler late(key, key, [&]() { return jitter_now; });
     late.push_packet(1, 65534, video.data(), video.size());
     late.push_packet(1, 0, video.data(), video.size());
-    jitter_now += 150;
+    jitter_now += 500;
     late.flush_expired();
     jitter_now += 100;
     late.push_packet(1, 65535, video.data(), video.size());
     assert(late.statistics().missing_packets == 1 && late.statistics().late_packets == 1);
     late.push_packet(1, 2, video.data(), video.size());
-    jitter_now += 150;
+    jitter_now += 500;
     late.flush_expired();
     jitter_now += 2001;
     late.push_packet(1, 1, video.data(), video.size());
     assert(late.statistics().late_packets == 1);
     late.push_packet(1, 4, video.data(), video.size());
-    jitter_now += 150;
+    jitter_now += 500;
     late.flush_expired();
     late.reset();
     late.push_packet(1, 4, video.data(), video.size());
@@ -216,8 +222,8 @@ int main() {
     assert(burst_requests == 0);
 
     // Real 4 MP IDRs exceed 512 KiB / 256 UDP fragments. One late fragment
-    // inside such a burst must have the same 150 ms recovery opportunity as
-    // the small-frame fixture above, including across sequence-number wrap.
+    // arrived as late as 472 ms on the real Outdoor stream. Keep the complete
+    // frame across the former 150-ms deadline and sequence-number wrap.
     int64_t large_now = 0;
     aqara::AVIOReassembler large_burst(key, key, [&]() { return large_now; });
     int large_frames = 0, large_requests = 0;
@@ -239,7 +245,13 @@ int main() {
         large_burst.push_packet(4, large_sequence++, large_video.data() + offset,
                                 std::min(fragment_bytes, large_video.size() - offset));
     assert(large_frames == 1 && large_requests == 0);
-    large_now = 100;
+    large_now = 150;
+    large_burst.flush_expired();
+    assert(large_frames == 1 && large_requests == 0);
+    large_now = 471;
+    large_burst.flush_expired();
+    assert(large_frames == 1 && large_requests == 0);
+    large_now = 472;
     large_burst.push_packet(4, 65402, large_video.data() + fragment_bytes, fragment_bytes);
     assert(large_frames == 2 && large_requests == 0);
     assert(large_decoded == std::vector<uint8_t>(large_video.begin() + 40, large_video.end()));
@@ -248,7 +260,7 @@ int main() {
     // Sparse traffic still has a deadline, and recovered late duplicates must
     // not request another IDR or advance media twice.
     burst.push_packet(4, 15, video.data(), video.size());  // expected=14 after wrap
-    reorder_now = 250;
+    reorder_now = 600;
     burst.flush_expired();
     assert(burst_requests == 1 && burst_frames == 51);
     burst.push_packet(4, 14, video.data(), video.size());
