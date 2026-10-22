@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.20 — Retain complete keyframe bursts during jitter recovery
+
+- Preserve a delayed fragment inside large camera keyframes instead of exhausting the old 256-packet/512-KiB queue and unnecessarily discarding the picture. Keep a bounded 2-MiB/2,048-packet reorder budget and the existing 150-ms loss deadline.
+- Extend the forward sequence window to cover a complete legal access unit while retaining wraparound, duplicate, malformed-input and genuine-loss recovery behavior. Log explicit queue pressure without media or credentials.
+- Reproduce a 600-KiB fragmented keyframe with retransmission across sequence wrap; verify separate packet-count and byte-budget pressure limits.
+
 ## v1.6.19 — Preserve audio timing through camera recovery
 
 - Keep audio on its capture clock when source outages or lost packets remove AAC frames. Video and audio now preserve the same missing time instead of accumulating drift on a long-lived reader.

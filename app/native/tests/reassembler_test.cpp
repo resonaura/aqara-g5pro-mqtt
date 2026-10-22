@@ -177,6 +177,36 @@ int main() {
     burst.flush_expired();
     assert(burst_requests == 0);
 
+    // Real 4 MP IDRs exceed 512 KiB / 256 UDP fragments. One late fragment
+    // inside such a burst must have the same 150 ms recovery opportunity as
+    // the small-frame fixture above, including across sequence-number wrap.
+    int64_t large_now = 0;
+    aqara::AVIOReassembler large_burst(key, key, [&]() { return large_now; });
+    int large_frames = 0, large_requests = 0;
+    std::vector<uint8_t> large_decoded;
+    large_burst.set_callbacks(
+        [&](const aqara::VideoFrame& frame) {
+            ++large_frames;
+            large_decoded = frame.annex_b_data;
+        },
+        {}, [&]() { ++large_requests; });
+    large_burst.push_packet(4, 65400, video.data(), video.size());
+    auto large_video = video;
+    large_video.resize(600 * 1024 + 40, 0x11);
+    put_u32_le(large_video, 28, static_cast<uint32_t>(large_video.size() - 32));
+    constexpr size_t fragment_bytes = 1200;
+    large_burst.push_packet(4, 65401, large_video.data(), fragment_bytes);
+    uint16_t large_sequence = 65403;
+    for (size_t offset = fragment_bytes * 2; offset < large_video.size(); offset += fragment_bytes)
+        large_burst.push_packet(4, large_sequence++, large_video.data() + offset,
+                                std::min(fragment_bytes, large_video.size() - offset));
+    assert(large_frames == 1 && large_requests == 0);
+    large_now = 100;
+    large_burst.push_packet(4, 65402, large_video.data() + fragment_bytes, fragment_bytes);
+    assert(large_frames == 2 && large_requests == 0);
+    assert(large_decoded == std::vector<uint8_t>(large_video.begin() + 40, large_video.end()));
+    assert(large_burst.statistics().sequence_gaps == 0);
+
     // Sparse traffic still has a deadline, and recovered late duplicates must
     // not request another IDR or advance media twice.
     burst.push_packet(4, 15, video.data(), video.size());  // expected=14 after wrap
@@ -192,10 +222,19 @@ int main() {
     int pressure_requests = 0;
     pressure.set_callbacks({}, {}, [&]() { ++pressure_requests; });
     pressure.push_packet(4, 0, video.data(), video.size());
-    for (uint16_t seq = 2; seq < 260; ++seq)
+    for (uint16_t seq = 2; seq < 2052; ++seq)
         pressure.push_packet(4, seq, video.data(), video.size());
     assert(pressure_requests == 1);
-    assert(pressure.statistics().packets == 259);
+    assert(pressure.statistics().packets == 2051);
+
+    aqara::AVIOReassembler byte_pressure(key, key, []() { return int64_t(0); });
+    int byte_requests = 0;
+    byte_pressure.set_callbacks({}, {}, [&]() { ++byte_requests; });
+    byte_pressure.push_packet(4, 0, video.data(), video.size());
+    std::vector<uint8_t> large_packet(65536, 0x11);
+    for (uint16_t seq = 2; seq < 35; ++seq)
+        byte_pressure.push_packet(4, seq, large_packet.data(), large_packet.size());
+    assert(byte_requests == 1 && byte_pressure.statistics().sequence_gaps == 1);
 
     // Losing an audio-only channel fragment cannot invalidate healthy video
     // or force its readers to wait for another (large) keyframe.
@@ -218,7 +257,7 @@ int main() {
     // Reject unsupported channel IDs and impossible datagrams before allocation.
     pressure.push_packet(255, 1, video.data(), video.size());
     pressure.push_packet(4, 1, video.data(), 65537);
-    assert(pressure.statistics().packets == 259);
+    assert(pressure.statistics().packets == 2051);
 
     // Test regional TUTK master decoding from InitString
     std::vector<std::string> masters;

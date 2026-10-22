@@ -160,16 +160,19 @@ void AVIOReassembler::accept_packet(uint8_t channel, uint16_t seq, const uint8_t
         drain_reordered(channel, state);
     } else if (diff < 0) {
         packets_duplicate_++;
-    } else if (diff < 512) {
+    } else if (diff < 4096) {
         if (state.reorder_buf.contains(seq)) {
             ++packets_duplicate_;
             flush_expired();
             return;
         }
-        // A keyframe burst can deliver >16 later datagrams before the missing
-        // one is retransmitted. Bound jitter by elapsed time AND memory rather
-        // than declaring loss solely because a busy camera sent 16 packets.
-        if (state.reorder_bytes + len > 512 * 1024 || state.reorder_buf.size() >= 256) {
+        // A legal 2 MiB access unit can span nearly 2,000 UDP fragments. Keep
+        // room for one such burst while a missing datagram is retransmitted;
+        // the unchanged 150 ms deadline still bounds genuine loss recovery.
+        if (state.reorder_bytes + len > 2 * 1024 * 1024 || state.reorder_buf.size() >= 2048) {
+            std::cerr << "[AVIO] channel=" << static_cast<int>(channel)
+                      << " reorder pressure packets=" << state.reorder_buf.size() << " bytes=" << state.reorder_bytes
+                      << std::endl;
             recover_reordered(channel, state);
             // Pressure recovery can change expected_seq: recompute before
             // accepting this packet instead of silently skipping a new gap.
