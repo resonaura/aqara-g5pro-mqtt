@@ -32,6 +32,7 @@ struct P2PClientTestAccess {
         client.send_raw_packet(&data, 1, client.camera_endpoint());
     }
     static void endpoint(P2PClient& client, const sockaddr_in& value) { client.set_camera_endpoint(value); }
+    static int receive_buffer(const P2PClient& client) { return client.receive_buffer_bytes_.load(); }
 };
 }  // namespace aqara
 int main() {
@@ -62,6 +63,13 @@ int main() {
                 aqara::P2PClientTestAccess::endpoint(client, endpoint);
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        int actual_buffer = 0;
+        socklen_t option_size = sizeof(actual_buffer);
+        assert(getsockopt(old_fd, SOL_SOCKET, SO_RCVBUF, &actual_buffer, &option_size) == 0);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (!aqara::P2PClientTestAccess::receive_buffer(client) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        assert(actual_buffer > 0 && aqara::P2PClientTestAccess::receive_buffer(client) == actual_buffer);
         std::thread stop_again([&] { client.stop(); });
         client.stop();
         stop_again.join();

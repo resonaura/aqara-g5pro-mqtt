@@ -128,7 +128,7 @@ test("native telemetry uses a field allowlist and native stderr is sanitized bef
       command: process.execPath,
       args: [
         "-e",
-        `console.error('rtsp://secret:password@10.9.8.7/live token=private-native');console.log(JSON.stringify({event:'media_health', did:'private-camera', video_frames:20,audio_frames:30,video_key_hex:'private-key',data_base64:'private-media'}));console.log(JSON.stringify({event:'media_recovery',did:'private-camera',action:'restart_stream',video_age_ms:6100,decoded_age_ms:6300,data_base64:'private-media'}));console.log(JSON.stringify({event:'ready'}));setInterval(()=>{},1000);`,
+        `console.error('rtsp://secret:password@10.9.8.7/live token=private-native');console.log(JSON.stringify({event:'media_health', did:'private-camera', video_frames:20,audio_frames:30,missing_packets:12,late_packets:8,max_late_ms:275,max_gap_wait_ms:151,receive_buffer_bytes:425984,max_packet_work_us:12500,video_key_hex:'private-key',data_base64:'private-media'}));console.log(JSON.stringify({event:'media_recovery',did:'private-camera',action:'restart_stream',video_age_ms:6100,decoded_age_ms:6300,data_base64:'private-media'}));console.log(JSON.stringify({event:'ready'}));setInterval(()=>{},1000);`,
       ],
       killMs: 20,
     });
@@ -158,6 +158,12 @@ test("native telemetry uses a field allowlist and native stderr is sanitized bef
         .find((row) => row.event === "native.media_health");
       assert.equal(health.fields.video_frames, 20);
       assert.equal(health.fields.audio_frames, 30);
+      assert.equal(health.fields.missing_packets, 12);
+      assert.equal(health.fields.late_packets, 8);
+      assert.equal(health.fields.max_late_ms, 275);
+      assert.equal(health.fields.max_gap_wait_ms, 151);
+      assert.equal(health.fields.receive_buffer_bytes, 425984);
+      assert.equal(health.fields.max_packet_work_us, 12500);
       assert.equal(health.fields.camera, cameraDiagnosticId("private-camera"));
       const recovery = raw
         .trim()

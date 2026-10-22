@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.21 — Measure late fragments during camera recovery
+
+- Distinguish packet holes from ordinary duplicate retransmissions and fragments that arrive after recovery has already discarded their frame. Expose missing/late counts, maximum observed late age and recovery wait in the redacted persistent media journal.
+- Report the effective OS UDP receive-buffer size and maximum packet-processing time to investigate burst pressure separately from network loss.
+- Keep only sequence numbers and steady-clock times, bounded to 1,024 entries per channel and a two-second observation window. Preserve the existing 150-ms recovery deadline, media contents and stream quality.
+- Verify late/duplicate discrimination, sequence wrap, expiry, reset isolation, bounded tracking and safe native-to-journal propagation. These measurements guide a later transport fix; this release does not claim to eliminate source outages.
+
 ## v1.6.20 — Retain complete keyframe bursts during jitter recovery
 
 - Preserve a delayed fragment inside large camera keyframes instead of exhausting the old 256-packet/512-KiB queue and unnecessarily discarding the picture. Keep a bounded 2-MiB/2,048-packet reorder budget and the existing 150-ms loss deadline.

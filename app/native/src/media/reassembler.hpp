@@ -31,6 +31,7 @@ struct MediaStatistics {
     uint64_t packets = 0, duplicates = 0, reordered = 0, sequence_gaps = 0;
     uint64_t video_frames = 0, audio_frames = 0, discarded_bytes = 0;
     uint64_t malformed_frames = 0, keyframe_requests = 0;
+    uint64_t missing_packets = 0, late_packets = 0, max_late_ms = 0, max_gap_wait_ms = 0;
 };
 
 class AVIOReassembler {
@@ -50,7 +51,9 @@ public:
     MediaStatistics statistics() const {
         return {packets_received_.load(), packets_duplicate_.load(), packets_reordered_.load(),
                 sequence_gaps_.load(),    video_frames_.load(),      audio_frames_.load(),
-                discarded_bytes_.load(),  malformed_frames_.load(),  keyframe_requests_.load()};
+                discarded_bytes_.load(),  malformed_frames_.load(),  keyframe_requests_.load(),
+                missing_packets_.load(),  late_packets_.load(),      max_late_ms_.load(),
+                max_gap_wait_ms_.load()};
     }
 
 private:
@@ -62,6 +65,8 @@ private:
         std::vector<uint8_t> stream_buf;
         std::vector<uint8_t> pending_audio;
         size_t pending_audio_expected = 0;
+        // Diagnostic sequence numbers/times only; never retain discarded media.
+        std::map<uint16_t, int64_t> recent_missing;
     };
 
     void accept_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len);
@@ -95,6 +100,7 @@ private:
     std::atomic<uint64_t> audio_frames_{0};
     std::atomic<uint64_t> discarded_bytes_{0};
     std::atomic<uint64_t> packets_reordered_{0}, malformed_frames_{0}, keyframe_requests_{0};
+    std::atomic<uint64_t> missing_packets_{0}, late_packets_{0}, max_late_ms_{0}, max_gap_wait_ms_{0};
     uint64_t last_audio_ts_ms_ = 0;
 };
 
