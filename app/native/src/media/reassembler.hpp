@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <vector>
+#include "video-reorder-window.hpp"
 
 namespace aqara {
 
@@ -32,6 +33,7 @@ struct MediaStatistics {
     uint64_t video_frames = 0, audio_frames = 0, discarded_bytes = 0;
     uint64_t malformed_frames = 0, keyframe_requests = 0;
     uint64_t missing_packets = 0, late_packets = 0, max_late_ms = 0, max_gap_wait_ms = 0;
+    uint64_t recovered_gaps = 0, max_recovered_wait_ms = 0, max_video_wait_ms = 500;
 };
 
 class AVIOReassembler {
@@ -53,13 +55,16 @@ public:
                 sequence_gaps_.load(),    video_frames_.load(),      audio_frames_.load(),
                 discarded_bytes_.load(),  malformed_frames_.load(),  keyframe_requests_.load(),
                 missing_packets_.load(),  late_packets_.load(),      max_late_ms_.load(),
-                max_gap_wait_ms_.load()};
+                max_gap_wait_ms_.load(),  recovered_gaps_.load(),    max_recovered_wait_ms_.load(),
+                max_video_wait_ms_.load()};
     }
 
 private:
     struct ChannelState {
         int expected_seq = -1;
         int64_t gap_since_ms = -1;
+        int64_t gap_wait_ms = 500;
+        VideoReorderWindow video_window;
         size_t reorder_bytes = 0;
         std::map<uint16_t, std::vector<uint8_t>> reorder_buf;
         std::vector<uint8_t> stream_buf;
@@ -78,6 +83,7 @@ private:
     void process_completed_avio(const uint8_t* data, size_t len);
     void process_completed_audio(const uint8_t* data, size_t len);
     void recover_from_sequence_gap(uint8_t channel, ChannelState& state, uint16_t next_seq);
+    void learn_video_wait(uint8_t channel, ChannelState& state, int64_t wait, int64_t now);
 
     uint8_t video_key_[32];
     uint8_t audio_key_[32];
@@ -101,6 +107,7 @@ private:
     std::atomic<uint64_t> discarded_bytes_{0};
     std::atomic<uint64_t> packets_reordered_{0}, malformed_frames_{0}, keyframe_requests_{0};
     std::atomic<uint64_t> missing_packets_{0}, late_packets_{0}, max_late_ms_{0}, max_gap_wait_ms_{0};
+    std::atomic<uint64_t> recovered_gaps_{0}, max_recovered_wait_ms_{0}, max_video_wait_ms_{500};
     uint64_t last_audio_ts_ms_ = 0;
 };
 
