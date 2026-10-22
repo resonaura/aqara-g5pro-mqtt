@@ -41,7 +41,7 @@ public:
 
     void request_keyframe();
     void set_quality(int channel);
-    void ptz(int action, int speed = 50);
+    bool ptz(const std::string& direction);
     void start_talkback();
     void stop_talkback();
     void send_talkback_frame(const uint8_t* adts, size_t len);

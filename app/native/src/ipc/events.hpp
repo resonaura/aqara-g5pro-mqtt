@@ -59,9 +59,23 @@ struct EventQualitySet {
     int channel = 0;
 };
 
-struct EventPTZExecuted {
-    std::string event = "ptz_executed";
+struct EventPTZSent {
+    std::string event = "ptz_sent";
     std::string did;
+    std::string direction;
+};
+
+struct EventPTZRejected {
+    std::string event = "ptz_rejected";
+    std::string did;
+    std::string direction;
+    std::string reason;
+};
+
+struct EventPTZResponse {
+    std::string event = "ptz_response";
+    std::string did;
+    size_t body_bytes = 0;
 };
 
 struct EventTalkbackStarted {

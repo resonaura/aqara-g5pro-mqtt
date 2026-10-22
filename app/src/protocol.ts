@@ -32,10 +32,9 @@ export enum PpcsMsgType {
  *
  * Frame structure:
  *  - 4 bytes: Magic ASCII "lumi"
- *  - 2 bytes (LE): uint16 command/message type
- *  - 2 bytes (LE): uint16 payload length
+ *  - 4 bytes (LE): uint32 command/message type
  *  - 4 bytes (LE): uint32 sequence number
- *  - 4 bytes (LE): reserved / zero
+ *  - 4 bytes (LE): uint32 payload length
  *  - N bytes: JSON or binary payload
  */
 export enum LumiCmdType {
@@ -48,7 +47,7 @@ export enum LumiCmdType {
   AUDIO_SEND = 0x1006, // Audio data transmission
   AUDIO_SEND_RESP = 0x1007, // Audio transmission response
   AUDIO_STOP = 0x1008, // Stop audio streaming
-  PTZ_OR_TALK_START = 0x100a, // PTZ motor control (JSON) or Start Two-Way Talkback (binary)
+  TALK_START = 0x100a, // Start Two-Way Talkback (not motor control)
   TALKBACK_RESP = 0x100b, // Talkback audio channel prepared confirmation
   TALK_STOP = 0x100c, // Stop Two-Way Talkback audio transmission
   SET_QUALITY = 0x100e, // Switch live stream resolution / quality channel
@@ -57,6 +56,8 @@ export enum LumiCmdType {
   KEYFRAME_RESP = 0x1019, // Keyframe generation acknowledgment
   STREAM_START_REQ = 0x101c, // Request Channel 3 video stream delivery
   STREAM_START_RESP = 0x101d, // Channel 3 stream response
+  PTZ_REQ = 0x102a, // Momentary motor nudge/stop with a string action
+  PTZ_RESP = 0x102b, // Motor command response
   KEEPALIVE = 0x1024, // Legacy keepalive ping
   KEEPALIVE_RESP = 0x1025, // Legacy keepalive pong
 }

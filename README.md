@@ -23,11 +23,13 @@ While initially created for the **Aqara Camera Hub G5 Pro**, the architecture is
 | Model | Codename | Video & P2P RTSP | 2-Way Talkback | PTZ Controls | Spotlight | Tested Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Aqara Camera Hub G5 Pro** | `lumi.camera.agl004` | ✅ 3K / 1080p | ✅ | — (Fixed) | ✅ Dimmable | ✅ Verified |
-| **Aqara Camera E1** | `lumi.camera.acn006` | ✅ 2K / 1080p | ✅ | ✅ Pan / Tilt | — | ✅ Verified |
+| **Aqara Camera E1** | `lumi.camera.acn006` | ✅ 2K / 1080p | ✅ | Pan / Tilt¹ | — | ✅ Video verified |
 | **Aqara Camera Hub G3** | `lumi.camera.acn001` | ✅ 2K / 1080p | ✅ | ✅ Pan / Tilt | — | 🧪 Compatible |
 | **Aqara Camera Hub G2H Pro** | `lumi.camera.acn004` | ✅ 1080p | ✅ | — (Fixed) | — | 🧪 Compatible |
 | **Aqara Camera Hub G2H** | `lumi.camera.gwac02/03` | ✅ 1080p | ✅ | — (Fixed) | — | 🧪 Compatible |
 | **Aqara Smart Video Doorbell G4** | `lumi.camera.agl002` / `lumi.camera.acn005` | ✅ 1080p | ✅ | — (Fixed) | — | 🧪 Compatible |
+
+¹ PTZ wire encoding is covered by encrypted loopback tests. Physical motor acceptance remains pending; see [PTZ diagnostics](app/PTZ.md).
 
 > 💡 **Have a different model?** See our [🤝 Collaboration & Device Testing](#-collaboration--device-testing) section!
 

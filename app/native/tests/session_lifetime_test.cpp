@@ -64,7 +64,9 @@ void P2PClient::request_keyframe() {
     --commands.at(this);
 }
 void P2PClient::set_quality(int) {}
-void P2PClient::ptz(int, int) {}
+bool P2PClient::ptz(const std::string&) {
+    return true;
+}
 void P2PClient::start_talkback() {}
 void P2PClient::stop_talkback() {}
 void P2PClient::send_talkback_frame(const uint8_t*, size_t) {}

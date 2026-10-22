@@ -27,8 +27,7 @@ struct P2PQualityPayload {
 };
 
 struct P2PPTZPayload {
-    int action{0};
-    int speed{0};
+    std::string action;
 };
 
 static std::vector<std::string> get_broadcast_ips() {
@@ -380,12 +379,17 @@ void P2PClient::set_quality(int channel) {
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
 }
 
-void P2PClient::ptz(int action, int speed) {
-    P2PPTZPayload payload{.action = action, .speed = speed};
+bool P2PClient::ptz(const std::string& direction) {
+    if (!running_ || !is_connected_ || !session_ready_ || !is_ptz_direction(direction))
+        return false;
+    // Aqara motor control is IOCTL 4138 with string actions, independently of Talk.
+    // Protocol reference: absent42/Aqara-LANLink ptz/commands.py (PpcsIotType).
+    P2PPTZPayload payload{.action = direction};
     std::string json = glz::write_json(payload).value_or("");
-    auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::PTZ_OR_TALK_START,
-                                              reinterpret_cast<const uint8_t*>(json.data()), json.length(), cmd_seq_++);
+    auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::PTZ_REQ, reinterpret_cast<const uint8_t*>(json.data()),
+                                              json.length(), cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
+    return true;  // Dispatched, not proof of physical movement.
 }
 
 void P2PClient::start_talkback() {
@@ -394,7 +398,7 @@ void P2PClient::start_talkback() {
     std::cerr << "[P2P-Native] Sending 0x100A startTalk to " << config_.did << std::endl;
     talk_seq_ = 0;
     talk_frames_sent_ = 0;
-    auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::PTZ_OR_TALK_START, nullptr, 0, cmd_seq_++);
+    auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::TALK_START, nullptr, 0, cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
 }
 
@@ -780,6 +784,9 @@ void P2PClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
                 event_cb_(to_json(EventSessionReady{.did = config_.did}));
             }
         }
+    } else if (type == static_cast<uint32_t>(LumiCmdType::PTZ_RESP)) {
+        if (event_cb_)
+            event_cb_(to_json(EventPTZResponse{.did = config_.did, .body_bytes = body_len}));
     } else if (type == static_cast<uint32_t>(LumiCmdType::TALKBACK_RESP)) {
         std::cerr << "[P2P-Native] Talkback channel prepared (0x100B)" << std::endl;
         if (event_cb_) {

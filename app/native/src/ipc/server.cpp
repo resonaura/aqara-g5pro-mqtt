@@ -3,6 +3,7 @@
 #include <glaze/glaze.hpp>
 #include "server.hpp"
 #include "events.hpp"
+#include "../p2p/protocol.hpp"
 
 namespace aqara {
 
@@ -160,25 +161,18 @@ void IpcServer::handle_command(const std::string& line) {
             send_event(to_json(EventQualitySet{.did = cmd_dto.did, .channel = cmd_dto.channel}));
         }
     } else if (cmd == "ptz") {
-        int action = 0;
-        if (cmd_dto.direction == "up")
-            action = 1;
-        else if (cmd_dto.direction == "down")
-            action = 2;
-        else if (cmd_dto.direction == "left")
-            action = 3;
-        else if (cmd_dto.direction == "right")
-            action = 4;
-        else
-            action = cmd_dto.action;
-
-        int speed = cmd_dto.speed > 0 ? cmd_dto.speed : 50;
-
+        if (!is_ptz_direction(cmd_dto.direction)) {
+            send_event(to_json(
+                EventPTZRejected{.did = cmd_dto.did, .direction = cmd_dto.direction, .reason = "invalid_direction"}));
+            return;
+        }
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         auto it = sessions_.find(cmd_dto.did);
-        if (it != sessions_.end()) {
-            it->second->ptz(action, speed);
-            send_event(to_json(EventPTZExecuted{.did = cmd_dto.did}));
+        if (it != sessions_.end() && it->second->ptz(cmd_dto.direction)) {
+            send_event(to_json(EventPTZSent{.did = cmd_dto.did, .direction = cmd_dto.direction}));
+        } else {
+            send_event(to_json(
+                EventPTZRejected{.did = cmd_dto.did, .direction = cmd_dto.direction, .reason = "session_not_ready"}));
         }
     } else if (cmd == "start_talkback") {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
