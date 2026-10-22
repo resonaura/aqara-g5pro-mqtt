@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.22 — Keep recoverable video through late retransmissions
+
+- Real Outdoor diagnostics found 70 missing fragments and all 70 later arrived, up to 472 ms after the hole began. Wait up to 500 ms for missing video fragments instead of discarding their complete frame at 150 ms. In-order media still forwards immediately; audio-only expiry remains 150 ms.
+- Preserve the existing 2-MiB / 2,048-packet bounds, pressure recovery, duplicate suppression, watchdogs and source resolution. Avoid an unnecessary keyframe request when retransmission can complete the original access unit.
+- Reproduce a 472-ms late fragment in a 600-KiB keyframe across sequence wrap, retain byte-exact output and verify actual-loss expiry at 500 ms alongside unchanged audio behavior.
+
 ## v1.6.21 — Measure late fragments during camera recovery
 
 - Distinguish packet holes from ordinary duplicate retransmissions and fragments that arrive after recovery has already discarded their frame. Expose missing/late counts, maximum observed late age and recovery wait in the redacted persistent media journal.

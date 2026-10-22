@@ -150,9 +150,14 @@ void AVIOReassembler::recover_reordered(uint8_t channel, ChannelState& state) {
 
 void AVIOReassembler::flush_expired() {
     const int64_t now = clock_();
-    for (auto& [channel, state] : channels_)
-        if (state.gap_since_ms >= 0 && now - state.gap_since_ms >= 150)
+    for (auto& [channel, state] : channels_) {
+        // Real video fragments can be retransmitted after 472 ms. Only a
+        // sequence hole waits; in-order media remains immediate. Audio-only
+        // traffic retains its shorter expiry and cannot gate video readers.
+        const int64_t recovery_ms = channel == 2 ? 150 : 500;
+        if (state.gap_since_ms >= 0 && now - state.gap_since_ms >= recovery_ms)
             recover_reordered(channel, state);
+    }
 }
 
 void AVIOReassembler::push_packet(uint8_t channel, uint16_t seq, const uint8_t* data, size_t len) {
@@ -191,7 +196,7 @@ void AVIOReassembler::accept_packet(uint8_t channel, uint16_t seq, const uint8_t
         }
         // A legal 2 MiB access unit can span nearly 2,000 UDP fragments. Keep
         // room for one such burst while a missing datagram is retransmitted;
-        // the unchanged 150 ms deadline still bounds genuine loss recovery.
+        // the bounded video/audio deadlines still recover genuine loss.
         if (state.reorder_bytes + len > 2 * 1024 * 1024 || state.reorder_buf.size() >= 2048) {
             std::cerr << "[AVIO] channel=" << static_cast<int>(channel)
                       << " reorder pressure packets=" << state.reorder_buf.size() << " bytes=" << state.reorder_bytes
