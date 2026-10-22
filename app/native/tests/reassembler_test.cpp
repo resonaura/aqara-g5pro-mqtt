@@ -159,6 +159,44 @@ int main() {
     assert(health.reordered == 16 && health.sequence_gaps == 1);
     assert(health.video_frames == 16 && health.keyframe_requests == 1);
     assert(health.discarded_bytes == 20 && health.malformed_frames == 0);
+    assert(health.missing_packets == 1 && health.max_gap_wait_ms == 150);
+    jitter_now = 250;
+    lost.push_packet(4, 101, video.data(), video.size());
+    assert(lost.statistics().late_packets == 1 && lost.statistics().max_late_ms == 250);
+    lost.push_packet(4, 101, video.data(), video.size());
+    lost.push_packet(4, 102, video.data(), video.size());
+    assert(lost.statistics().late_packets == 1);           // Duplicate retransmits are not new late fragments.
+    assert(recovered_frames == 16 && loss_requests == 1);  // Diagnostics never change media recovery.
+
+    // Late tracking is bounded across wrap, expires, and cannot leak between sessions.
+    aqara::AVIOReassembler late(key, key, [&]() { return jitter_now; });
+    late.push_packet(1, 65534, video.data(), video.size());
+    late.push_packet(1, 0, video.data(), video.size());
+    jitter_now += 150;
+    late.flush_expired();
+    jitter_now += 100;
+    late.push_packet(1, 65535, video.data(), video.size());
+    assert(late.statistics().missing_packets == 1 && late.statistics().late_packets == 1);
+    late.push_packet(1, 2, video.data(), video.size());
+    jitter_now += 150;
+    late.flush_expired();
+    jitter_now += 2001;
+    late.push_packet(1, 1, video.data(), video.size());
+    assert(late.statistics().late_packets == 1);
+    late.push_packet(1, 4, video.data(), video.size());
+    jitter_now += 150;
+    late.flush_expired();
+    late.reset();
+    late.push_packet(1, 4, video.data(), video.size());
+    late.push_packet(1, 3, video.data(), video.size());
+    assert(late.statistics().late_packets == 1);
+    aqara::AVIOReassembler bounded_late(key, key, [&]() { return jitter_now; });
+    bounded_late.push_packet(1, 0, video.data(), video.size());
+    bounded_late.push_packet(1, 5000, video.data(), video.size());
+    for (uint16_t seq = 1; seq < 5000; ++seq)
+        bounded_late.push_packet(1, seq, video.data(), video.size());
+    assert(bounded_late.statistics().missing_packets == 4999);
+    assert(bounded_late.statistics().late_packets == 1024);
 
     // A retransmission after a 48-packet keyframe burst must not be treated
     // as loss just because the previous sixteen-packet limit was exceeded.

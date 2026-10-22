@@ -81,6 +81,21 @@ static inline bool is_avio_audio_header_safe(const uint8_t* data, size_t len) {
 }
 
 void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& state, uint16_t next_seq) {
+    const int64_t now = clock_();
+    const int64_t began = state.gap_since_ms >= 0 ? state.gap_since_ms : now;
+    const auto waited = static_cast<uint64_t>(std::max<int64_t>(0, now - began));
+    const uint16_t expected = static_cast<uint16_t>(state.expected_seq);
+    const uint16_t missing = static_cast<uint16_t>(next_seq - expected);
+    missing_packets_ += missing;
+    max_gap_wait_ms_ = std::max(max_gap_wait_ms_.load(), waited);
+    std::erase_if(state.recent_missing, [now](const auto& item) { return now - item.second > 2000; });
+    // Bound instrumentation even for a malformed large sequence jump. Count
+    // each tracked late fragment once, separately from ordinary retransmits.
+    for (uint16_t index = 0; index < std::min<uint16_t>(missing, 1024); ++index) {
+        if (state.recent_missing.size() >= 1024)
+            state.recent_missing.erase(state.recent_missing.begin());
+        state.recent_missing[static_cast<uint16_t>(expected + index)] = began;
+    }
     sequence_gaps_++;
     discarded_bytes_ += state.stream_buf.size() + state.pending_audio.size();
     state.stream_buf.clear();
@@ -89,7 +104,7 @@ void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
     state.expected_seq = next_seq;
     state.gap_since_ms = -1;
     std::cerr << "[AVIO] channel=" << static_cast<int>(channel) << " sequence gap, resync at seq=" << next_seq
-              << " gaps=" << sequence_gaps_.load() << std::endl;
+              << " gaps=" << sequence_gaps_.load() << " missing=" << missing << " waited_ms=" << waited << std::endl;
     // Channel 2 carries audio only. An IDR cannot recover missing AAC and
     // would unnecessarily gate video readers and stress the camera encoder.
     if (channel != 2 && kf_req_cb_) {
@@ -160,6 +175,14 @@ void AVIOReassembler::accept_packet(uint8_t channel, uint16_t seq, const uint8_t
         drain_reordered(channel, state);
     } else if (diff < 0) {
         packets_duplicate_++;
+        if (const auto missing = state.recent_missing.find(seq); missing != state.recent_missing.end()) {
+            const int64_t age = clock_() - missing->second;
+            if (age >= 0 && age <= 2000) {
+                ++late_packets_;
+                max_late_ms_ = std::max(max_late_ms_.load(), static_cast<uint64_t>(age));
+            }
+            state.recent_missing.erase(missing);
+        }
     } else if (diff < 4096) {
         if (state.reorder_buf.contains(seq)) {
             ++packets_duplicate_;

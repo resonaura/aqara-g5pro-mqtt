@@ -806,6 +806,10 @@ void P2PClient::watchdog_loop() {
                                                .discarded_bytes = stats.discarded_bytes,
                                                .malformed_frames = stats.malformed_frames,
                                                .keyframe_requests = stats.keyframe_requests,
+                                               .missing_packets = stats.missing_packets,
+                                               .late_packets = stats.late_packets,
+                                               .max_late_ms = stats.max_late_ms,
+                                               .max_gap_wait_ms = stats.max_gap_wait_ms,
                                                .video_age_ms = age(last_video_traffic_ms_.load()),
                                                .audio_age_ms = age(reassembler_->last_audio_frame_ms()),
                                                .decoded_age_ms = age(reassembler_->last_video_frame_ms())}));
