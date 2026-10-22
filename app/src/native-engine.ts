@@ -246,6 +246,8 @@ export class NativeMediaEngine extends EventEmitter {
         "late_packets",
         "max_late_ms",
         "max_gap_wait_ms",
+        "receive_buffer_bytes",
+        "max_packet_work_us",
         "video_age_ms",
         "audio_age_ms",
         "decoded_age_ms",

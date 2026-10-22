@@ -508,6 +508,10 @@ void P2PClient::discovery_loop() {
 
 void P2PClient::receiver_loop() {
     uint8_t buffer[65536];
+    int effective_buffer = 0;
+    socklen_t option_size = sizeof(effective_buffer);
+    if (getsockopt(udp_fd_, SOL_SOCKET, SO_RCVBUF, &effective_buffer, &option_size) == 0)
+        receive_buffer_bytes_ = effective_buffer;
 
     while (running_) {
         sockaddr_in src_addr{};
@@ -522,7 +526,11 @@ void P2PClient::receiver_loop() {
             continue;
         }
 
+        const auto began = std::chrono::steady_clock::now();
         handle_packet(buffer, static_cast<size_t>(n), src_addr);
+        const auto work_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count();
+        max_packet_work_us_ = std::max(max_packet_work_us_.load(), static_cast<uint64_t>(work_us));
     }
 }
 
@@ -810,6 +818,8 @@ void P2PClient::watchdog_loop() {
                                                .late_packets = stats.late_packets,
                                                .max_late_ms = stats.max_late_ms,
                                                .max_gap_wait_ms = stats.max_gap_wait_ms,
+                                               .receive_buffer_bytes = receive_buffer_bytes_.load(),
+                                               .max_packet_work_us = max_packet_work_us_.load(),
                                                .video_age_ms = age(last_video_traffic_ms_.load()),
                                                .audio_age_ms = age(reassembler_->last_audio_frame_ms()),
                                                .decoded_age_ms = age(reassembler_->last_video_frame_ms())}));

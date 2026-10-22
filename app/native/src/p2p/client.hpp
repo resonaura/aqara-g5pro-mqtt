@@ -92,6 +92,8 @@ private:
     std::atomic<int64_t> last_unhealthy_emitted_ms_{0};
     std::atomic<int64_t> last_kf_req_sent_ms_{0};
     std::atomic<int64_t> start_time_ms_{0};
+    std::atomic<int> receive_buffer_bytes_{0};
+    std::atomic<uint64_t> max_packet_work_us_{0};
 
     sockaddr_in camera_addr_{};
     mutable std::mutex camera_mutex_;

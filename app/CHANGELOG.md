@@ -3,6 +3,7 @@
 ## v1.6.21 — Measure late fragments during camera recovery
 
 - Distinguish packet holes from ordinary duplicate retransmissions and fragments that arrive after recovery has already discarded their frame. Expose missing/late counts, maximum observed late age and recovery wait in the redacted persistent media journal.
+- Report the effective OS UDP receive-buffer size and maximum packet-processing time to investigate burst pressure separately from network loss.
 - Keep only sequence numbers and steady-clock times, bounded to 1,024 entries per channel and a two-second observation window. Preserve the existing 150-ms recovery deadline, media contents and stream quality.
 - Verify late/duplicate discrimination, sequence wrap, expiry, reset isolation, bounded tracking and safe native-to-journal propagation. These measurements guide a later transport fix; this release does not claim to eliminate source outages.
 
