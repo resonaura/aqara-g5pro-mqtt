@@ -89,6 +89,53 @@ int main() {
     assert(interleaved.last_video_frame_ms() == 0);
     assert(reassembler.last_video_frame_ms() == 0);  // Audio and raw datagrams cannot mark video healthy.
 
+    // Audio headers can themselves cross a DRW packet boundary while video
+    // is incomplete. Never count any of those header bytes as video payload.
+    for (size_t split = 1; split < 32; ++split) {
+        aqara::AVIOReassembler split_audio(key, key);
+        std::vector<uint8_t> actual_video, actual_audio;
+        int video_count = 0, audio_count = 0;
+        split_audio.set_callbacks(
+            [&](const aqara::VideoFrame& value) {
+                actual_video = value.annex_b_data;
+                ++video_count;
+            },
+            [&](const aqara::AudioFrame& value) {
+                actual_audio = value.aac_adts_data;
+                ++audio_count;
+            },
+            {});
+        split_audio.push_packet(4, 200, video.data(), 20);
+        std::vector<uint8_t> first(video.begin() + 20, video.begin() + 27);
+        first.insert(first.end(), frame.begin(), frame.begin() + split);
+        split_audio.push_packet(4, 201, first.data(), first.size());
+        std::vector<uint8_t> second(frame.begin() + split, frame.end());
+        second.insert(second.end(), video.begin() + 27, video.end());
+        split_audio.push_packet(4, 202, second.data(), second.size());
+        assert(video_count == 1);
+        assert(audio_count == 1);
+        assert(actual_video == video_plain);
+        assert(actual_audio == plaintext);
+        assert(split_audio.statistics().split_audio_headers == 1);
+    }
+
+    // A header-like suffix in real video is retained byte-for-byte when
+    // the next packet proves it is not an audio header.
+    aqara::AVIOReassembler false_audio(key, key);
+    std::vector<std::vector<uint8_t>> preserved;
+    false_audio.set_callbacks([&](const aqara::VideoFrame& value) { preserved.push_back(value.annex_b_data); }, {}, {});
+    auto header_like_video = video;
+    header_like_video[44] = 0x88;
+    header_like_video[45] = 0;
+    header_like_video[46] = 0x0e;
+    header_like_video[47] = 0;
+    false_audio.push_packet(4, 300, header_like_video.data(), header_like_video.size());
+    false_audio.push_packet(4, 301, video.data(), video.size());
+    assert(preserved.size() == 2);
+    assert(preserved[0] == std::vector<uint8_t>(header_like_video.begin() + 40, header_like_video.end()));
+    assert(preserved[1] == video_plain);
+    assert(false_audio.statistics().split_audio_headers == 0);
+
     // Malformed encryption tables are rejected before offset arithmetic or
     // partial decryption. Bad access units must request a fresh IDR, not reach RTSP.
     aqara::AVIOReassembler validated(key, key);

@@ -34,6 +34,7 @@ struct MediaStatistics {
     uint64_t malformed_frames = 0, keyframe_requests = 0;
     uint64_t missing_packets = 0, late_packets = 0, max_late_ms = 0, max_gap_wait_ms = 0;
     uint64_t recovered_gaps = 0, max_recovered_wait_ms = 0, max_video_wait_ms = 500;
+    uint64_t split_audio_headers = 0;
 };
 
 class AVIOReassembler {
@@ -51,12 +52,12 @@ public:
     int64_t last_video_frame_ms() const { return last_video_frame_ms_.load(); }
     int64_t last_audio_frame_ms() const { return last_audio_frame_ms_.load(); }
     MediaStatistics statistics() const {
-        return {packets_received_.load(), packets_duplicate_.load(), packets_reordered_.load(),
-                sequence_gaps_.load(),    video_frames_.load(),      audio_frames_.load(),
-                discarded_bytes_.load(),  malformed_frames_.load(),  keyframe_requests_.load(),
-                missing_packets_.load(),  late_packets_.load(),      max_late_ms_.load(),
-                max_gap_wait_ms_.load(),  recovered_gaps_.load(),    max_recovered_wait_ms_.load(),
-                max_video_wait_ms_.load()};
+        return {packets_received_.load(),  packets_duplicate_.load(),  packets_reordered_.load(),
+                sequence_gaps_.load(),     video_frames_.load(),       audio_frames_.load(),
+                discarded_bytes_.load(),   malformed_frames_.load(),   keyframe_requests_.load(),
+                missing_packets_.load(),   late_packets_.load(),       max_late_ms_.load(),
+                max_gap_wait_ms_.load(),   recovered_gaps_.load(),     max_recovered_wait_ms_.load(),
+                max_video_wait_ms_.load(), split_audio_headers_.load()};
     }
 
 private:
@@ -68,6 +69,8 @@ private:
         size_t reorder_bytes = 0;
         std::map<uint16_t, std::vector<uint8_t>> reorder_buf;
         std::vector<uint8_t> stream_buf;
+        // At most 31 bytes of a possible audio header crossing a DRW boundary.
+        std::vector<uint8_t> audio_header_probe;
         std::vector<uint8_t> pending_audio;
         size_t pending_audio_expected = 0;
         // Diagnostic sequence numbers/times only; never retain discarded media.
@@ -108,6 +111,7 @@ private:
     std::atomic<uint64_t> packets_reordered_{0}, malformed_frames_{0}, keyframe_requests_{0};
     std::atomic<uint64_t> missing_packets_{0}, late_packets_{0}, max_late_ms_{0}, max_gap_wait_ms_{0};
     std::atomic<uint64_t> recovered_gaps_{0}, max_recovered_wait_ms_{0}, max_video_wait_ms_{500};
+    std::atomic<uint64_t> split_audio_headers_{0};
     uint64_t last_audio_ts_ms_ = 0;
 };
 

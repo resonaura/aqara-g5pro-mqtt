@@ -97,8 +97,9 @@ void AVIOReassembler::recover_from_sequence_gap(uint8_t channel, ChannelState& s
         state.recent_missing[static_cast<uint16_t>(expected + index)] = began;
     }
     sequence_gaps_++;
-    discarded_bytes_ += state.stream_buf.size() + state.pending_audio.size();
+    discarded_bytes_ += state.stream_buf.size() + state.pending_audio.size() + state.audio_header_probe.size();
     state.stream_buf.clear();
+    state.audio_header_probe.clear();
     state.pending_audio.clear();
     state.pending_audio_expected = 0;
     state.expected_seq = next_seq;
@@ -265,6 +266,20 @@ void AVIOReassembler::handle_packet_immediate(uint8_t channel, ChannelState& sta
         parse_stream_buffer(channel, state);
     };
 
+    // Audio may begin at the end of the previous packet. Keep only a
+    // possible partial header outside the video assembler until it can be
+    // validated; appending it to stream_buf can complete a corrupted video.
+    std::vector<uint8_t> joined;
+    if (!state.audio_header_probe.empty()) {
+        joined = std::move(state.audio_header_probe);
+        state.audio_header_probe.clear();
+        joined.insert(joined.end(), data, data + len);
+        data = joined.data();
+        len = joined.size();
+        if (is_avio_audio_header_safe(data, len))
+            ++split_audio_headers_;
+    }
+
     if (!state.pending_audio.empty()) {
         const size_t needed = state.pending_audio_expected - state.pending_audio.size();
         const size_t take = std::min(needed, len);
@@ -293,6 +308,17 @@ void AVIOReassembler::handle_packet_immediate(uint8_t channel, ChannelState& sta
         }
 
         if (audio_offset == len) {
+            // Strong header prefix: AAC codec 0x0088 and flags 0x000e.
+            // Any false candidate is returned unchanged on the next packet.
+            static constexpr uint8_t prefix[] = {0x88, 0x00, 0x0e, 0x00};
+            for (size_t i = len > 31 ? len - 31 : 0; i < len; ++i) {
+                const size_t size = len - i;
+                if (std::equal(prefix, prefix + std::min(size, sizeof(prefix)), data + i)) {
+                    append_video_bytes(data, i);
+                    state.audio_header_probe.assign(data + i, data + len);
+                    return;
+                }
+            }
             append_video_bytes(data, len);
             return;
         }
