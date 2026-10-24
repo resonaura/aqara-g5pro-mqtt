@@ -252,6 +252,7 @@ export class NativeMediaEngine extends EventEmitter {
         "recovered_gaps",
         "max_recovered_wait_ms",
         "max_video_wait_ms",
+        "split_audio_headers",
         "receive_buffer_bytes",
         "max_packet_work_us",
         "video_age_ms",

@@ -828,6 +828,7 @@ void P2PClient::watchdog_loop() {
                                                .recovered_gaps = stats.recovered_gaps,
                                                .max_recovered_wait_ms = stats.max_recovered_wait_ms,
                                                .max_video_wait_ms = stats.max_video_wait_ms,
+                                               .split_audio_headers = stats.split_audio_headers,
                                                .receive_buffer_bytes = receive_buffer_bytes_.load(),
                                                .max_packet_work_us = max_packet_work_us_.load(),
                                                .video_age_ms = age(last_video_traffic_ms_.load()),

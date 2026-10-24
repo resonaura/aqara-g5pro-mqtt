@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.25 — Preserve split audio headers inside video fragments
+
+- Keep up to 31 bytes of a possible AAC AVIO header outside the video assembler until the following DRW packet validates it. Audio inserted into a fragmented video access unit must not corrupt its bytes when the audio header itself spans packets.
+- Preserve false header candidates byte-for-byte, clear partial probes on packet loss/reset, and include confirmed split headers in the existing bounded redacted media-health diagnostics. P2P, recording and motor settings stay unchanged.
+- Verify all 31 header split points with exact video/audio payload comparisons, false-prefix preservation, native recovery tests and sanitizer checks. Real source decoding remains a separate acceptance check.
+
 ## v1.6.24 — Separate camera movement from Talk
 
 - Send PTZ nudges and Stop through motor IOCTL 0x102A with string actions; the previous numeric payload incorrectly used Talk 0x100A. Keep Talk and all P2P media paths unchanged.
