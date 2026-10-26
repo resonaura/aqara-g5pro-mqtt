@@ -16,7 +16,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg cmake build-essential
+      - name: Install missing native test tools
+        timeout-minutes: 8
+        run: |
+          packages=()
+          command -v ffmpeg >/dev/null || packages+=(ffmpeg)
+          command -v cmake >/dev/null || packages+=(cmake)
+          command -v c++ >/dev/null || packages+=(build-essential)
+          if ((${#packages[@]})); then
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y "${packages[@]}"
+          fi
       - run: corepack enable && corepack prepare pnpm@11.21.0 --activate
       - run: pnpm install --frozen-lockfile
         working-directory: app
