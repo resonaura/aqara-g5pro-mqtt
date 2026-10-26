@@ -1,0 +1,10 @@
+node_modules
+dist
+native/build
+native/compile_commands.json
+*.tsbuildinfo
+.git
+.DS_Store
+.env
+.env.*
+*.sqlite*

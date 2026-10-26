@@ -1,7 +1,7 @@
 name: Test stream recovery
 on:
   pull_request:
-    paths: ["app/**", ".github/workflows/test.yaml"]
+    paths: ["app/**", "Dockerfile", ".dockerignore", ".github/workflows/test.yaml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -59,3 +59,25 @@ jobs:
           /tmp/aqara-p2p-transport-sanitized
       - run: pnpm test && pnpm lint
         working-directory: app
+  runtime:
+    name: Final runtime (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify HA production runtime
+        run: |
+          docker build --progress=plain \
+            --build-arg BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-base-debian:bookworm \
+            -t aqara-addon-runtime -f app/Dockerfile app
+          docker run --rm --entrypoint sh aqara-addon-runtime -c '! command -v cmake && ! command -v g++'
+      - name: Build and verify standalone production runtime
+        run: docker build --progress=plain -t aqara-standalone-runtime .
