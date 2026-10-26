@@ -1,7 +1,6 @@
 import axios from "axios";
 import crypto from "crypto";
 import fs from "fs";
-import inquirer from "inquirer";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import yargs from "yargs";
@@ -38,7 +37,6 @@ rZzBHsMuBwA4LQdxBwIDAQAB
 
 function encryptPassword(password: string): string {
   const md5 = crypto.createHash("md5").update(password).digest("hex");
-  console.log(`   MD5 hash:     ${md5}`);
   const pub = crypto.createPublicKey(PUBKEY);
   const encrypted = crypto.publicEncrypt(
     { key: pub, padding: crypto.constants.RSA_PKCS1_PADDING },
@@ -89,6 +87,7 @@ async function main() {
     };
   } else {
     // 🖐 Interactive mode
+    const { default: inquirer } = await import("inquirer");
     answers = await inquirer.prompt([
       { name: "username", message: "Aqara Username (email):", type: "input" },
       {
@@ -148,11 +147,7 @@ async function main() {
     appid,
   };
 
-  console.log("\n🌐 Login request details:");
-  console.log(`   Server:       ${server}`);
-  console.log(`   Area:         ${area}`);
-  console.log(`   AppID:        ${appid}`);
-  console.log(`   Username:     ${username}`);
+  console.log(`🌐 Authenticating with Aqara (${area})`);
 
   const encryptedPassword = encryptPassword(password);
 
@@ -182,14 +177,14 @@ async function main() {
     console.log(`📥 HTTP status:    ${resp.status} ${resp.statusText}`);
 
     if (resp.data.code !== 0) {
-      console.error(`\n❌ Login failed (code=${resp.data.code}): ${resp.data.message}`);
+      const code = Number.isFinite(Number(resp.data.code)) ? Number(resp.data.code) : "unknown";
+      console.error(`\n❌ Login failed (code=${code})`);
       process.exit(1);
     }
 
     const token = resp.data.result.token;
     const userId = resp.data.result.userId;
     console.log(`\n✅ Login success`);
-    console.log(`   Token: ${token.substring(0, 10)}... (len=${token.length})`);
 
     // Get device list
     console.log("\n📋 Fetching device list...");
@@ -206,13 +201,13 @@ async function main() {
       timeout: 15000,
     });
 
-    console.log(`📥 Devices response (code=${deviceResp.data.code})`);
+    const deviceCode = Number.isFinite(Number(deviceResp.data.code))
+      ? Number(deviceResp.data.code)
+      : "unknown";
+    console.log(`📥 Devices response (code=${deviceCode})`);
 
     const allDevices: any[] = deviceResp.data.result?.devices || [];
     console.log(`   Total devices in account: ${allDevices.length}`);
-    allDevices.forEach((d: any) =>
-      console.log(`     • ${d.deviceName} | model=${d.model} | did=${d.did}`),
-    );
 
     const devices = allDevices.filter((d: any) => d.model?.startsWith("lumi.camera"));
 
@@ -221,8 +216,7 @@ async function main() {
       process.exit(1);
     }
 
-    console.log(`\n✅ Found ${devices.length} camera(s):`);
-    devices.forEach((d: any) => console.log(`  - ${d.deviceName} (${d.did})`));
+    console.log(`\n✅ Found ${devices.length} camera(s)`);
 
     // Build .env
     let envContent = `NODE_ENV=production
@@ -243,20 +237,17 @@ LOG_LEVEL=${argv["log-level"]}
       envContent += `CAMERA_IPS=${argv["camera-ips"]}\n`;
     }
 
-    fs.writeFileSync(path.join(process.cwd(), ".env"), envContent, "utf-8");
+    const envPath = path.join(process.cwd(), ".env");
+    fs.writeFileSync(envPath, envContent, { encoding: "utf-8", mode: 0o600 });
+    fs.chmodSync(envPath, 0o600);
     console.log("✅ .env generated successfully");
   } catch (err: any) {
     if (axios.isAxiosError(err)) {
-      console.error(`\n❌ HTTP Error: ${err.message}`);
-      console.error(`   Code:    ${err.code}`);
+      const code = /^[A-Z_]{1,40}$/.test(err.code ?? "") ? err.code : "unknown";
+      console.error(`\n❌ Authentication request failed (code=${code})`);
       console.error(`   Status:  ${err.response?.status}`);
-      console.error(`   URL:     ${err.config?.url}`);
-      console.error(`   Request headers: ${JSON.stringify(err.config?.headers, null, 2)}`);
-      console.error(`   Request body:    ${err.config?.data}`);
-      console.error(`   Response body:   ${JSON.stringify(err.response?.data, null, 2)}`);
     } else {
-      console.error(`\n❌ Error: ${err.message}`);
-      console.error(err.stack);
+      console.error("\n❌ Setup failed");
     }
     process.exit(1);
   }

@@ -17,6 +17,9 @@ importers:
       dotenv:
         specifier: ^17.2.1
         version: 17.4.2
+      inquirer:
+        specifier: ^8.2.7
+        version: 8.2.7(@types/node@24.13.3)
       mqtt:
         specifier: ^5.14.0
         version: 5.15.2(supports-color@7.2.0)
@@ -45,9 +48,6 @@ importers:
       clang-format:
         specifier: ^1.8.0
         version: 1.8.0
-      inquirer:
-        specifier: ^8.2.7
-        version: 8.2.7(@types/node@24.13.3)
       oxlint:
         specifier: ^1.80.0
         version: 1.80.0
