@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.26 — Preserve the final clear video block
+
+- Leave a 16-byte selective-encryption block untouched when it ends exactly at its NAL boundary. The former inclusive bound altered the final bytes of NALs whose length is 48 modulo 160; all eight decoder-corrupt frames in two fresh P2P originals matched that boundary.
+- Keep the native worker and TypeScript fallback consistent, without changing the ChaCha20 primitive, P2P transport, source resolution, audio or camera settings.
+- Add independent fixed-vector fixtures at both sides of the first three boundaries, including adjacent NALs with different lengths and nonzero table offsets. Both implementations fail these regressions before the fix; verify native recovery, full TypeScript tests and memory sanitizers. Real post-update decoding remains a separate acceptance check.
+
 ## v1.6.25 — Preserve split audio headers inside video fragments
 
 - Keep up to 31 bytes of a possible AAC AVIO header outside the video assembler until the following DRW packet validates it. Audio inserted into a fragmented video access unit must not corrupt its bytes when the audio header itself spans packets.
