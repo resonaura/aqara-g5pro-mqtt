@@ -30,6 +30,10 @@ struct P2PPTZPayload {
     std::string action;
 };
 
+struct P2PCommandResult {
+    std::optional<int> code;
+};
+
 static std::vector<std::string> get_broadcast_ips() {
     std::vector<std::string> ips;
     struct ifaddrs* ifaddr = nullptr;
@@ -784,9 +788,22 @@ void P2PClient::dispatch_channel0(uint32_t type, const uint8_t* body, size_t bod
                 event_cb_(to_json(EventSessionReady{.did = config_.did}));
             }
         }
-    } else if (type == static_cast<uint32_t>(LumiCmdType::PTZ_RESP)) {
-        if (event_cb_)
-            event_cb_(to_json(EventPTZResponse{.did = config_.did, .body_bytes = body_len}));
+    } else if (type == static_cast<uint32_t>(LumiCmdType::PTZ_RESP) ||
+               type == static_cast<uint32_t>(LumiCmdType::PTZ_REQ)) {
+        P2PCommandResult result;
+        const bool parsed = body_len <= 1024 && !glz::read<glz::opts{.error_on_unknown_keys = false}>(result, body_str);
+        // Camera E1 returns unsupported-command errors using the request opcode.
+        // Do not mistake an echoed action or missing/invalid code for an ACK.
+        if (event_cb_ &&
+            (type == static_cast<uint32_t>(LumiCmdType::PTZ_RESP) || (parsed && result.code.has_value()))) {
+            const auto code = parsed ? result.code : std::nullopt;
+            event_cb_(
+                to_json(EventPTZResponse{.did = config_.did,
+                                         .body_bytes = body_len,
+                                         .ioctl = type,
+                                         .code = code,
+                                         .outcome = code ? (*code == 0 ? "acknowledged" : "rejected") : "unknown"}));
+        }
     } else if (type == static_cast<uint32_t>(LumiCmdType::TALKBACK_RESP)) {
         std::cerr << "[P2P-Native] Talkback channel prepared (0x100B)" << std::endl;
         if (event_cb_) {

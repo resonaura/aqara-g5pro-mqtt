@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.27 — Report camera motor rejections
+
+- Record numeric PTZ response outcomes on both 0x102B and the request opcode 0x102A, which Camera E1 uses to reject unsupported commands. A sent command is not a device acknowledgement; an acknowledgement is not proof of physical movement.
+- Keep malformed/empty replies unknown, ignore command echoes, bound diagnostic parsing and persist only opcode/code/outcome/body length. No response body or credentials enter the structured journal; rejections are warnings.
+- Reproduce the real unsupported-command reply in the native loopback fixture. P2P media and outgoing motor commands are unchanged; physical E1 movement remains unresolved and commands are never replayed.
+
 ## v1.6.26 — Preserve the final clear video block
 
 - Leave a 16-byte selective-encryption block untouched when it ends exactly at its NAL boundary. The former inclusive bound altered the final bytes of NALs whose length is 48 modulo 160; all eight decoder-corrupt frames in two fresh P2P originals matched that boundary.

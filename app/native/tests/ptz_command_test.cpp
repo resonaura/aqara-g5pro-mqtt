@@ -18,7 +18,9 @@ struct P2PClientTestAccess {
         client.set_camera_endpoint(endpoint);
     }
     static void ready(P2PClient& client, bool value) { client.session_ready_ = value; }
-    static void response(P2PClient& client) { client.dispatch_channel0(0x102B, nullptr, 0); }
+    static void response(P2PClient& client, uint32_t type = 0x102B, const std::string& body = "") {
+        client.dispatch_channel0(type, reinterpret_cast<const uint8_t*>(body.data()), body.size());
+    }
 };
 }  // namespace aqara
 
@@ -70,6 +72,22 @@ int main() {
     aqara::P2PClientTestAccess::response(client);
     assert(events.size() == 1 && events[0].find("ptz_response") != std::string::npos);
     assert(events[0].find("executed") == std::string::npos);
+    // Actual Camera E1 rejects this opcode using the request type, not 0x102B.
+    aqara::P2PClientTestAccess::response(client, 0x102A,
+                                         R"({"code":-1,"message":"unsupport cmd","token":"private-fixture"})");
+    assert(events.size() == 2);
+    assert(events.back().find("\"code\":-1") != std::string::npos);
+    assert(events.back().find("rejected") != std::string::npos);
+    assert(events.back().find("private-fixture") == std::string::npos);
+    assert(events.back().find("unsupport cmd") == std::string::npos);
+    aqara::P2PClientTestAccess::response(client, 0x102B, R"({"code":0})");
+    assert(events.size() == 3 && events.back().find("acknowledged") != std::string::npos);
+    // A command echo or malformed body is not proof of a successful response.
+    aqara::P2PClientTestAccess::response(client, 0x102A, R"({"action":"left"})");
+    aqara::P2PClientTestAccess::response(client, 0x102A, R"({"code":"0"})");
+    assert(events.size() == 3);
+    aqara::P2PClientTestAccess::response(client, 0x102B, "invalid");
+    assert(events.size() == 4 && events.back().find("unknown") != std::string::npos);
     // Talk keeps its existing binary command and never sends a PTZ body.
     client.start_talkback();
     auto count = recv(sink, packet, sizeof(packet), 0);
