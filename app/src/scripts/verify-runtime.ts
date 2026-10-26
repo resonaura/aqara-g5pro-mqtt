@@ -14,6 +14,13 @@ try {
   db.close();
 }
 execFileSync("ffmpeg", ["-version"], { stdio: "ignore", timeout: 5_000 });
+// Parse help only: verifies the real setup entrypoint without authentication,
+// writing an environment file or making a request to the vendor.
+execFileSync(process.execPath, ["dist/scripts/setup.js", "--help"], {
+  stdio: "ignore",
+  timeout: 5_000,
+});
+await import("inquirer");
 
 await new Promise<void>((resolve, reject) => {
   const engine = spawn(ensureNativeBinary(), [], { stdio: ["pipe", "pipe", "pipe"] });
@@ -49,4 +56,4 @@ await new Promise<void>((resolve, reject) => {
     else reject(new Error("Packaged native engine did not complete ready/ping/exit"));
   });
 });
-console.log("Runtime verified: SQLite, FFmpeg and packaged native IPC");
+console.log("Runtime verified: setup, SQLite, FFmpeg and packaged native IPC");

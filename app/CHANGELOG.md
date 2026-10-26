@@ -1,6 +1,14 @@
 # Changelog
 
+## v1.6.30 — Keep setup available in production
+
+- Keep Inquirer in production dependencies and load it only for interactive setup. Its previous development-only classification made the 1.6.29 HA launcher fail after production dependency pruning.
+- Check the actual setup entrypoint's help path and the interactive dependency in each final runtime image, in addition to SQLite, FFmpeg and native IPC. Help never logs in, writes configuration or contacts a camera.
+- Keep authentication diagnostics to status codes and counts: never log the password hash, account name, token prefix, signatures or request/response bodies. Restrict generated session files to their owner. Preserve saved camera settings, P2P and recordings.
+
 ## v1.6.29 — Verify the packaged engine and reduce runtime overhead
+
+Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a fresh HA launch.
 
 - Start the prebuilt native engine in source-free release images. Previously the standalone image tried to compile absent C++ sources at startup despite containing the finished engine. Reject incomplete packaged artifacts with a clear reinstall error; keep source-change rebuilding for development.
 - Build the HA add-on in a separate stage and ship only production dependencies, compiled application and native engine. Compilers, CMake, source files and development dependencies stay out of the working image.
