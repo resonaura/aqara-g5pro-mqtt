@@ -8,8 +8,10 @@ The private rotating diagnostic journal distinguishes:
 
 - `native.ptz_sent`: a valid command was dispatched to a ready session, not proof that the motor moved.
 - `native.ptz_rejected`: invalid direction, worker not ready, or camera session not ready. No command is queued.
-- `native.ptz_response`: the camera returned the motor response type 0x102B. This also does not independently prove physical movement.
+- `native.ptz_response`: a camera reply, including E1 rejections returned on request opcode 0x102A. The bounded diagnostic carries only the opcode, numeric code, body length and `acknowledged` / `rejected` / `unknown` outcome. An acknowledgement does not independently prove physical movement.
 
 Camera identifiers are hashed in the persistent journal. Ordinary native channel-0 logs include the response type and redacted body for diagnosis.
 
 Automated acceptance uses a loopback UDP peer: decrypt every directional/stop packet, check its command/channel/header/body, verify Talk remains separate, and verify invalid/not-ready commands send nothing. It never connects to a household camera. The current physical Camera E1 motor behavior still needs an attended confirmation.
+
+The user's Camera E1 currently responds to 0x102A with `code=-1` (`unsupport cmd`), so motor support remains unresolved. This is a model/protocol rejection, not a successful control operation. Do not probe guessed motor opcodes or replay commands; retain video transport and wait for a verified model-specific command path. No free-form response body is copied to the structured diagnostic journal.

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <cstdint>
+#include <optional>
 #include <glaze/glaze.hpp>
 
 namespace aqara {
@@ -76,6 +77,9 @@ struct EventPTZResponse {
     std::string event = "ptz_response";
     std::string did;
     size_t body_bytes = 0;
+    uint32_t ioctl = 0;
+    std::optional<int> code;
+    std::string outcome = "unknown";
 };
 
 struct EventTalkbackStarted {

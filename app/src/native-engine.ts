@@ -260,13 +260,19 @@ export class NativeMediaEngine extends EventEmitter {
         "decoded_age_ms",
         "direction",
         "body_bytes",
+        "ioctl",
+        "code",
+        "outcome",
       ]) {
         if (["string", "number", "boolean"].includes(typeof msg[key])) fields[key] = msg[key];
       }
       diagnostics.record(
         `native.${msg.event}`,
         fields,
-        ["unhealthy", "error", "ptz_rejected"].includes(msg.event) ? "warn" : "info",
+        ["unhealthy", "error", "ptz_rejected"].includes(msg.event) ||
+          (msg.event === "ptz_response" && msg.outcome === "rejected")
+          ? "warn"
+          : "info",
       );
     }
     if (msg.event === "ready") {
