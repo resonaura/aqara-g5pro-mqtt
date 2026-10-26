@@ -3,6 +3,8 @@
 #undef NDEBUG
 #endif
 #include <algorithm>
+#include <array>
+#include <utility>
 #include <cassert>
 #include <cstdint>
 #include <iostream>
@@ -18,7 +20,42 @@ static void put_u32_le(std::vector<uint8_t>& b, size_t offset, uint32_t value) {
     b[offset + 3] = static_cast<uint8_t>(value >> 24);
 }
 
+// Fixed all-zero ChaCha20 vector and explicit encrypted offsets keep this
+// boundary fixture independent of the production selective-decryption loop.
+static void verify_video_final_clear_block() {
+    const uint8_t zero_key[32] = {};
+    const uint8_t keystream[16] = {0x76, 0xb8, 0xe0, 0xad, 0xa0, 0xf1, 0x3d, 0x90,
+                                   0x40, 0x5d, 0x6a, 0xe5, 0x53, 0x86, 0xbd, 0x28};
+    const std::array<std::pair<size_t, std::vector<size_t>>, 9> cases = {{{47, {}},
+                                                                          {48, {}},
+                                                                          {49, {32}},
+                                                                          {207, {32}},
+                                                                          {208, {32}},
+                                                                          {209, {32, 192}},
+                                                                          {367, {32, 192}},
+                                                                          {368, {32, 192}},
+                                                                          {369, {32, 192, 352}}}};
+    for (const auto& [length, encrypted_offsets] : cases) {
+        // The first NAL ends exactly on a skipped encryption boundary; the
+        // second uses a nonzero offset and must honor its own NAL length.
+        std::vector<uint8_t> payload(25 + 48 + length, 0);
+        payload[8] = 2;
+        put_u32_le(payload, 13, 48);
+        put_u32_le(payload, 17, 48);
+        put_u32_le(payload, 21, static_cast<uint32_t>(length));
+        for (size_t i = 25; i < payload.size(); ++i)
+            payload[i] = static_cast<uint8_t>(i * 31 + 7);
+        const auto expected = payload;
+        for (const auto offset : encrypted_offsets)
+            for (size_t i = 0; i < 16; ++i)
+                payload[25 + 48 + offset + i] ^= keystream[i];
+        assert(aqara::ChaCha20::decrypt_video_payload(payload.data(), payload.size(), zero_key));
+        assert(payload == expected);
+    }
+}
+
 int main() {
+    verify_video_final_clear_block();
     uint8_t key[32];
     for (int i = 0; i < 32; ++i)
         key[i] = static_cast<uint8_t>(i + 1);

@@ -117,7 +117,9 @@ bool ChaCha20::decrypt_video_payload(uint8_t* payload, size_t len, const uint8_t
         const size_t off = read_u32_le(table + i * 8);
         const size_t nal_len = read_u32_le(table + i * 8 + 4);
 
-        for (size_t pos = 32; pos + 16 <= nal_len; pos += 160) {
+        // A block ending exactly at the NAL boundary is clear on the wire.
+        // Decrypting it corrupts every NAL whose length is 48 modulo 160.
+        for (size_t pos = 32; pos + 16 < nal_len; pos += 160) {
             const size_t abs_off = off + pos;
             for (int k = 0; k < 16; ++k) {
                 tail[abs_off + k] ^= ks[k];

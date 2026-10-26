@@ -191,3 +191,56 @@ test("decryptToAnnexB prefixes raw NALs from the camera table with start codes",
   assert.deepEqual(out.subarray(0, 4), Buffer.from([0, 0, 0, 1]));
   assert.deepEqual(out.subarray(4), nal);
 });
+
+// Fixed ChaCha20 all-zero key/nonce vector. The explicit encrypted offsets
+// exercise Aqara's final-clear-block rule independently of the decrypt loop.
+const VIDEO_KEYSTREAM = Buffer.from("76b8e0ada0f13d90405d6ae55386bd28", "hex");
+const VIDEO_BOUNDARIES: [number, number[]][] = [
+  [47, []],
+  [48, []],
+  [49, [32]],
+  [207, [32]],
+  [208, [32]],
+  [209, [32, 192]],
+  [367, [32, 192]],
+  [368, [32, 192]],
+  [369, [32, 192, 352]],
+];
+
+for (const [length, encryptedOffsets] of VIDEO_BOUNDARIES) {
+  test(`video preserves the final clear block at NAL length ${length}`, () => {
+    const d = new AqaraStreamDecryptor("00".repeat(32));
+    const plain = crypto_random(length);
+    plain[0] = 0x61;
+    const frame = Buffer.alloc(17 + length);
+    frame[8] = 1;
+    frame.writeUInt32LE(length, 13);
+    plain.copy(frame, 17);
+    for (const offset of encryptedOffsets) {
+      for (let i = 0; i < 16; i++) frame[17 + offset + i] ^= VIDEO_KEYSTREAM[i];
+    }
+    const originalFrame = Buffer.from(frame);
+    assert.deepEqual(d.decryptFrame(frame), plain);
+    assert.deepEqual(d.decryptToAnnexB(frame), Buffer.concat([Buffer.from([0, 0, 0, 1]), plain]));
+    assert.deepEqual(frame, originalFrame, "the caller's encrypted frame must stay untouched");
+  });
+}
+
+test("video applies the final-clear rule separately to adjacent NALs", () => {
+  const d = new AqaraStreamDecryptor("00".repeat(32));
+  const first = crypto_random(48);
+  const second = crypto_random(209);
+  first[0] = 0x67;
+  second[0] = 0x65;
+  const frame = Buffer.alloc(25 + first.length + second.length);
+  frame[8] = 2;
+  frame.writeUInt32LE(first.length, 13);
+  frame.writeUInt32LE(first.length, 17);
+  frame.writeUInt32LE(second.length, 21);
+  first.copy(frame, 25);
+  second.copy(frame, 25 + first.length);
+  for (const offset of [32, 192]) {
+    for (let i = 0; i < 16; i++) frame[25 + first.length + offset + i] ^= VIDEO_KEYSTREAM[i];
+  }
+  assert.deepEqual(d.decryptFrame(frame), Buffer.concat([first, second]));
+});

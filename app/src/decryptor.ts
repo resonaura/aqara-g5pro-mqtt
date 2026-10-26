@@ -148,7 +148,8 @@ function hsalsa20(sharedSecret: Buffer): Buffer {
  *   [9+N*8..]  tail: NAL units data
  *
  * Decryption: for each NAL (a=offset, b=length): XOR 16-byte blocks located at
- * positions 32, 192, 352, ... (stride 160) within the NAL, while pos + 16 <= b.
+ * positions 32, 192, 352, ... (stride 160) within the NAL, while pos + 16 < b.
+ * A block ending exactly at the NAL boundary is clear and must stay untouched.
  */
 export class AqaraStreamDecryptor extends EventEmitter {
   private keyBuf: Buffer;
@@ -281,7 +282,7 @@ export class AqaraStreamDecryptor extends EventEmitter {
       const off = table.readUInt32LE(i * 8);
       const nalLen = table.readUInt32LE(i * 8 + 4);
       if (off < 0) continue;
-      for (let pos = 32; pos + 16 <= nalLen; pos += 160) {
+      for (let pos = 32; pos + 16 < nalLen; pos += 160) {
         const abs = off + pos;
         if (abs + 16 > tail.length) break;
         for (let k = 0; k < 16; k++) tail[abs + k] ^= ks[k];
