@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.28 — Consistent add-on backups and graceful stops
+
+- Pause the add-on for the short Supervisor backup so its SQLite database, journals, settings and diagnostic files are archived consistently, including when it is already stopped. Exclude regenerable JPEG caches whose temporary files previously disappeared during tar traversal and made the add-on payload incomplete.
+- Run Node as the container entrypoint process so Supervisor's stop signal reaches the existing cleanup handler. P2P settings remain saved; the add-on resumes after a backup. This introduces a brief source interruption during backup rather than claiming uninterrupted capture.
+- Remove the unused Home Assistant configuration-directory mount. Add-on backups cover its own persistent data, without traversing unrelated HA configuration.
+
 ## v1.6.27 — Report camera motor rejections
 
 - Record numeric PTZ response outcomes on both 0x102B and the request opcode 0x102A, which Camera E1 uses to reject unsupported commands. A sent command is not a device acknowledgement; an acknowledgement is not proof of physical movement.

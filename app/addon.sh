@@ -76,4 +76,4 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 echo "🚀 Starting Aqara G5 Pro integration..."
-node dist/index.js
+exec node dist/index.js
