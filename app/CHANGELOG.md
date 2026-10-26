@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.29 — Verify the packaged engine and reduce runtime overhead
+
+- Start the prebuilt native engine in source-free release images. Previously the standalone image tried to compile absent C++ sources at startup despite containing the finished engine. Reject incomplete packaged artifacts with a clear reinstall error; keep source-change rebuilding for development.
+- Build the HA add-on in a separate stage and ship only production dependencies, compiled application and native engine. Compilers, CMake, source files and development dependencies stay out of the working image.
+- Verify SQLite's native binding, FFmpeg and the real engine's ready/ping/clean-exit cycle inside each final image before publishing. These checks never connect to cameras or send movement commands. P2P, audio and saved settings are unchanged.
+
 ## v1.6.28 — Consistent add-on backups and graceful stops
 
 - Pause the add-on for the short Supervisor backup so its SQLite database, journals, settings and diagnostic files are archived consistently, including when it is already stopped. Exclude regenerable JPEG caches whose temporary files previously disappeared during tar traversal and made the add-on payload incomplete.

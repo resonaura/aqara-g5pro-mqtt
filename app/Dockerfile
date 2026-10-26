@@ -1,32 +1,37 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base:latest
-FROM $BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-debian:bookworm
+FROM ${BUILD_FROM} AS runtime-base
 
-# Working directory
 WORKDIR /usr/src/app
 
-# Install Node.js 22.x via NodeSource, build tools, and activate pnpm
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg build-essential cmake git python3 \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs jq ffmpeg \
+# Keep HA's bashio/curl entrypoint dependencies, Node and media tools at runtime.
+RUN apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends curl ca-certificates gnupg \
+    && curl --retry 2 --connect-timeout 15 --max-time 120 -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends nodejs jq ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM runtime-base AS build
+
+RUN apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends build-essential cmake git python3 \
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable && corepack prepare pnpm@11.21.0 --activate
 
-# Copy package manifests and lockfiles for layer caching
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
-
-# Install dependencies strictly from lockfile
 RUN pnpm install --frozen-lockfile
-
-# Copy application source code
 COPY . ./
+RUN pnpm run build && pnpm run build:native && pnpm prune --prod
 
-# Build TypeScript application and native C++ engine
-RUN pnpm run build && pnpm run build:native
+FROM runtime-base
 
-# Copy entrypoint startup script and set execution permissions
-COPY addon.sh /addon.sh
-RUN chmod +x /addon.sh
+COPY --from=build /usr/src/app/package.json ./
+COPY --from=build /usr/src/app/node_modules ./node_modules
+COPY --from=build /usr/src/app/dist ./dist
+COPY --from=build /usr/src/app/native/build/aqara-streamer ./native/build/aqara-streamer
+COPY --from=build /usr/src/app/native/build/.source_hash ./native/build/.source_hash
+COPY --chmod=755 addon.sh /addon.sh
 
-# Entrypoint startup command
-CMD [ "/addon.sh" ]
+# Verify the actual production ABI and shared libraries on each target CPU.
+RUN node dist/scripts/verify-runtime.js
+
+CMD ["/addon.sh"]

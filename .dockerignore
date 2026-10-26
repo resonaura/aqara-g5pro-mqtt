@@ -7,3 +7,9 @@ app/src/scripts/test_patterns.py
 apk
 .git
 .env
+.env.*
+app/.env
+app/.env.*
+app/native/compile_commands.json
+**/*.tsbuildinfo
+**/.DS_Store

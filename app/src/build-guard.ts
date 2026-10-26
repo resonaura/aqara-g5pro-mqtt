@@ -20,6 +20,10 @@ export function getNativeDir(): string {
       return c;
     }
   }
+  // Release images contain the compiled engine, without a compiler or source tree.
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "build"))) return c;
+  }
   return candidates[0];
 }
 
@@ -54,14 +58,26 @@ export function computeSourceHash(nativeDir: string): string {
   return hash.digest("hex");
 }
 
-export function ensureNativeBinary(): string {
-  const nativeDir = getNativeDir();
+export function ensureNativeBinary(nativeDir = getNativeDir()): string {
   const buildDir = path.join(nativeDir, "build");
   const binName = process.platform === "win32" ? "aqara-streamer.exe" : "aqara-streamer";
   const binPath = path.join(buildDir, binName);
   const hashFile = path.join(buildDir, ".source_hash");
 
-  if (!fs.existsSync(nativeDir)) {
+  if (!fs.existsSync(path.join(nativeDir, "CMakeLists.txt"))) {
+    // The source hash is a build stamp here, not a hash of the absent sources.
+    // Verify the packaged artifact instead of trying to compile on the camera host.
+    let stamp = "";
+    try {
+      stamp = fs.readFileSync(hashFile, "utf8").trim();
+      if (!fs.statSync(binPath).isFile()) throw new Error("Native engine is not a file");
+      fs.accessSync(binPath, fs.constants.X_OK);
+    } catch {
+      throw new Error("Packaged native engine is missing or not executable; reinstall the image");
+    }
+    if (!/^[a-f0-9]{64}$/.test(stamp)) {
+      throw new Error("Packaged native engine build stamp is invalid; reinstall the image");
+    }
     return binPath;
   }
 
