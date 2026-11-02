@@ -168,7 +168,8 @@ export class FrameSnapshotter extends EventEmitter {
       renameSync(tmpJpgPath, this.currentPath);
       try {
         const lastLivePath = path.join(this.dataDir, "frames", `${this.slug}.last_live.jpg`);
-        copyFileSync(this.currentPath, lastLivePath);
+        copyFileSync(this.currentPath, lastLivePath + ".next");
+        renameSync(lastLivePath + ".next", lastLivePath);
       } catch {}
 
       return true;
@@ -288,7 +289,8 @@ export class FrameSnapshotter extends EventEmitter {
                   "frames",
                   `${this.slug}.last_live.jpg`,
                 );
-                copyFileSync(this.currentPath, lastLivePath);
+                copyFileSync(this.currentPath, lastLivePath + ".next");
+                renameSync(lastLivePath + ".next", lastLivePath);
               } catch {}
               completed = true;
             }

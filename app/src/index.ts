@@ -502,7 +502,8 @@ client.on("connect", async () => {
     publishP2PStreamSwitchDiscovery(client, mqttDevice);
     publishP2PRTSPDiscovery(client, mqttDevice);
     publishNativeRTSPDiscovery(client, mqttDevice);
-    publishSnapshotUrlDiscovery(client, mqttDevice);
+    httpServer.registerHausCamera(slug, p2pRtspUrl);
+    publishSnapshotUrlDiscovery(client, mqttDevice, snapshotUrl);
 
     if (supportsPtz(device.model)) {
       publishPTZDiscovery(client, mqttDevice);

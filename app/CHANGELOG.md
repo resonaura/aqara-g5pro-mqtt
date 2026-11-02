@@ -1,3 +1,8 @@
+## v1.6.31 — Haus cached-frame handoff
+
+- Keep ordinary snapshot Offline cards while providing a separate real-only JPEG route for Haus, with original capture time and stale status.
+- Advertise the capability on the existing physical-device MQTT snapshot sensor and expose an exact stream identity manifest for Generic camera detection. No extra stream, capture or Haus credentials required.
+
 # Changelog
 
 ## v1.6.30 — Keep setup available in production

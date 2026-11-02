@@ -148,13 +148,32 @@ export function publishNativeRTSPDiscovery(client: MqttClient, mqttDevice: MQTTD
 
 export const publishNativeRtspDiscovery = publishNativeRTSPDiscovery;
 
-export function publishSnapshotUrlDiscovery(client: MqttClient, mqttDevice: MQTTDevice) {
-  publishDiscoveryEntity(client, mqttDevice, {
-    domain: "sensor",
-    name: "Live Snapshot URL",
-    attr: "snapshot_url",
-    icon: "mdi:image-frame",
-  });
+export function publishSnapshotUrlDiscovery(
+  client: MqttClient,
+  mqttDevice: MQTTDevice,
+  snapshotUrl?: string,
+) {
+  publishDiscoveryEntity(
+    client,
+    mqttDevice,
+    {
+      domain: "sensor",
+      name: "Live Snapshot URL",
+      attr: "snapshot_url",
+      icon: "mdi:image-frame",
+    },
+    { json_attributes_topic: `homeassistant/sensor/${mqttDevice.id}/snapshot_url/attributes` },
+  );
+  if (snapshotUrl)
+    client.publish(
+      `homeassistant/sensor/${mqttDevice.id}/snapshot_url/attributes`,
+      JSON.stringify({
+        haus_snapshot_profile: 1,
+        haus_snapshot_provider: "aqara",
+        haus_snapshot_url: snapshotUrl + "/last-live",
+      }),
+      { retain: true },
+    );
   console.log(`🖼️ Published discovery for Snapshot URL on ${mqttDevice.name}`);
 }
 
