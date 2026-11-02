@@ -50,7 +50,11 @@ export class NativeMediaEngine extends EventEmitter {
   private pendingStarts = new Map<string, NativeSessionConfig>();
   private pendingSnapshots = new Map<
     string,
-    { resolve: (b64: string) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }
+    {
+      resolve: (frame: { data: string; capturedAt: number }) => void;
+      reject: (err: Error) => void;
+      timer: NodeJS.Timeout;
+    }
   >();
 
   public constructor(private readonly options: NativeEngineOptions = {}) {
@@ -307,7 +311,7 @@ export class NativeMediaEngine extends EventEmitter {
       if (pending) {
         clearTimeout(pending.timer);
         this.pendingSnapshots.delete(msg.did);
-        pending.resolve(msg.data_base64);
+        pending.resolve({ data: msg.data_base64, capturedAt: Number(msg.captured_at) || 0 });
       }
       this.emit("snapshot", msg.did, msg.data_base64);
     } else if (msg.event === "error") {
@@ -450,6 +454,13 @@ export class NativeMediaEngine extends EventEmitter {
   }
 
   public getSnapshot(did: string, timeoutMs = 4000): Promise<string> {
+    return this.getSnapshotFrame(did, timeoutMs).then((frame) => frame.data);
+  }
+
+  public getSnapshotFrame(
+    did: string,
+    timeoutMs = 4000,
+  ): Promise<{ data: string; capturedAt: number }> {
     return new Promise((resolve, reject) => {
       const existing = this.pendingSnapshots.get(did);
       if (existing) {

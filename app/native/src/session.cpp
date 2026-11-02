@@ -249,9 +249,9 @@ void StreamSession::send_talkback(const uint8_t* adts, size_t len) {
         client->send_talkback_frame(adts, len);
 }
 
-std::vector<uint8_t> StreamSession::get_snapshot_annexb() const {
+std::vector<uint8_t> StreamSession::get_snapshot_annexb(uint64_t* captured_at) const {
     if (rtsp_server_)
-        return rtsp_server_->get_latest_annexb();
+        return rtsp_server_->get_latest_annexb(captured_at);
     return {};
 }
 

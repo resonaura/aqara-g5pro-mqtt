@@ -79,6 +79,10 @@ int main() {
                                 .codec_id = 0x4e,
                                 .timestamp_ms = 1000};
         clock_server.broadcast_video(video);
+        uint64_t captured_at = 0, same_at = 0;
+        check(clock_server.get_latest_annexb(&captured_at) == video.annex_b_data);
+        check(captured_at > 1700000000000ULL);
+        check(clock_server.get_latest_annexb(&same_at) == video.annex_b_data && same_at == captured_at);
         const int reader = viewer(clock_server.get_port(), false, true);
         const auto first_video = timestamp(reader, 0);
         aqara::AudioFrame audio{.aac_adts_data = {0x21, 0x10}, .timestamp_ms = 1000};

@@ -1,3 +1,8 @@
+## 1.6.32 — Native snapshot capture time
+
+- Carry the actual native keyframe receive time through IPC into the dedicated Haus JPEG cache. Re-reading an unchanged keyframe never renews its age.
+- Keep generated RTSP fallback cards and unverified older caches out of the real-only handoff. Ordinary snapshot/Offline-card routes keep working.
+
 ## v1.6.31 — Haus cached-frame handoff
 
 - Keep ordinary snapshot Offline cards while providing a separate real-only JPEG route for Haus, with original capture time and stale status.

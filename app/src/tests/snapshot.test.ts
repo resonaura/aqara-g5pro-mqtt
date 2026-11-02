@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -28,6 +28,7 @@ test("native snapshots decode a real keyframe and a transient capture failure pr
     "pipe:1",
   ]);
   let called = false;
+  const capturedAt = Date.now() - 12000;
   const options = {
     slug: "fixture",
     did: "fixture",
@@ -40,7 +41,7 @@ test("native snapshots decode a real keyframe and a transient capture failure pr
     getSnapshot: async (did) => {
       called = true;
       assert.equal(did, "fixture");
-      return frame.toString("base64");
+      return { data: frame.toString("base64"), capturedAt };
     },
   });
   let failure: FrameSnapshotter | undefined;
@@ -48,6 +49,9 @@ test("native snapshots decode a real keyframe and a transient capture failure pr
     const ready = once(snapshot, "frame", { signal: AbortSignal.timeout(6000) });
     snapshot.start();
     await ready;
+    assert.ok(
+      Math.abs(statSync(join(dataDir, "frames", "fixture.haus_live.jpg")).mtimeMs - capturedAt) < 1,
+    );
     snapshot.stop();
     assert.equal(called, true);
     assert.equal(snapshot.failureCount, 0);

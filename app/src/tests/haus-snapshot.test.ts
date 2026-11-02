@@ -18,7 +18,7 @@ test("Haus endpoint returns only the real cache and preserves capture age indepe
   writeFileSync(join(directory, "garden.jpg"), "generated Offline placeholder");
   assert.equal((await fetch(base + "/api/cameras/garden/snapshot/last-live")).status, 404);
   const image = Buffer.from([255, 216, 1, 2, 255, 217]);
-  const file = join(directory, "garden.last_live.jpg");
+  const file = join(directory, "garden.haus_live.jpg");
   writeFileSync(file, image);
   utimesSync(file, 10, 10);
   const response = await fetch(base + "/api/cameras/garden/snapshot/last-live");

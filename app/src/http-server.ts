@@ -103,7 +103,7 @@ export class FrameHTTPServer {
         const lastLive = url.match(/^\/api\/cameras\/([a-zA-Z0-9_-]{1,128})\/snapshot\/last-live$/);
         if (lastLive) {
           try {
-            const file = path.join(this.framesDir, lastLive[1] + ".last_live.jpg");
+            const file = path.join(this.framesDir, lastLive[1] + ".haus_live.jpg");
             const descriptor = openSync(file, "r");
             let data: Buffer;
             let at: number;

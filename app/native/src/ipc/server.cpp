@@ -205,10 +205,11 @@ void IpcServer::handle_command(const std::string& line) {
         std::lock_guard<std::mutex> lock(sessions_mutex_);
         auto it = sessions_.find(cmd_dto.did);
         if (it != sessions_.end()) {
-            auto annexb = it->second->get_snapshot_annexb();
+            uint64_t captured_at = 0;
+            auto annexb = it->second->get_snapshot_annexb(&captured_at);
             if (!annexb.empty()) {
                 std::string b64 = base64_encode(annexb.data(), annexb.size());
-                send_event(to_json(EventSnapshot{.did = cmd_dto.did, .data_base64 = b64}));
+                send_event(to_json(EventSnapshot{.did = cmd_dto.did, .data_base64 = b64, .captured_at = captured_at}));
             } else {
                 send_event(to_json(
                     EventError{.did = cmd_dto.did, .message = "snapshot annexb not ready", .operation = "snapshot"}));

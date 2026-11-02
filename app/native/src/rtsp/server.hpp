@@ -70,7 +70,7 @@ public:
     int get_udp_video_port() const { return udp_video_port_; }
     int get_udp_audio_port() const { return udp_audio_port_; }
     const std::string& get_path() const { return path_; }
-    std::vector<uint8_t> get_latest_annexb() const;
+    std::vector<uint8_t> get_latest_annexb(uint64_t* captured_at = nullptr) const;
 
 private:
     void accept_loop();
@@ -105,6 +105,7 @@ private:
 
     std::mutex keyframe_mutex_;
     VideoFrame cached_keyframe_;
+    uint64_t snapshot_captured_at_ = 0;
     std::vector<VideoFrame> cached_gop_;
     size_t cached_gop_bytes_ = 0;
 
