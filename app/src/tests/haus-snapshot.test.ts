@@ -26,6 +26,9 @@ test("Haus endpoint returns only the real cache and preserves capture age indepe
   assert.equal(response.headers.get("x-haus-snapshot-stale"), "1");
   assert.equal(Number(response.headers.get("x-haus-snapshot-captured-at")), 10000);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), image);
+  assert.deepEqual(await fetch(base + "/frames/list").then((response) => response.json()), [
+    "garden",
+  ]);
   const manifest = (await fetch(base + "/api/haus/cameras").then((response) =>
     response.json(),
   )) as { cameras: { stream: { port: number; path: string } }[] };

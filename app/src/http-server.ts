@@ -76,7 +76,12 @@ export class FrameHTTPServer {
         if (url === "/frames/list" || url === "/frames/list/") {
           try {
             const files = readdirSync(this.framesDir).filter(
-              (f) => f.endsWith(".jpg") && statSync(path.join(this.framesDir, f)).size > 0,
+              (f) =>
+                f.endsWith(".jpg") &&
+                !f.endsWith(".last_live.jpg") &&
+                !f.endsWith(".haus_live.jpg") &&
+                !f.includes(".tmp.") &&
+                statSync(path.join(this.framesDir, f)).size > 0,
             );
             const slugs = files.map((f) => f.replace(/\.jpg$/, ""));
             res.writeHead(200, { "Content-Type": "application/json" });
