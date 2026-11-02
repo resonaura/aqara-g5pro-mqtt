@@ -201,3 +201,7 @@ pnpm run talkback:sample
 
 MIT License — Created and maintained by [resonaura](https://github.com/resonaura) and contributors.
 Contributions and pull requests are warmly welcome!
+
+### Haus snapshot handoff
+
+The normal snapshot routes keep their Offline-card fallback. Haus uses the separate `GET /api/cameras/<slug>/snapshot/last-live` route, which returns the last real cached JPEG and its original capture time in `X-Haus-Snapshot-Captured-At` (Unix milliseconds). `X-Haus-Snapshot-Profile: 1`, `X-Haus-Snapshot-Provider: aqara` and `X-Haus-Snapshot-Stale: 0|1` identify this contract. No real frame yet means 404; serving a frame does not wake or decode the camera. The existing MQTT snapshot URL sensor advertises this capability as attributes on the same physical device. `/api/haus/cameras` exposes only stream port/path and corresponding snapshot paths so Haus can identify Generic camera wrappers without guessing their names. No Haus address or credentials are configured in the bridge.

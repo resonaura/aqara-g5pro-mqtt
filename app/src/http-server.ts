@@ -12,7 +12,15 @@
  * call `start()` once; call `stop()` on application shutdown.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  openSync,
+  fstatSync,
+  closeSync,
+} from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { findFreePort } from "./ports.js";
@@ -21,6 +29,23 @@ export class FrameHTTPServer {
   private server: http.Server | null = null;
   private port: number;
   private readonly framesDir: string;
+  private readonly hausCameras = new Map<
+    string,
+    { stream: { protocol: string; port: number; path: string }; snapshotPath: string }
+  >();
+
+  public registerHausCamera(slug: string, rtspUrl: string): void {
+    const source = new URL(rtspUrl);
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(slug)) return;
+    this.hausCameras.set(slug, {
+      stream: {
+        protocol: source.protocol,
+        port: Number(source.port || 554),
+        path: source.pathname,
+      },
+      snapshotPath: `/api/cameras/${slug}/snapshot/last-live`,
+    });
+  }
 
   constructor(framesDir: string, port?: number) {
     this.framesDir = framesDir;
@@ -59,6 +84,49 @@ export class FrameHTTPServer {
           } catch {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end("[]");
+          }
+          return;
+        }
+
+        if (url === "/api/haus/cameras") {
+          res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+          res.end(
+            JSON.stringify({
+              version: 1,
+              provider: "aqara",
+              cameras: [...this.hausCameras.values()],
+            }),
+          );
+          return;
+        }
+        // Real-only cache: generated Offline cards never reach this endpoint.
+        const lastLive = url.match(/^\/api\/cameras\/([a-zA-Z0-9_-]{1,128})\/snapshot\/last-live$/);
+        if (lastLive) {
+          try {
+            const file = path.join(this.framesDir, lastLive[1] + ".last_live.jpg");
+            const descriptor = openSync(file, "r");
+            let data: Buffer;
+            let at: number;
+            try {
+              at = fstatSync(descriptor).mtimeMs;
+              data = readFileSync(descriptor);
+            } finally {
+              closeSync(descriptor);
+            }
+            if (data.length < 4 || data[0] !== 255 || data[1] !== 216) throw Error("missing_frame");
+            res.writeHead(200, {
+              "Content-Type": "image/jpeg",
+              "Cache-Control": "no-store",
+              "Content-Length": data.length,
+              "X-Haus-Snapshot-Profile": "1",
+              "X-Haus-Snapshot-Provider": "aqara",
+              "X-Haus-Snapshot-Captured-At": String(at),
+              "X-Haus-Snapshot-Stale": Date.now() - at >= 30000 ? "1" : "0",
+            });
+            res.end(data);
+          } catch {
+            res.writeHead(404);
+            res.end();
           }
           return;
         }
