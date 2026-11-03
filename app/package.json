@@ -1,11 +1,12 @@
 {
   "name": "aqara-g5pro-mqtt",
   "description": "Aqara Cameras Local RTSP & MQTT Integration",
-  "version": "1.6.33",
+  "version": "1.6.34",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "haus:pair": "node dist/scripts/haus-pair.js",
     "build:native": "tsx src/scripts/build-native.ts",
     "format": "prettier --write \"src/**/*.{ts,js,json}\"",
     "format:native": "clang-format -i native/src/**/*.cpp native/src/**/*.hpp",
@@ -36,6 +37,7 @@
   },
   "packageManager": "pnpm@11.21.0",
   "dependencies": {
+    "@haus/bridge": "https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.1/haus-bridge-0.1.1.tgz",
     "axios": "^1.11.0",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^17.2.1",

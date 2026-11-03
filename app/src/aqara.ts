@@ -198,6 +198,7 @@ export async function writeAttr(attr: string, value: any, subjectId: string): Pr
     subjectId,
     data: { [attr]: value },
   });
+  if (res.data?.code !== 0) throw Error("Aqara rejected the camera setting");
   return res.data;
 }
 

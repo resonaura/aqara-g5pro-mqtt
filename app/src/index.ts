@@ -49,6 +49,10 @@ import { loadP2PState, saveP2PState, getDataDir, getCameraState, setCameraState 
 import { StreamRecovery } from "./stream-recovery.js";
 import { closeDatabase } from "./db/data-source.js";
 import { diagnostics, cameraDiagnosticId } from "./diagnostics.js";
+import { CameraBridgeProvider } from "@haus/bridge/provider";
+import { CameraBridgeHttp } from "@haus/bridge/http";
+import { advertiseCameraBridge } from "@haus/bridge/discovery";
+import { HausPublication } from "./haus-publication.js";
 
 const journal = diagnostics.start(path.join(getDataDir(), "diagnostics"));
 journal.captureConsole();
@@ -203,6 +207,46 @@ cameraData.forEach(({ device }, idx) => {
 });
 
 const client = createMQTTClient();
+const hausProvider = await new CameraBridgeProvider({
+  directory: path.join(getDataDir(), "haus"),
+  provider: "aqara",
+  name: "Aqara Camera Bridge",
+  disableMqttWithHaus: process.env.DISABLE_MQTT_WITH_HAUS !== "false",
+}).initialize();
+const hausPublication = new HausPublication(client, hausProvider);
+const hausHttp = new CameraBridgeHttp({
+  provider: hausProvider,
+  command: async (cameraId, entityId, command) => {
+    const message = hausPublication.command({ id: cameraId }, entityId, command);
+    await executeCameraCommand(message.topic, Buffer.from(message.payload));
+  },
+});
+httpServer.setHausHandler(async (req, res) => {
+  if (req.url === "/api/haus/v2/pairing" && req.method === "POST") {
+    const address = req.socket.remoteAddress?.replace(/^::ffff:/, "");
+    if (
+      !["127.0.0.1", "::1"].includes(address ?? "") ||
+      req.headers.origin ||
+      req.headers["x-haus-client"] !== "1"
+    ) {
+      res.writeHead(403).end();
+      return true;
+    }
+    res
+      .writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" })
+      .end(JSON.stringify(hausProvider.openPairing()));
+    return true;
+  }
+  return hausHttp.handle(req, res);
+});
+let stopHausAdvertisement: (() => void) | undefined;
+try {
+  stopHausAdvertisement = advertiseCameraBridge(hausProvider.info(), httpServer.listenPort, () =>
+    console.warn("[Haus] Local discovery unavailable; use the bridge address."),
+  );
+} catch {
+  console.warn("[Haus] Local discovery unavailable; use the bridge address.");
+}
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
 const talkbackFeeds = new Map<string, { ready: boolean; queue: Buffer[] }>();
 const recoveries = new Map<string, StreamRecovery>();
@@ -487,93 +531,103 @@ rtmpServer.on("unpublish", ({ name }: { name: string }) => {
 const interval = Number(process.env.POLL_INTERVAL || 1) * 1000;
 
 // === DISCOVERY ===
-client.on("connect", async () => {
-  console.log("🚀 MQTT connected, publishing discovery...");
+async function publishCameraDefinitions() {
+  console.log("[Discovery] Refreshing camera definitions...");
 
   const savedP2pState = await loadP2PState();
 
   // Publish discovery for all cameras
-  cameraData.forEach(async ({ mqttDevice, hasSpotlight, device }, idx) => {
-    const slug = slugMap[device.did];
-    const bridgeHost = process.env.BRIDGE_HOST || getLocalIpv4();
-    const httpPort = httpServer.listenPort;
-    const p2pRtspUrl = `rtsp://${bridgeHost}:${rtspPorts[idx]}/live/${slug}`;
-    const rtmpTalkUrl = `rtmp://${bridgeHost}:${rtmpServer.listenPort}/talk/${slug}`;
-    const snapshotUrl = `http://${bridgeHost}:${httpPort}/api/cameras/${slug}/snapshot`;
+  await Promise.all(
+    cameraData.map(async ({ mqttDevice, hasSpotlight, device }, idx) => {
+      const slug = slugMap[device.did];
+      const bridgeHost = process.env.BRIDGE_HOST || getLocalIpv4();
+      const httpPort = httpServer.listenPort;
+      const p2pRtspUrl = `rtsp://${bridgeHost}:${rtspPorts[idx]}/live/${slug}`;
+      const rtmpTalkUrl = `rtmp://${bridgeHost}:${rtmpServer.listenPort}/talk/${slug}`;
+      const snapshotUrl = `http://${bridgeHost}:${httpPort}/api/cameras/${slug}/snapshot`;
 
-    ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
-    publishLightDiscovery(client, mqttDevice, hasSpotlight);
-    if (!isEntitySupported(device.model, "white_light_enable")) {
-      // Withdraw only this bridge's false historical spotlight discovery. Do
-      // not remove a supported spotlight on a temporary cloud-query failure.
-      client.publish(`homeassistant/light/${mqttDevice.id}/spotlight/config`, "", { retain: true });
-    }
-    publishSDCardDiscovery(client, mqttDevice);
-    publishMotionDiscovery(client, mqttDevice);
-    publishRTSPDiscovery(client, mqttDevice);
-    publishP2PStreamSwitchDiscovery(client, mqttDevice);
-    publishP2PRTSPDiscovery(client, mqttDevice);
-    publishNativeRTSPDiscovery(client, mqttDevice);
-    publishSnapshotUrlDiscovery(client, mqttDevice, snapshotUrl);
-
-    if (supportsPtz(device.model)) {
-      publishPTZDiscovery(client, mqttDevice);
-    }
-    publishTalkbackRTMPDiscovery(client, mqttDevice);
-    // Remove the old retained manual switch; RTMP now owns talkback lifecycle.
-    client.publish(`homeassistant/switch/${mqttDevice.id}/talkback/config`, "", { retain: true });
-
-    // Initial state from persisted disk state or active bridge
-    const isP2pOn = savedP2pState[device.did] || !!cameraData[idx].bridge;
-    client.publish(
-      `homeassistant/switch/${mqttDevice.id}/p2p_stream/state`,
-      isP2pOn ? "ON" : "OFF",
-      { retain: true },
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`,
-      isP2pOn ? p2pRtspUrl : "null",
-      { retain: true },
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice.id}/snapshot_url/state`,
-      isP2pOn ? snapshotUrl : "null",
-      { retain: true },
-    );
-    client.publish(
-      `homeassistant/sensor/${mqttDevice.id}/talkback_rtmp/state`,
-      isP2pOn ? rtmpTalkUrl : "null",
-      { retain: true },
-    );
-
-    // Query Native camera RTSP URL if available
-    try {
-      const qualities = await getCameraStreamQualities(device.did);
-      const best = pickMaxStreamQuality(qualities);
-      const nativeRtspUrl = best
-        ? `rtsp://${device.ip || getLocalIpv4()}:554/live/ch${best.channel}`
-        : "null";
-      client.publish(
-        `homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`,
-        nativeRtspUrl,
-        {
-          retain: true,
-        },
+      ENTITIES.filter((e) => isEntitySupported(device.model, e.attr)).forEach((e) =>
+        publishDiscovery(client, mqttDevice, e),
       );
-    } catch {
-      client.publish(`homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`, "null", {
-        retain: true,
-      });
-    }
+      publishLightDiscovery(client, mqttDevice, hasSpotlight);
+      if (!isEntitySupported(device.model, "white_light_enable")) {
+        // Withdraw only this bridge's false historical spotlight discovery. Do
+        // not remove a supported spotlight on a temporary cloud-query failure.
+        client.publish(`homeassistant/light/${mqttDevice.id}/spotlight/config`, "", {
+          retain: true,
+        });
+      }
+      publishSDCardDiscovery(client, mqttDevice);
+      publishMotionDiscovery(client, mqttDevice);
+      publishRTSPDiscovery(client, mqttDevice);
+      publishP2PStreamSwitchDiscovery(client, mqttDevice);
+      publishP2PRTSPDiscovery(client, mqttDevice);
+      publishNativeRTSPDiscovery(client, mqttDevice);
+      publishSnapshotUrlDiscovery(client, mqttDevice, snapshotUrl);
 
-    publishCameraDiscovery(client, mqttDevice, p2pRtspUrl);
-  });
+      if (supportsPtz(device.model)) {
+        publishPTZDiscovery(client, mqttDevice);
+      }
+      publishTalkbackRTMPDiscovery(client, mqttDevice);
+      // Remove the old retained manual switch; RTMP now owns talkback lifecycle.
+      client.publish(`homeassistant/switch/${mqttDevice.id}/talkback/config`, "", { retain: true });
+
+      // Initial state from persisted disk state or active bridge
+      const isP2pOn = savedP2pState[device.did] || !!cameraData[idx].bridge;
+      client.publish(
+        `homeassistant/switch/${mqttDevice.id}/p2p_stream/state`,
+        isP2pOn ? "ON" : "OFF",
+        { retain: true },
+      );
+      client.publish(
+        `homeassistant/sensor/${mqttDevice.id}/p2p_rtsp_stream/state`,
+        isP2pOn ? p2pRtspUrl : "null",
+        { retain: true },
+      );
+      client.publish(
+        `homeassistant/sensor/${mqttDevice.id}/snapshot_url/state`,
+        isP2pOn ? snapshotUrl : "null",
+        { retain: true },
+      );
+      client.publish(
+        `homeassistant/sensor/${mqttDevice.id}/talkback_rtmp/state`,
+        isP2pOn ? rtmpTalkUrl : "null",
+        { retain: true },
+      );
+
+      // Query Native camera RTSP URL if available
+      try {
+        const qualities = await getCameraStreamQualities(device.did);
+        const best = pickMaxStreamQuality(qualities);
+        const nativeRtspUrl = best
+          ? `rtsp://${device.ip || getLocalIpv4()}:554/live/ch${best.channel}`
+          : "null";
+        client.publish(
+          `homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`,
+          nativeRtspUrl,
+          {
+            retain: true,
+          },
+        );
+      } catch {
+        client.publish(`homeassistant/sensor/${mqttDevice.id}/native_rtsp_stream/state`, "null", {
+          retain: true,
+        });
+      }
+
+      publishCameraDiscovery(client, mqttDevice, p2pRtspUrl);
+    }),
+  );
 
   // Subscribe to control topics for all cameras
   cameraData.forEach(({ mqttDevice }) => {
     client.subscribe(`homeassistant/+/${mqttDevice.id}/+/set`);
   });
-});
+}
+client.on(
+  "connect",
+  () => void publishCameraDefinitions().catch(() => console.warn("[MQTT] Discovery retry needed")),
+);
 
 // === OPTIMISTIC STATE ===
 const stateTopic = (domain: string, deviceId: string, attr: string) =>
@@ -640,7 +694,7 @@ const handlers: Record<string, (attr: string, value: string, subjectId: string) 
     },
   };
 
-client.on("message", async (topic, msg) => {
+async function executeCameraCommand(topic: string, msg: Buffer) {
   const [_, domain, deviceId, attr] = topic.split("/");
   const value = msg.toString();
 
@@ -720,15 +774,17 @@ client.on("message", async (topic, msg) => {
   }
 
   try {
-    await optimistic(domain, deviceId, attr, value, cameraInfo);
     await handlers[domain]?.(attr, value, subjectId);
+    await optimistic(domain, deviceId, attr, value, cameraInfo);
     setTimeout(() => {
       pollSingle(attr, subjectId, cameraInfo.mqttDevice).catch(() => {});
     }, 2000);
   } catch (err) {
     console.error("❌ Command failed:", err);
+    throw err;
   }
-});
+}
+client.on("message", (topic, msg) => void executeCameraCommand(topic, msg).catch(() => {}));
 
 // === RTSP STREAM URLS (Official / cloud RTSP URL) ===
 const QUALITY_ORDER = ["1520p", "1080p", "720p", "360p"];
@@ -762,8 +818,12 @@ async function publishRTSPState(subjectId: string, cameraInfo: (typeof cameraDat
 // === POLLING ===
 const pollingCameras = new Set<string>();
 function poll(): void {
-  const attrs = ENTITIES.map((e) => e.attr).concat(["white_light_enable", "white_light_level"]);
   for (const cameraInfo of cameraData) {
+    const attrs = ENTITIES.filter((entity) =>
+      isEntitySupported(cameraInfo.device.model, entity.attr),
+    )
+      .map((entity) => entity.attr)
+      .concat(cameraInfo.hasSpotlight ? ["white_light_enable", "white_light_level"] : []);
     const did = cameraInfo.device.did;
     if (pollingCameras.has(did)) continue;
     pollingCameras.add(did);
@@ -837,9 +897,12 @@ async function publishAttr(
   if (attr === "sdcard_status") {
     try {
       const parsed = JSON.parse(rawValue);
-      const usedPercent = Math.round(
-        ((parsed.totalsize - parsed.freesize) / parsed.totalsize) * 100,
-      );
+      const total = Number(parsed.totalsize),
+        free = Number(parsed.freesize);
+      const usedPercent =
+        Number.isFinite(total) && Number.isFinite(free) && total > 0 && free >= 0 && free <= total
+          ? Math.round(((total - free) / total) * 100)
+          : null;
       client.publish(
         `homeassistant/sensor/${mqttDevice.id}/sdcard_total/state`,
         String(parsed.totalsize),
@@ -857,7 +920,7 @@ async function publishAttr(
       );
       client.publish(
         `homeassistant/sensor/${mqttDevice.id}/sdcard_percent/state`,
-        String(usedPercent),
+        usedPercent === null ? "" : String(usedPercent),
         { retain: true },
       );
     } catch {
@@ -901,6 +964,8 @@ async function shutdown(signal: string) {
     FallbackStreamManager.getInstance().stopAll();
     OfflineCardManager.getInstance().stopAll();
     httpServer.stop();
+    stopHausAdvertisement?.();
+    await hausProvider.stop();
     rtmpServer.stop();
     NativeMediaEngine.getInstance().stop();
     client.end();
@@ -934,5 +999,37 @@ const diagnosticTimer = setInterval(() => {
 diagnosticTimer.unref();
 
 // === START ===
+await publishCameraDefinitions();
+function publishHausInventory() {
+  const host = process.env.BRIDGE_HOST || getLocalIpv4();
+  hausProvider.updateInventory({
+    version: 2,
+    provider: "aqara",
+    bridgeId: hausProvider.id,
+    cameras: cameraData.map(({ device, mqttDevice }, idx) => ({
+      id: mqttDevice.id,
+      name: device.deviceName,
+      manufacturer: "Aqara",
+      model: device.originalName || device.model,
+      identifiers: mqttDevice.identifiers,
+      available: Date.now() - (lastCameraProgress.get(device.did) ?? 0) < 30000,
+      stream: {
+        url: `rtsp://${host}:${rtspPorts[idx]}/live/${slugMap[device.did]}`,
+        transport: "p2p",
+      },
+      snapshotPath: `/api/cameras/${slugMap[device.did]}/snapshot/last-live`,
+      entities: hausPublication.entities(mqttDevice.id),
+    })),
+  });
+}
+publishHausInventory();
+const hausInventoryTimer = setInterval(() => {
+  try {
+    publishHausInventory();
+  } catch {
+    console.warn("[Haus] Native inventory update unavailable");
+  }
+}, 1000);
+hausInventoryTimer.unref();
 setInterval(poll, interval);
 poll();
