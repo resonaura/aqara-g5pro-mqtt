@@ -42,6 +42,12 @@ test("native state collection survives disabled MQTT and withdraws/restores only
     client.publish(topic + "/state", JSON.stringify({ state: "ON", brightness: 128 }), {
       retain: true,
     });
+    const cameraTopic = "homeassistant/camera/camera_one/camera/config";
+    const cameraConfig = JSON.stringify({
+      unique_id: "camera_one_camera",
+      device: { identifiers: ["physical-one"] },
+    });
+    client.publish(cameraTopic, cameraConfig, { retain: true });
     const build = () => ({
       version: 2 as const,
       bridgeId: provider.id,
@@ -68,6 +74,12 @@ test("native state collection survives disabled MQTT and withdraws/restores only
     await provider.confirmNativeReady(enrolled.clientId, { revision, entities: entityKeys(value) });
     assert.equal(wire.at(-1)?.topic, topic + "/config");
     assert.equal(wire.at(-1)?.message, "");
+    assert.ok(wire.some((value) => value.topic === cameraTopic && value.message === ""));
+    assert.equal(
+      publication.entities("camera_one").length,
+      1,
+      "The camera discovery is not an extra control",
+    );
     const count = wire.length;
     now = 2000;
     client.publish(topic + "/state", JSON.stringify({ state: "OFF", brightness: 0 }), {
@@ -84,6 +96,7 @@ test("native state collection survives disabled MQTT and withdraws/restores only
       { topic: topic + "/set", payload: JSON.stringify({ state: "ON", brightness: 102 }) },
     );
     provider.setDisableMqttWithHaus(false);
+    assert.ok(wire.some((value) => value.topic === cameraTopic && value.message === cameraConfig));
     assert.ok(
       wire.some(
         (value) => value.topic === topic + "/config" && value.message.includes("Spotlight"),

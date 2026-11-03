@@ -27,6 +27,7 @@ interface Definition {
 /** One state collector feeds both protocols; MQTT suppression never stops polling or native state. */
 export class HausPublication {
   private readonly definitions = new Map<string, Definition>();
+  private readonly cameras = new Map<string, string>();
   private readonly states = new Map<string, { value: string; at: number }>();
   private readonly original: MqttClient["publish"];
   private readonly mqttPrefix = "homeassistant/";
@@ -57,6 +58,22 @@ export class HausPublication {
     client.on("connect", () => this.restore(provider.shouldPublishMqtt()));
   }
   private capture(topic: string, message: Buffer | string) {
+    if (/^homeassistant\/camera\/[a-zA-Z0-9_-]+\/camera\/config$/.test(topic)) {
+      const payload = message.toString();
+      if (!payload) this.cameras.delete(topic);
+      else {
+        try {
+          const config = JSON.parse(payload);
+          if (typeof config.unique_id !== "string" || !config.device?.identifiers) return;
+          this.cameras.set(topic, payload);
+          if (this.client.connected && !this.provider.shouldPublishMqtt())
+            this.original(topic, "", { retain: true });
+        } catch {
+          /* Ignore malformed discovery. */
+        }
+      }
+      return;
+    }
     const match =
       /^homeassistant\/(binary_sensor|sensor|switch|light|number|select|button)\/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_-]+)\/(config|state)$/.exec(
         topic,
@@ -90,6 +107,8 @@ export class HausPublication {
   }
   private restore(enabled: boolean) {
     if (!this.client.connected) return;
+    for (const [topic, payload] of this.cameras)
+      this.original(topic, enabled ? payload : "", { retain: true });
     for (const definition of this.definitions.values()) {
       this.original(definition.topic, enabled ? definition.payload : "", { retain: true });
       const state = definition.config.state_topic && this.states.get(definition.config.state_topic);
