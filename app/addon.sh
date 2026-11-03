@@ -19,6 +19,7 @@ USER_MQTT_PASS=$(jq -r '.mqtt_pass // empty' $CONFIG_PATH)
 POLL_INTERVAL=$(jq -r '.poll_interval' $CONFIG_PATH)
 LOG_LEVEL=$(jq -r '.log_level' $CONFIG_PATH)
 CAMERA_IPS=$(jq -r '.camera_ips // empty' $CONFIG_PATH)
+export DISABLE_MQTT_WITH_HAUS="$(jq -r 'if .disable_mqtt_with_haus == false then "false" else "true" end' "$CONFIG_PATH")"
 
 # Fallback to Supervisor MQTT service if not specified in options
 if [ -n "$USER_MQTT_URL" ]; then

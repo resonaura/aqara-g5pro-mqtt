@@ -1,3 +1,10 @@
+## 1.6.34 — Native Haus provider
+
+- Add the shared `@haus/bridge` native inventory, authenticated control and confirmed entity-handover interface. Advertise `_rsnra-camera._tcp` / `rsnra.aqara`; discovery alone grants no camera-control access.
+- Add `disable_mqtt_with_haus` (default on). Existing MQTT publishing continues until the enrolled Haus consumer acknowledges every native camera/entity. Users can retain MQTT alongside Haus. Native state and snapshots keep updating while MQTT publishing is suppressed; temporary disconnects/restarts do not republish duplicate legacy entities.
+- MQTT is now an optional HA service. A missing broker cannot stop native camera operation or queue full-resolution frames indefinitely. Local one-use pairing codes are available through `npm run haus:pair`; no code or device credential is advertised in mDNS.
+- Check camera setting write acknowledgements and leave unknown SD-card percentages unavailable instead of publishing `NaN`. No camera's P2P/motion/recording mode is changed automatically.
+
 ## 1.6.33 — Truthful spotlight capabilities
 
 - Do not advertise a spotlight on E1 or other unsupported camera models just because cloud responses echo generic white-light attributes. Withdraw only those unsupported historical spotlight discoveries; preserve supported lights during a temporary cloud query failure.

@@ -29,6 +29,12 @@ export class FrameHTTPServer {
   private server: http.Server | null = null;
   private port: number;
   private readonly framesDir: string;
+  private hausHandler?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
+  public setHausHandler(
+    handler: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>,
+  ): void {
+    this.hausHandler = handler;
+  }
   private readonly hausCameras = new Map<
     string,
     { stream: { protocol: string; port: number; path: string }; snapshotPath: string }
@@ -62,7 +68,16 @@ export class FrameHTTPServer {
     this.port = await findFreePort(this.port);
 
     return new Promise((resolve) => {
-      const srv = http.createServer((req, res) => {
+      const srv = http.createServer(async (req, res) => {
+        if (req.url?.startsWith("/api/haus/v2/")) {
+          try {
+            if (await this.hausHandler?.(req, res)) return;
+          } catch {
+            if (!res.headersSent) res.writeHead(503);
+            res.end();
+            return;
+          }
+        }
         const url = req.url ?? "/";
 
         // ── /health ─────────────────────────────────────────────────────────────

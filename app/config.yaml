@@ -1,7 +1,7 @@
 name: "Aqara G5 Pro Integration"
 slug: "aqara-g5pro-mqtt"
 description: "MQTT integration for Aqara G5 Pro camera via Home Assistant"
-version: "1.6.33"
+version: "1.6.34"
 changelog: "CHANGELOG.md"
 image: "ghcr.io/resonaura/aqara-g5pro-mqtt/{arch}"
 arch:
@@ -13,7 +13,7 @@ arch:
 init: false
 startup: services
 services:
-  - mqtt:need
+  - mqtt:want
 boot: auto
 backup: cold
 backup_exclude:
@@ -21,6 +21,7 @@ backup_exclude:
 host_network: true
 apparmor: true
 options:
+  disable_mqtt_with_haus: true
   username: ""
   password: ""
   area: "US"
@@ -31,6 +32,7 @@ options:
   poll_interval: 1
   log_level: "info"
 schema:
+  disable_mqtt_with_haus: bool?
   username: str
   password: str
   area: list(CN|EU|US|RU|KR|JP|AU|OTHER)
