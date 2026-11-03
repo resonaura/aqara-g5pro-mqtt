@@ -1,3 +1,8 @@
+## 1.6.33 — Truthful spotlight capabilities
+
+- Do not advertise a spotlight on E1 or other unsupported camera models just because cloud responses echo generic white-light attributes. Withdraw only those unsupported historical spotlight discoveries; preserve supported lights during a temporary cloud query failure.
+- Register the Haus real-frame source manifest independently of the MQTT broker connection. Native frame discovery remains available while MQTT is unavailable or publication is replaced by Haus.
+
 ## 1.6.32 — Native snapshot capture time
 
 - Carry the actual native keyframe receive time through IPC into the dedicated Haus JPEG cache. Re-reading an unchanged keyframe never renews its age.
@@ -150,7 +155,6 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 - Recover when P2P packets keep arriving but no complete video frame is produced; stale cached snapshots cannot hide this failure.
 - Use a monotonic recovery clock and ignore late frames from stopped snapshotters.
 
-
 ## v1.6.7 — Bounded stream recovery
 
 - Keep the requested stream state ON during camera or cloud outages; retry with fresh keys without losing cooldown retries. Manual OFF cancels in-flight work.
@@ -159,17 +163,19 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 - Keep RTP sequence/timestamp continuity across live/offline encoder transitions, bound slow readers, and drain RTSP reader threads safely.
 - Send camera session shutdown packets before closing transport; serialize native IPC events and bound cloud polling.
 
-
 ## v1.6.6 — Deterministic Camera RTSP Port Mapping, Non-Overlapping Ingest Ports & Native In-Memory IDR Snapshots
 
 ### 🎚️ Deterministic Camera Ordering & Persistent RTSP Port Mapping
+
 - **Alphabetical DID Sorting**: Cameras returned by the Aqara Cloud API (`/device/query/binding`) are now deterministically sorted by `did` (`cameras.sort((a, b) => a.did.localeCompare(b.did))`), preventing cameras from swapping RTSP ports across add-on reboots.
 - **Persistent Disk Port Map**: Port allocations are now permanently stored in `/data/rtsp_ports.json` (and SQLite database) via `writeRTSPPortMap` and reloaded on startup via `readRTSPPortMap`. Each camera retains its designated RTSP port permanently even if cloud discovery order fluctuates.
 
 ### 🔀 Isolated UDP Ingest Ports
+
 - **Non-Overlapping Fallback Ingest Channels**: Separated fallback stream UDP ingest ports per camera using `10000 + (rtspPort - rtspBasePort) * 4` (video) and `+ 2` (audio). Completely eliminated socket bind collisions where camera audio and video ingest channels previously shared UDP port 9556.
 
 ### 📸 Tuya-Style Native In-Memory Snapshots
+
 - **In-Memory IDR Keyframe Extraction**: Exposed `get_latest_annexb()` in `RTSPServer` and `get_snapshot` IPC command in the C++ native engine. The engine directly returns the latest clean Annex-B IDR keyframe from RAM.
 - **Low-Overhead Single-Frame Transcoding**: Refactored `FrameSnapshotter` to prefer native keyframe capture: decodes the cached Annex-B frame to JPEG in <50ms with a single-frame FFmpeg command without establishing continuous RTSP TCP sessions or probing the stream.
 - **Automatic Fallback**: Preserves graceful RTSP stream pull fallback if native IDR keyframes are not yet available.
@@ -177,10 +183,12 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 ## v1.6.5 — Continuous RTSP Fallback Video Stream, Watchdog Timeout Recovery & P2P IP Persistence
 
 ### 📺 Continuous RTSP Stream & Seamless Offline Fallback
+
 - **Snapshot-as-Video Fallback Stream**: Implemented continuous RTSP fallback video streaming modeled directly after `scrypted-tuya`. When a camera is offline or reconnecting, the bridge streams the Gaussian-blurred last-known live frame (`last_live.jpg`) or clean dark HUD overlay with live ticking clock (`%{pts:hms}`) and advancing RTP timestamps (1 fps) along with a silent AAC audio track over the camera's RTSP port (`rtsp://<host>:<port>/live/<slug>`).
 - **Seamless Live Handover**: Integrated native UDP ingest (`start_udp_ingest`) into the C++ `RTSPServer`. When live video keyframes arrive from the camera, the fallback process is cleanly stopped and live video seamlessly takes over without dropping the RTSP TCP session. Home Assistant, go2rtc, Scrypted, and WebRTC viewers remain connected without errors or broken streams.
 
 ### 🛡️ P2P Connection & Watchdog Recovery Hardening
+
 - **Learned Camera IP Persistence**: The camera's discovered LAN IP address is now saved in `AqaraCameraBridge` and `cameraInfo.device.ip` when `p2p_connected` fires. When reconnecting across isolated VLANs (e.g. Home Assistant on 192.168.4.x and cameras on 192.168.5.x), the bridge now reliably passes the known IP to the native engine for direct UDP punching instead of failing when LAN broadcasts cannot cross subnets.
 - **Continuous Discovery Probing**: Prevented `P2PClient::discovery_loop()` from terminating after 30s when disconnected; the discovery loop now continues probing steadily (1 probe/s) until the camera is found.
 - **Watchdog Connection Timeout Supervision**: Added `!is_connected_` supervision in C++ `watchdog_loop()`: if connection establishment exceeds 20 seconds, an `EventUnhealthy` is emitted to trigger supervisor retry.
@@ -190,22 +198,27 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 ## v1.6.4 — Dynamic Regional TUTK Master Resolution, Direct Camera IP Overrides & Shutdown Safety
 
 ### 🌐 Regional TUTK Master Server Discovery (AU / APAC / EU / KR / US)
+
 - **Dynamic `InitString` Decoding via Reverse-Engineered 54-Byte LUT**: Integrated the authentic 54-byte lookup table (`INITSTRING_LUT`) extracted from Aqara's `libPPCS_API.so` into the native C++ engine (`PPCSCipher::decode_init_string`). The bridge now automatically decrypts the regional master servers from `initStringApp` (returned by Aqara Cloud) for every camera model and region (including AU `AQARAKR`, EU, KR, CN, and US), querying the correct regional TUTK directory servers during P2P discovery instead of relying solely on hardcoded US/CN master IPs.
 - **Master Server Response Logging**: Added clear debug and trace logs when regional TUTK master servers respond with candidate WAN/LAN endpoints (`0x40` / `0x21`).
 
 ### 🔌 P2P Connection Lifecycle & Logging Fixes
+
 - **Fixed False Positive `connected to undefined:8556` Log**: Removed misleading `connected` and `rtsp_ready` event triggers on `session_started` in `AqaraCameraBridge`. `session_started` indicates that the local RTSP listening socket opened on the Home Assistant host, whereas the actual P2P tunnel to the camera only connects upon `p2p_connected`. Real camera IP and port are now strictly logged on true P2P handshakes (`[P2P Tunnel] <Camera> connected to <IP>:<PORT>`), while local socket readiness is logged as `[RTSP Server] <Camera> listening on <URL>`.
 
 ### 🛡️ Direct Camera IP Resolution & VLAN Routing
+
 - **Direct LAN IP Support**: Added `resolveCameraIp` support allowing users to explicitly configure camera LAN IPs via `CAMERA_IPS` mapping (e.g. `CAMERA_IPS="doorbell-g4=192.168.1.50"`), `CAMERA_IP_<DID>`, `CAMERA_IP_<SLUG>`, or `CAMERA_IP` for single camera setups. This enables reliable direct UDP punching for battery doorbells (like G4) and cameras located across isolated VLANs or Docker subnets where local UDP broadcast cannot cross.
 - **Home Assistant Add-on Option**: Exposed `camera_ips` in `config.yaml` options and schema and wired it through `addon.sh`.
 
 ### ⚡ Shutdown Crash Prevention
+
 - **Prevented `write EPIPE` on Process Teardown**: Handled `this.process.stdin.on("error")` and added safety checks (`this.process.stdin.writable` with `try/catch`) in `NativeMediaEngine.sendLine()`, eliminating crashes during SIGTERM / add-on stops.
 
 ## v1.6.3 — Session Phone ID Persistence, Regional Endpoints & Multi-Model Compatibility
 
 ### 🐛 Bug Fixes & Session Persistence
+
 - **Regional Cloud Endpoint Resolution**: Fixed an ES Module evaluation timing issue where `axios.create` evaluated `baseURL` before `dotenv` finished injecting `.env` variables, which inadvertently caused queries for non-US regions (e.g. `rpc-au.aqara.com`, `rpc-ger.aqara.com`, `rpc-ru.aqara.com`) to fall back to the US cloud endpoint. `api` interceptors and `AqaraCameraBridge` now dynamically resolve `AQUARA_URL` on each request and instantiation.
 - **Addon Environment Sourcing**: Updated `addon.sh` to explicitly source and export `/usr/src/app/.env` before launching the Node daemon, guaranteeing environment variables are present before module evaluation.
 - **Cloud Session Binding Persistence (`PHONE_ID`)**: Saved generated `PHONE_ID` to `.env` during `setup.ts` and loaded `process.env.PHONE_ID` in the main runtime engine. Aqara Cloud binds user authentication tokens to the specific client `phoneid`; keeping the same `PHONE_ID` across setup and daemon runs prevents token invalidation and device query rejections.
@@ -213,31 +226,37 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 - **Explicit API Error Reporting in `getCameras()`**: `getCameras()` now checks `response.code !== 0` and logs the exact Aqara API error code and message instead of silently reporting zero devices.
 
 ### 📸 Hardware & Model Support
+
 - **Aqara Smart Video Doorbell G4 (`lumi.camera.agl002` / `lumi.camera.acn005`)**: Added explicit documentation and validation for the G4 Doorbell `lumi.camera.agl002` hardware revision.
 
 ## v1.6.2 — TUTK Clean Teardown, Keyframe Throttling & Full Jitter Backoff
 
 ### 🚀 P2P Engine & Resilience Improvements
+
 - **Guaranteed Session Teardown (`0xF1 0x06 CLOSE` & `0x1004 SESSION_STOP`)**: `P2PClient::stop()` now immediately sends `0x1004 SESSION_STOP` and `PpcsMsgType::CLOSE` (`0xF1 0x06`) to the active session endpoint and static port `32108` before tearing down the UDP socket. This releases camera session slots instantly and prevents ghost session exhaustion locks on camera hardware.
 - **Hardware Encoder Protection (Keyframe Token Bucket)**: Rate-limited `0x1018 Keyframe Request` to at most once per 1500ms, preventing encoder storms and camera daemon crashes during burst packet loss.
 - **Full Jitter Exponential Backoff**: Reconnection supervisor now incorporates full random jitter into exponential backoff calculations, preventing network and cloud synchronization stampedes across multiple cameras.
 
 ### 🛡️ Unified Reconnect & Snapshot Safeguards
+
 - **Clean Snapshotter Offline Suppression**: `FrameSnapshotter` is now immediately paused and stopped when a camera enters offline reconnection mode. This completely prevents background `ffmpeg` processes from attempting to capture frames from empty/stalled streams, eliminating `Output file #0 does not contain any stream` log noise and CPU waste.
 - **Strict Keyframe-Gated Snapshot Activation**: Snapshot capture is now strictly gated on confirmed video keyframe arrival (`bridge.on("keyframe")`), rather than premature `rtsp_ready` events.
 - **Per-Camera Total Isolation**: All watchdog states, cooldown locks, reconnection attempts, and offline card renders are fully scoped per camera `did`, guaranteeing that issues or reconnections on one camera never affect or block any other camera in the system.
 
 ### 🔑 Cryptographic & Self-Healing Fixes
+
 - **Verified Fresh Key Generation**: Explicitly logs every freshly generated X25519 keypair and Aqara Cloud signature timestamp on every reconnect attempt (`bridge.reconnect()`), ensuring keys are always fresh when reviving dropped camera sessions.
 - **RTSP Server Shutdown Deadlock Fix**: Added `shutdown(server_fd_, SHUT_RDWR)` before closing server sockets in C++ `RTSPServer::stop()`, preventing `accept()` threads from blocking IPC command execution.
 - **Direct Reconnect Flow**: Standardized watchdog reconnects to directly invoke `bridge.reconnect()` for tunnel resurrection with freshly derived ChaCha20 cipher keys.
 
 ### 🩺 Self-Healing & LAN Discovery Enhancements
+
 - **Cold Rebuild Self-Healing**: Watchdog reconnection attempt #2+ now executes a full clean cold rebuild of the camera bridge, recreating fresh X25519 cryptographic keypairs, cloud signatures, and native engine state identical to an add-on restart.
 - **Cross-Subnet Direct Unicast LAN Discovery**: Discovery loop now transmits direct unicast `PUNCH` and `LAN_BROADCAST` datagrams directly to `camera_ip:32108`, guaranteeing discovery delivery across VLANs and subnets where standard UDP 255.255.255.255 broadcast is blocked by routers.
 - **Static LAN Port Preservation**: Fixed a regression where `cameraPort` was overwritten with transient UDP ports from active sessions, ensuring subsequent discovery attempts always target the camera's true static LAN listener port `32108`.
 
 ### 🩺 Offline Card & Reconnect Lifecycle Fixes
+
 - **True Video Frame Verification**: Fixed premature `keyframe` and `stream_started` event emission during P2P session setup in `bridge.ts`. The bridge now waits for actual H.264/HEVC keyframe NALs to arrive from the camera before declaring the stream online.
 - **Continuous Offline Card Ticker**: Resolved a bug where `OfflineCardManager` state was cancelled and reset to `1s` every 5 seconds. The offline card ticker now continuously renders and publishes updated elapsed seconds (`Offline for 15s`, `Offline for 45s`, etc.) throughout the entire offline period.
 - **Exponential Reconnect Backoff**: Watchdog reconnect attempts now properly increment (`attempt #1`, `attempt #2`, `attempt #3`...) with progressive cooldown intervals (`15s` $\rightarrow$ `60s`) instead of resetting back to attempt #1 immediately.
@@ -247,10 +266,12 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 ## v1.5.7 — Protocol Enums, Abbreviation Standardization & Docker PNPM Pipeline
 
 ### 📡 Strongly-Typed Protocol Enums & Documentation
+
 - **PPCS & Lumi Protocol Headers**: Extracted all magic byte codes into typed enums `PpcsMsgType` and `LumiCmdType` across C++ (`protocol.hpp`) and TypeScript (`protocol.ts`), with detailed documentation for every opcode (`0x1000` Login, `0x1001` Login OK, `0x1002`/`0x1003` Session Init, `0x100A` PTZ/Talk Start, `0x100B` Talkback Ready, `0x100C` Talk Stop, `0x100E` Resolution Switch, `0x1018` Keyframe Request, `0x101C` Stream Request).
 - **Abbreviation Standardization**: Standardized all acronyms across C++ and TypeScript to uppercase (`PPCS`, `P2P`, `RTSP`, `RTMP`, `HTTP`, `MQTT`, `PTZ`, `SD`, `AVIO`).
 
 ### 🐳 Home Assistant Supervisor & Docker Build
+
 - **Pure PNPM Containerization**: Switched `app/Dockerfile` to `corepack` with `pnpm@11.21.0` and `--frozen-lockfile` layer caching, eliminating `npm` peer-dependency resolution errors (`ERESOLVE`) on `better-sqlite3` and `typeorm`.
 - **Prebuild Approval**: Configured `pnpm-workspace.yaml` `allowBuilds: better-sqlite3: true` for prebuilt native sqlite bindings.
 - **Root Scripts Parity (DRY)**: Synchronized all workspace root npm scripts 1:1 with `app/package.json`.
@@ -259,6 +280,7 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 ## v1.5.6 — SQLite TypeORM Persistence, Oxlint Integration & Addon Build Fix
 
 ### 🗄️ SQLite3 & TypeORM Persistence Layer
+
 - **TypeORM & better-sqlite3**: Replaced file-based JSON state storage with a structured SQLite database (`storage.sqlite`) using TypeORM with `synchronize: true` (no manual migrations required).
 - **Entities**: Defined typed entities for `CameraStateEntity`, `GlobalSettingEntity`, and `RtspPortEntity`.
 - **Zero Data-Loss Auto-Migration**: Legacy `app_state.json`, `p2p_state.json`, and `rtsp_ports.json` are automatically imported into SQLite tables upon first startup.
@@ -270,6 +292,7 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 ## v1.5.5 — Stream Watchdog, Zero-Drop RTSP Resurrection, Glaze C++23 JSON & Gaussian HUD
 
 ### 🩺 Self-Healing Stream Auto-Recovery & Zero-Drop RTSP
+
 - **Complete Event Propagation Pipeline**: `NativeMediaEngine` and `AqaraCameraBridge` now properly capture, normalize, and forward `unhealthy` stall events emitted by the native C++ engine to the application watchdog loop.
 - **Persistent Exponential Auto-Retry**: If a camera experiences a Wi-Fi dropout or power cycle (resulting in initial reconnection failure), the bridge now automatically schedules retries with exponential backoff (10s $\rightarrow$ 60s) instead of abandoning the stream.
 - **Zero-Drop RTSP Preservation**: The C++ RTSP server stays alive and listening during P2P network stalls or camera Wi-Fi reconnects. Clients (Home Assistant, go2rtc, WebRTC, VLC) remain connected without TCP disconnections or broken pipes.
@@ -283,33 +306,39 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 ## v1.5.4 — Dedicated Video Stream Watchdog, Direct LAN Routing & Polling Log Deduplication
 
 ### 📹 Dedicated Video Stream Watchdog & Recovery
+
 - **Independent Video Traffic Tracking**: `P2pClient` now tracks `last_video_traffic_ms_` separately from audio traffic. Continuous audio streams (e.g. on E1 cameras) no longer mask frozen/stalled video frames.
 - **Progressive Stream Recovery**: If video traffic pauses for >6s, the native engine requests a new IDR keyframe and resends `0x101C`/`0x1002` stream start commands; after 20s of silence, it emits an `unhealthy` event to trigger full tunnel reconnect.
 - **Direct LAN IP Routing**: Automatically binds `cameraIp` and port `32108` in `ensureCameraBridge`, ensuring direct low-latency LAN communication and eliminating WAN/relay disconnects.
 - **Accurate RTSP Slug Mapping**: Bridges now explicitly set `rtspPath: live/${slug}` matching the Home Assistant entity and snapshot endpoints.
 
 ### 🧹 Polling Log Deduplication
+
 - Sensor and switch polling logs now output to the console only when attribute values change (`📊 Camera attr: oldVal ➔ newVal`), completely eliminating terminal spam during steady-state operation.
 - Reassembler periodic audio logs silenced in non-debug mode.
 
 ## v1.5.3 — Stream Health Watchdog & Home Assistant Persistent `/data` Volume
 
 ### 🩺 Stream Health Watchdog & Auto-Recovery
+
 - **Snapshot-Driven Stream Health**: `FrameSnapshotter` continuously monitors video frame capture. If 3 consecutive snapshot attempts fail (30s without valid frames) or the stream freezes, it flags the stream as unhealthy.
 - **Smart Auto-Reconnect**: Automatically restarts the P2P tunnel and RTSP pipeline for degraded cameras with intelligent cooldowns (20s backoff) to prevent thrashing.
 - **Immediate State Recovery**: Resets error counts and confirms health as soon as fresh frames arrive.
 
 ### 💾 Home Assistant OS Persistent Volume (`/data`)
+
 - **Docker / Add-on Persistence**: Dynamic data directory resolution prioritizes Home Assistant's mounted `/data` volume for `app_state.json`, `rtsp_ports.json`, and `frames/`. State is completely preserved across add-on updates and host reboots.
 - **Instant Boot Restoration**: Saved camera P2P streams are auto-restored immediately on add-on startup in parallel with MQTT connection.
 
 ## v1.5.2 — P2P State Persistence Across Reboots & Instant Stream Entities Update
 
 ### 💾 P2P Stream State Persistence
+
 - **Persistent State across Reboots**: P2P stream switch state is now stored to disk (`data/p2p_state.json`). When the Home Assistant add-on or Docker container reboots, all cameras that had P2P active automatically resume streaming without manual intervention.
 - **No Overwriting on Discovery**: Add-on boot no longer forces `OFF` over retained MQTT topics on reconnect.
 
 ### 🖼️ Real-Time Snapshot & Sensor Entity Updates
+
 - **Bridge Event Alignment**: Added missing `rtsp_ready` event dispatching in `AqaraCameraBridge` when native session starts, ensuring immediate snapshotter startup.
 - **Immediate State Synchronization**: Upon enabling P2P stream, `p2p_rtsp_stream`, `talkback_rtmp`, and `snapshot_url` sensors are immediately published to MQTT with active URLs.
 - **Immediate Snapshot Capture**: `FrameSnapshotter` captures and serves snapshots immediately as soon as the stream starts.
@@ -317,26 +346,31 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 ## v1.5.1 — Clean Inactive Entity States & Auto-Allocated HTTP Snapshot Port
 
 ### 🖼️ HTTP Snapshot Port (Default 8580 & Auto-Correction)
+
 - **Port Range Alignment**: Moved default HTTP frame snapshot server from the busy port `8080` to `8580` (within the camera `85xx` port block).
 - **Auto Port Allocation**: If `8580` (or `HTTP_PORT`) is already in use by another service, `findFreePort` automatically probes and binds to the next available free port.
 - **Localhost RTSP Ingest**: `FrameSnapshotter` connects directly to `127.0.0.1` for local frame grabbing, avoiding external LAN interface routing, firewall blocks, or hairpin NAT issues.
 
 ### 🧹 Clean `null` States for Inactive Stream Entities
+
 - **Accurate MQTT States**: When P2P stream is OFF or stopped, `p2p_rtsp_stream`, `snapshot_url`, and `talkback_rtmp` sensor states are set to `null` instead of retaining stale/inaccessible URLs.
 - **Native RTSP Sensor**: Publishes `null` when native RTSP stream URL is unavailable.
 
 ## v1.5.0 — Native C++ Streaming Engine, Zero-Drift Audio & Stream Stability
 
 ### 🚀 High-Performance Native C++ Engine (`aqara-streamer`)
+
 - **Native Pipeline**: Replaced Node.js AVIO packet reassembly, ChaCha20 decryption, and RTSP serving with a high-performance native C++17 engine (`app/native`). Zero external dependencies, pure POSIX sockets, and multi-threaded IPC.
 - **Dynamic Auto-Build**: Built-in build guard (`build-guard.ts`) automatically compiles and hashes native sources across platforms with zero configuration.
 
 ### 🔊 Zero-Drift Audio & RTSP Stability
+
 - **Audio RTP Timing Fix**: Strict RFC 3640 / RFC 6416 audio clock progression (+1024 samples per AAC frame at 16 kHz), completely resolving the 24 ms/sec drift and eliminating periodic 15–20s audio dropouts.
 - **Audio Deduplication**: Exact hardware timestamp deduplication in `AvioReassembler::process_completed_audio` to discard retransmitted PPCS audio datagrams.
 - **RTSP Parameter Keepalive**: Added `GET_PARAMETER`, `SET_PARAMETER`, and `OPTIONS` with `Session:` header to keep go2rtc, WebRTC, VLC, and FFmpeg connections alive indefinitely.
 
 ### 📹 Stream Startup & Protocol Alignment (Frida Reverse-Engineering)
+
 - **Official Handshake Sequence**: Aligned P2P handshake with official Aqara Home app captures:
   - `0x1000` (Login): Clean JSON payload with `timestamp`, `app_sign`, `app_public_key`.
   - `0x1001` (Login OK): Immediately dispatches `0x101C` (channel 3) and `0x1002` (channel 0).
@@ -345,12 +379,15 @@ Use 1.6.30 or later: 1.6.29 omitted a production setup dependency, preventing a 
 - **Watchdog Stream Stabilization**: Removed periodic `0x1002`/`0x1024` watchdog commands during active streaming (which were causing camera encoder resets and audio dropouts). Kept alive via standard `0xE0` ALIVE pings.
 
 ### 🔑 Security & Key Management
+
 - **Ephemeral X25519 Keys**: Removed static disk-cached keys (`data/keys`). Every session generates fresh ephemeral X25519 ECDH keypairs and signs them on-the-fly via cloud API.
 
 ### 🧹 Stream Cleanliness & Artifact Elimination
+
 - **Live Edge PLAY**: Removed stale 10-second GOP dumps on `PLAY`. Connecting clients immediately receive a fresh live IDR keyframe with in-band SPS/PPS, eliminating the 10-second grey macroblock smear on connect.
 
 ### 🏠 Home Assistant & Docker Support
+
 - **Multi-Arch Docker Builds**: Full support for `amd64`, `aarch64`, `armv7`, `armhf`, and `i386` architectures.
 - **Full HA Integration**: Host networking, sequential multi-camera RTSP port allocation (8555+), RTMP talkback, PTZ controls, spotlight, and motion sensors.
 
