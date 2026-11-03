@@ -104,11 +104,17 @@ export class HausPublication {
         const { config, domain, id } = definition;
         const observed = config.state_topic ? this.states.get(config.state_topic) : undefined;
         const value = observed?.value;
+        const known =
+          value !== undefined &&
+          value.trim() !== "" &&
+          !["unknown", "unavailable", "null", "undefined", "NaN", "Infinity", "-Infinity"].includes(
+            value,
+          );
         const entity: BridgeEntity = {
           id,
           name: config.name,
           domain,
-          available: !!observed && this.now() - observed.at < 60000,
+          available: !!observed && known && this.now() - observed.at < 60000,
           state: null,
           updatedAt: observed?.at ?? 0,
           writable: !!config.command_topic,
@@ -121,7 +127,7 @@ export class HausPublication {
         } else if (domain === "light") {
           entity.role = "spotlight";
           entity.brightness = !!config.brightness;
-          if (value)
+          if (known)
             try {
               const parsed = JSON.parse(value);
               entity.state = {
@@ -134,16 +140,15 @@ export class HausPublication {
               entity.available = false;
             }
         } else if (domain === "switch" || domain === "binary_sensor") {
-          entity.state = value === (config.payload_on ?? "ON");
+          entity.state = known ? value === (config.payload_on ?? "ON") : null;
           if (domain === "binary_sensor" && config.device_class === "motion")
             entity.role = "motion";
         } else if (domain === "number") {
           entity.min = config.min ?? 0;
           entity.max = config.max ?? 100;
           entity.step = config.step ?? 1;
-          entity.state =
-            value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
-        } else if (value !== undefined) {
+          entity.state = known && Number.isFinite(Number(value)) ? Number(value) : null;
+        } else if (known) {
           entity.state =
             value !== "" && Number.isFinite(Number(value)) ? Number(value) : value.slice(0, 512);
         }
