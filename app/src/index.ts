@@ -774,8 +774,8 @@ async function executeCameraCommand(topic: string, msg: Buffer) {
   }
 
   try {
-    await optimistic(domain, deviceId, attr, value, cameraInfo);
     await handlers[domain]?.(attr, value, subjectId);
+    await optimistic(domain, deviceId, attr, value, cameraInfo);
     setTimeout(() => {
       pollSingle(attr, subjectId, cameraInfo.mqttDevice).catch(() => {});
     }, 2000);
