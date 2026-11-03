@@ -1018,6 +1018,11 @@ function publishHausInventory() {
         transport: "p2p",
       },
       snapshotPath: `/api/cameras/${slugMap[device.did]}/snapshot/last-live`,
+      talkback: {
+        transport: "rtmp" as const,
+        codec: "aac" as const,
+        url: `rtmp://${host}:${rtmpServer.listenPort}/talk/${slugMap[device.did]}`,
+      },
       entities: hausPublication.entities(mqttDevice.id),
     })),
   });
