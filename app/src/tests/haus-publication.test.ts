@@ -156,6 +156,12 @@ test("native state collection survives disabled MQTT and withdraws/restores only
       true,
       "Successful quiet-scene polls keep the native motion sensor available",
     );
+    provider.setDisableMqttWithHaus(true);
+    assert.equal(provider.shouldPublishMqtt(), false);
+    await provider.releaseNative(enrolled.clientId);
+    assert.equal(provider.shouldPublishMqtt(), true);
+    assert.equal(provider.authenticate(`Bearer ${enrolled.token}`), enrolled.clientId);
+    assert.ok(wire.some((value) => value.topic === cameraTopic && value.message === cameraConfig));
   } finally {
     await provider.stop();
     await rm(directory, { recursive: true, force: true });

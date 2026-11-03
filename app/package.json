@@ -1,7 +1,7 @@
 {
   "name": "aqara-g5pro-mqtt",
   "description": "Aqara Cameras Local RTSP & MQTT Integration",
-  "version": "1.6.38",
+  "version": "1.6.39",
   "type": "module",
   "private": true,
   "scripts": {
@@ -37,7 +37,7 @@
   },
   "packageManager": "pnpm@11.21.0",
   "dependencies": {
-    "@haus/bridge": "https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.1/haus-bridge-0.1.1.tgz",
+    "@haus/bridge": "https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.4/haus-bridge-0.1.4.tgz",
     "axios": "^1.11.0",
     "better-sqlite3": "^12.11.1",
     "dotenv": "^17.2.1",
