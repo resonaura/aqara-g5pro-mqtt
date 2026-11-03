@@ -1,3 +1,8 @@
+## 1.6.35 — Native inventory freshness
+
+- Represent empty and unavailable camera readings as unavailable native values. An unknown SD-card percentage can no longer reject every inventory refresh and leave otherwise streaming cameras incorrectly offline.
+- Preserve zero as a real reading and keep MQTT publication policy, P2P sources and camera settings unchanged.
+
 ## 1.6.34 — Native Haus provider
 
 - Add the shared `@haus/bridge` native inventory, authenticated control and confirmed entity-handover interface. Advertise `_rsnra-camera._tcp` / `rsnra.aqara`; discovery alone grants no camera-control access.

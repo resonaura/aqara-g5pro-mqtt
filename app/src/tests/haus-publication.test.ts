@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MqttClient } from "mqtt";
 import { CameraBridgeProvider } from "@haus/bridge/provider";
-import { entityKeys } from "@haus/bridge/protocol";
+import { entityKeys, validateInventory } from "@haus/bridge/protocol";
 import { HausPublication } from "../haus-publication.js";
 
 test("native state collection survives disabled MQTT and withdraws/restores only owned discoveries", async () => {
@@ -92,6 +92,37 @@ test("native state collection survives disabled MQTT and withdraws/restores only
     assert.equal(wire.at(-1)?.message, JSON.stringify({ state: "OFF", brightness: 0 }));
     client.publish("unrelated/topic", "preserved");
     assert.equal(wire.at(-1)?.message, "preserved");
+    const sd = "homeassistant/sensor/camera_one/sdcard_percent";
+    const number = "homeassistant/number/camera_one/volume";
+    for (const [base, name, writable] of [
+      [sd, "SD Card Used", false],
+      [number, "Volume", true],
+    ] as const) {
+      client.publish(
+        base + "/config",
+        JSON.stringify({
+          name,
+          state_topic: base + "/state",
+          ...(writable ? { command_topic: base + "/set" } : {}),
+        }),
+      );
+      client.publish(base + "/state", "");
+    }
+    const unavailable = publication
+      .entities("camera_one")
+      .filter((entity) => entity.id !== "spotlight");
+    assert.ok(unavailable.every((entity) => entity.state === null && !entity.available));
+    assert.doesNotThrow(
+      () => provider.updateInventory(build()),
+      "An empty SD reading must not freeze the whole bridge inventory",
+    );
+    client.publish(sd + "/state", "37");
+    const recovered = publication
+      .entities("camera_one")
+      .find((entity) => entity.id === "sdcard_percent")!;
+    assert.equal(recovered.state, 37);
+    assert.equal(recovered.available, true);
+    assert.doesNotThrow(() => validateInventory(build()));
   } finally {
     await provider.stop();
     await rm(directory, { recursive: true, force: true });
