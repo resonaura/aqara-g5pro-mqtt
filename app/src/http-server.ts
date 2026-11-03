@@ -76,7 +76,12 @@ export class FrameHTTPServer {
         if (url === "/frames/list" || url === "/frames/list/") {
           try {
             const files = readdirSync(this.framesDir).filter(
-              (f) => f.endsWith(".jpg") && statSync(path.join(this.framesDir, f)).size > 0,
+              (f) =>
+                f.endsWith(".jpg") &&
+                !f.endsWith(".last_live.jpg") &&
+                !f.endsWith(".haus_live.jpg") &&
+                !f.includes(".tmp.") &&
+                statSync(path.join(this.framesDir, f)).size > 0,
             );
             const slugs = files.map((f) => f.replace(/\.jpg$/, ""));
             res.writeHead(200, { "Content-Type": "application/json" });
@@ -103,7 +108,7 @@ export class FrameHTTPServer {
         const lastLive = url.match(/^\/api\/cameras\/([a-zA-Z0-9_-]{1,128})\/snapshot\/last-live$/);
         if (lastLive) {
           try {
-            const file = path.join(this.framesDir, lastLive[1] + ".last_live.jpg");
+            const file = path.join(this.framesDir, lastLive[1] + ".haus_live.jpg");
             const descriptor = openSync(file, "r");
             let data: Buffer;
             let at: number;

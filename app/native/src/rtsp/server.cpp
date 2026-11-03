@@ -56,8 +56,10 @@ RTSPServer::~RTSPServer() {
     stop();
 }
 
-std::vector<uint8_t> RTSPServer::get_latest_annexb() const {
+std::vector<uint8_t> RTSPServer::get_latest_annexb(uint64_t* captured_at) const {
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(keyframe_mutex_));
+    if (captured_at)
+        *captured_at = snapshot_captured_at_;
     return cached_keyframe_.annex_b_data;
 }
 
@@ -278,6 +280,7 @@ void RTSPServer::hold_for_new_idr() {
     {
         std::lock_guard<std::mutex> lock(keyframe_mutex_);
         cached_keyframe_ = VideoFrame{};
+        snapshot_captured_at_ = 0;
         cached_gop_.clear();
         cached_gop_bytes_ = 0;
     }
@@ -799,6 +802,9 @@ void RTSPServer::broadcast_video(const VideoFrame& vf) {
         std::lock_guard<std::mutex> lock(keyframe_mutex_);
         if (vf.is_keyframe) {
             cached_keyframe_ = vf;
+            snapshot_captured_at_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::system_clock::now().time_since_epoch())
+                                        .count();
             cached_gop_.clear();
             cached_gop_bytes_ = 0;
         }

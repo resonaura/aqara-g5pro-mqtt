@@ -329,7 +329,7 @@ async function ensureCameraBridge(
           rtspUrl: localRtspUrl,
           dataDir: getDataDir(),
           getSnapshot: (did, timeoutMs) =>
-            NativeMediaEngine.getInstance().getSnapshot(did, timeoutMs),
+            NativeMediaEngine.getInstance().getSnapshotFrame(did, timeoutMs),
         });
         snap.on("frame", async ({ slug: frameSlug, path: framePath }) => {
           if (cameraInfo.snapshotter !== snap) return;

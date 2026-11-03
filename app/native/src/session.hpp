@@ -47,7 +47,7 @@ public:
     void start_talkback();
     void stop_talkback();
     void send_talkback(const uint8_t* adts, size_t len);
-    std::vector<uint8_t> get_snapshot_annexb() const;
+    std::vector<uint8_t> get_snapshot_annexb(uint64_t* captured_at = nullptr) const;
 
     const std::string& get_did() const { return config_.did; }
 

@@ -20,6 +20,8 @@ import {
   copyFileSync,
   writeFileSync,
   unlinkSync,
+  utimesSync,
+  linkSync,
 } from "node:fs";
 import path from "node:path";
 import { getDataDir } from "./state.js";
@@ -31,7 +33,10 @@ export interface FrameSnapshotterOptions {
   dataDir?: string;
   intervalMs?: number;
   maxConsecutiveFailures?: number;
-  getSnapshot?: (did: string, timeoutMs?: number) => Promise<string>;
+  getSnapshot?: (
+    did: string,
+    timeoutMs?: number,
+  ) => Promise<string | { data: string; capturedAt: number }>;
 }
 
 export class FrameSnapshotter extends EventEmitter {
@@ -50,7 +55,10 @@ export class FrameSnapshotter extends EventEmitter {
   private readonly dataDir: string;
   private readonly intervalMs: number;
   private readonly maxConsecutiveFailures: number;
-  private readonly getSnapshot?: (did: string, timeoutMs?: number) => Promise<string>;
+  private readonly getSnapshot?: (
+    did: string,
+    timeoutMs?: number,
+  ) => Promise<string | { data: string; capturedAt: number }>;
 
   constructor(options: FrameSnapshotterOptions) {
     super();
@@ -94,7 +102,11 @@ export class FrameSnapshotter extends EventEmitter {
   private async grabFromKeyframe(): Promise<boolean> {
     try {
       if (!this.getSnapshot) return false;
-      const b64 = await this.getSnapshot(this.did, 4000);
+      const result = await this.getSnapshot(this.did, 4000);
+      const b64 = typeof result === "string" ? result : result.data;
+      const capturedAt = typeof result === "string" ? Date.now() : result.capturedAt;
+      if (!Number.isFinite(capturedAt) || capturedAt <= 0 || capturedAt > Date.now() + 5000)
+        return false;
       if (!b64) return false;
       const annexb = Buffer.from(b64, "base64");
       if (annexb.length < 64) return false;
@@ -165,11 +177,22 @@ export class FrameSnapshotter extends EventEmitter {
         return false;
       }
 
+      utimesSync(tmpJpgPath, capturedAt / 1000, capturedAt / 1000);
       renameSync(tmpJpgPath, this.currentPath);
       try {
         const lastLivePath = path.join(this.dataDir, "frames", `${this.slug}.last_live.jpg`);
         copyFileSync(this.currentPath, lastLivePath + ".next");
+        utimesSync(lastLivePath + ".next", capturedAt / 1000, capturedAt / 1000);
         renameSync(lastLivePath + ".next", lastLivePath);
+        const hausPath = path.join(this.dataDir, "frames", this.slug + ".haus_live.jpg");
+        rmSync(hausPath + ".next", { force: true });
+        try {
+          linkSync(lastLivePath, hausPath + ".next");
+        } catch {
+          copyFileSync(lastLivePath, hausPath + ".next");
+          utimesSync(hausPath + ".next", capturedAt / 1000, capturedAt / 1000);
+        }
+        renameSync(hausPath + ".next", hausPath);
       } catch {}
 
       return true;
@@ -283,15 +306,7 @@ export class FrameSnapshotter extends EventEmitter {
           try {
             if (statSync(tempPath).size > 0) {
               renameSync(tempPath, this.currentPath);
-              try {
-                const lastLivePath = path.join(
-                  this.dataDir,
-                  "frames",
-                  `${this.slug}.last_live.jpg`,
-                );
-                copyFileSync(this.currentPath, lastLivePath + ".next");
-                renameSync(lastLivePath + ".next", lastLivePath);
-              } catch {}
+              // This path may be a generated RTSP fallback card; keep it out of the native real-only cache.
               completed = true;
             }
           } catch {}
