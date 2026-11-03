@@ -1,3 +1,7 @@
+## 1.6.37 — Retire native-owned MQTT camera discoveries
+
+- Withdraw and restore the bridge’s retained MQTT camera discovery together with its controls after confirmed native Haus ownership. Keep camera inventory separate from native control definitions. No P2P transport or physical setting changes.
+
 ## 1.6.36 — Direct native Talkback capability
 
 - Include the existing AAC/RTMP return-audio endpoint in the authenticated native camera inventory. Haus can retain the established Talkback path after legacy MQTT source sensors are removed. No source URL is advertised publicly or over mDNS.
