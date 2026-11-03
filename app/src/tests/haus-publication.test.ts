@@ -9,6 +9,8 @@ import type { MqttClient } from "mqtt";
 import { CameraBridgeProvider } from "@haus/bridge/provider";
 import { entityKeys, validateInventory } from "@haus/bridge/protocol";
 import { HausPublication } from "../haus-publication.js";
+import { processEventAttrs, publishMotionDiscovery } from "../motion.js";
+import type { MQTTDevice } from "../types.js";
 
 test("native state collection survives disabled MQTT and withdraws/restores only owned discoveries", async () => {
   const directory = await mkdtemp(join(tmpdir(), "aqara-native-publication-"));
@@ -136,6 +138,24 @@ test("native state collection survives disabled MQTT and withdraws/restores only
     assert.equal(recovered.state, 37);
     assert.equal(recovered.available, true);
     assert.doesNotThrow(() => validateInventory(build()));
+    const device = {
+      id: "camera_one",
+      name: "One",
+      identifiers: ["physical-one"],
+      manufacturer: "Aqara",
+      model: "G5 Pro",
+    } as MQTTDevice;
+    publishMotionDiscovery(client, device);
+    processEventAttrs(client, device, []);
+    now += 61000;
+    processEventAttrs(client, device, []);
+    const motion = publication.entities("camera_one").find((entity) => entity.role === "motion");
+    assert.equal(motion?.state, false);
+    assert.equal(
+      motion?.available,
+      true,
+      "Successful quiet-scene polls keep the native motion sensor available",
+    );
   } finally {
     await provider.stop();
     await rm(directory, { recursive: true, force: true });
