@@ -26,7 +26,7 @@ import {
   publishSnapshotUrlDiscovery,
   publishTalkbackRTMPDiscovery,
 } from "./discovery.js";
-import { ENTITIES } from "./entities.js";
+import { ENTITIES, isEntitySupported } from "./entities.js";
 import { FrameHTTPServer } from "./http-server.js";
 import { EVENT_ATTRS, processEventAttrs, publishMotionDiscovery } from "./motion.js";
 import { createMQTTClient } from "./mqtt.js";
@@ -133,7 +133,7 @@ function supportsPtz(model: string): boolean {
 for (let i = 0; i < cameras.length; i++) {
   const camera = cameras[i];
   const mqttDevice = aqaraDeviceToMQTT(camera);
-  const capabilities = await checkDeviceCapabilities(camera.did);
+  const capabilities = await checkDeviceCapabilities(camera.did, camera.model);
   const saved = await getCameraState(camera.did);
 
   cameraData.push({
@@ -194,6 +194,13 @@ console.log(`🎙️ Talkback RTMP ingest listening on port ${rtmpServer.listenP
 const framesDir = path.join(getDataDir(), "frames");
 const httpServer = new FrameHTTPServer(framesDir);
 await httpServer.start();
+cameraData.forEach(({ device }, idx) => {
+  const host = process.env.BRIDGE_HOST || getLocalIpv4();
+  httpServer.registerHausCamera(
+    slugMap[device.did],
+    `rtsp://${host}:${rtspPorts[idx]}/live/${slugMap[device.did]}`,
+  );
+});
 
 const client = createMQTTClient();
 const bridgeStartPromises = new Map<string, Promise<AqaraCameraBridge>>();
@@ -496,13 +503,17 @@ client.on("connect", async () => {
 
     ENTITIES.forEach((e) => publishDiscovery(client, mqttDevice, e));
     publishLightDiscovery(client, mqttDevice, hasSpotlight);
+    if (!isEntitySupported(device.model, "white_light_enable")) {
+      // Withdraw only this bridge's false historical spotlight discovery. Do
+      // not remove a supported spotlight on a temporary cloud-query failure.
+      client.publish(`homeassistant/light/${mqttDevice.id}/spotlight/config`, "", { retain: true });
+    }
     publishSDCardDiscovery(client, mqttDevice);
     publishMotionDiscovery(client, mqttDevice);
     publishRTSPDiscovery(client, mqttDevice);
     publishP2PStreamSwitchDiscovery(client, mqttDevice);
     publishP2PRTSPDiscovery(client, mqttDevice);
     publishNativeRTSPDiscovery(client, mqttDevice);
-    httpServer.registerHausCamera(slug, p2pRtspUrl);
     publishSnapshotUrlDiscovery(client, mqttDevice, snapshotUrl);
 
     if (supportsPtz(device.model)) {

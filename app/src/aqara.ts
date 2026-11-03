@@ -2,6 +2,7 @@ import axios from "axios";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { AqaraPullDevicesResponse, AqaraResponse, Device, MQTTDevice } from "./types.js";
+import { isEntitySupported } from "./entities.js";
 
 let cachedPhoneId: string | undefined;
 
@@ -162,10 +163,15 @@ export async function getCameras(): Promise<Device[]> {
 
 export async function checkDeviceCapabilities(
   subjectId: string,
+  model: string,
+  query: typeof queryAttrs = queryAttrs,
 ): Promise<{ hasSpotlight: boolean }> {
+  // Some E1 cloud responses contain generic white-light attributes even though
+  // the hardware has no spotlight. An echoed attribute is not a capability.
+  if (!isEntitySupported(model, "white_light_enable")) return { hasSpotlight: false };
   try {
     // Check spotlight capability by querying attributes
-    const res = await queryAttrs(["white_light_enable", "white_light_level"], subjectId);
+    const res = await query(["white_light_enable", "white_light_level"], subjectId);
     const hasSpotlight =
       res.result &&
       res.result.length > 0 &&
