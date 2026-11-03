@@ -1,3 +1,7 @@
+## 1.6.38 — Keep native motion healthy in quiet scenes
+
+- A successful event poll refreshes the current motion state even when no event changes. Quiet scenes and continuous movement no longer age out of native availability; failed polls still expire normally. The state collector keeps working with MQTT publication suppressed.
+
 ## 1.6.37 — Retire native-owned MQTT camera discoveries
 
 - Withdraw and restore the bridge’s retained MQTT camera discovery together with its controls after confirmed native Haus ownership. Keep camera inventory separate from native control definitions. No P2P transport or physical setting changes.

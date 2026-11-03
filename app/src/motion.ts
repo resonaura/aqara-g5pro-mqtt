@@ -67,17 +67,26 @@ export function processEventAttrs(
     lastSeen.set(key, { ts, value });
   }
 
-  if (!detected) return;
+  if (!detected) {
+    // A successful event poll confirms clear/active state even in a quiet scene.
+    // Haus collects this heartbeat before its optional MQTT publication gate.
+    client.publish(
+      `homeassistant/binary_sensor/${mqttDevice.id}/motion/state`,
+      motionOn.get(mqttDevice.id) ? "ON" : "OFF",
+      { retain: true },
+    );
+    return;
+  }
 
   const wasOn = motionOn.get(mqttDevice.id) ?? false;
   console.log(`🚶 ${mqttDevice.name} Motion=ON (${changedAttr})`);
 
   if (!wasOn) {
     motionOn.set(mqttDevice.id, true);
-    client.publish(`homeassistant/binary_sensor/${mqttDevice.id}/motion/state`, "ON", {
-      retain: true,
-    });
   }
+  client.publish(`homeassistant/binary_sensor/${mqttDevice.id}/motion/state`, "ON", {
+    retain: true,
+  });
 
   // Restart the reset timer
   const old = offTimers.get(mqttDevice.id);
