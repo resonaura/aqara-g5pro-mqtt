@@ -1,3 +1,7 @@
+## 1.6.39 — Release native HA ownership without interrupting media
+
+- Update the shared native SDK to 0.1.4. Explicit HA removal can restore MQTT publication while keeping the enrolled P2P/media controller. Temporary disconnection keeps the confirmed native owner and does not republish duplicates.
+
 ## 1.6.38 — Keep native motion healthy in quiet scenes
 
 - A successful event poll refreshes the current motion state even when no event changes. Quiet scenes and continuous movement no longer age out of native availability; failed polls still expire normally. The state collector keeps working with MQTT publication suppressed.
