@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@haus/bridge':
-        specifier: https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.0/haus-bridge-0.1.0.tgz
-        version: https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.0/haus-bridge-0.1.0.tgz
+        specifier: https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.1/haus-bridge-0.1.1.tgz
+        version: https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.1/haus-bridge-0.1.1.tgz
       axios:
         specifier: ^1.11.0
         version: 1.19.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
@@ -233,9 +233,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@haus/bridge@https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.0/haus-bridge-0.1.0.tgz':
-    resolution: {integrity: sha512-JtgylVCpxC278L+itTYCcAtodKxKt6HKy+cK6pSJsj9ca642KFQo27mneMFj5IVWJifowR+CQqAzA1ZrpGnzDQ==, tarball: https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.0/haus-bridge-0.1.0.tgz}
-    version: 0.1.0
+  '@haus/bridge@https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.1/haus-bridge-0.1.1.tgz':
+    resolution: {integrity: sha512-0wCDQW6AAjruYwCZDjoSWxv4/7J94TiKvW7r1AM8d7JmvaXLsgy8cRkb7FEuVz1x/IMzpxab54BUXTD+CdJVzg==, tarball: https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.1/haus-bridge-0.1.1.tgz}
+    version: 0.1.1
     engines: {node: '>=22.12.0'}
 
   '@inquirer/external-editor@1.0.3':
@@ -1307,7 +1307,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@haus/bridge@https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.0/haus-bridge-0.1.0.tgz':
+  '@haus/bridge@https://github.com/resonaura/haus/releases/download/haus-bridge-v0.1.1/haus-bridge-0.1.1.tgz':
     dependencies:
       bonjour-service: 1.4.4
 
