@@ -1,3 +1,8 @@
+## 1.6.36 — Direct native Talkback capability
+
+- Include the existing AAC/RTMP return-audio endpoint in the authenticated native camera inventory. Haus can retain the established Talkback path after legacy MQTT source sensors are removed. No source URL is advertised publicly or over mDNS.
+- Preserve the existing on-demand Talkback lifecycle; discovery/enrollment never starts microphone output.
+
 ## 1.6.35 — Native inventory freshness
 
 - Represent empty and unavailable camera readings as unavailable native values. An unknown SD-card percentage can no longer reject every inventory refresh and leave otherwise streaming cameras incorrectly offline.
