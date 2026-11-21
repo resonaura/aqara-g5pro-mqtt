@@ -1,3 +1,7 @@
+## 1.6.42 — Direct single-axis Camera E1 PTZ steps
+
+- Omit preset backlash-compensation flags (`x_dir` / `y_dir`) from Camera E1 `ptz_position` writes so `fun_set_ptz_post` routes directly to `motor_cruise` (`ioctl 0xc01c6d01`) without overshooting or wiggling the unused axis, and refine default pan/tilt steps to `10°` / `5°`.
+
 ## 1.6.41 — Paginate device discovery & add Camera E1 cloud PTZ
 
 - Paginate `/app/v1.0/lumi/app/position/device/query` with alphabetically signed `size` and `startIndex` parameters in both runtime discovery and `setup.ts` so accounts with more than 30 devices discover all cameras (#6, #23).
