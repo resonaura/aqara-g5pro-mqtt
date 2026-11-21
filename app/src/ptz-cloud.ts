@@ -38,8 +38,8 @@ export const E1_PTZ_PAN_MIN = -175;
 export const E1_PTZ_PAN_MAX = 175;
 export const E1_PTZ_TILT_MIN = -15;
 export const E1_PTZ_TILT_MAX = 52;
-export const E1_PTZ_PAN_STEP = 20;
-export const E1_PTZ_TILT_STEP = 10;
+export const E1_PTZ_PAN_STEP = 10;
+export const E1_PTZ_TILT_STEP = 5;
 export const E1_PTZ_CACHE_TTL_MS = 5_000;
 export const E1_PTZ_MIN_INTERVAL_MS = 250;
 
@@ -96,13 +96,12 @@ export function stepCloudPtzPosition(
 }
 
 export function formatCloudPtzPayload(position: CloudPTZPosition): string {
-  // Using x_dir=2, y_dir=2 matches E1's built-in cloud presets and routes through
-  // motor_cruise_dir (200ms cooldown) instead of motor_cruise (5s cooldown).
+  // Omitting x_dir and y_dir routes fun_set_ptz_post directly to motor_cruise
+  // (ioctl 0xc01c6d01 in mi_motor.ko), moving only the axis whose angle changed
+  // in a single step instead of motor_cruise_dir's 4-stage preset backlash routine.
   return JSON.stringify({
     x: clamp(position.x, E1_PTZ_PAN_MIN, E1_PTZ_PAN_MAX),
     y: clamp(position.y, E1_PTZ_TILT_MIN, E1_PTZ_TILT_MAX),
-    x_dir: 2,
-    y_dir: 2,
   });
 }
 

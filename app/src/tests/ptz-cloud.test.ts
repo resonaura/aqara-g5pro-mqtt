@@ -58,8 +58,8 @@ test("stepCloudPtzPosition applies E1 pan/tilt sign conventions and clamps to fi
   });
 });
 
-test("formatCloudPtzPayload uses x_dir=2, y_dir=2 for motor_cruise_dir 200ms cadence", () => {
-  assert.equal(formatCloudPtzPayload({ x: -145, y: 2 }), '{"x":-145,"y":2,"x_dir":2,"y_dir":2}');
+test("formatCloudPtzPayload omits x_dir/y_dir so motor_cruise performs a direct single-axis move", () => {
+  assert.equal(formatCloudPtzPayload({ x: -145, y: 2 }), '{"x":-145,"y":2}');
 });
 
 test("CloudPTZController serializes rapid nudges, enforces hardware cooldown, and rejects continuous actions", async () => {
@@ -93,7 +93,7 @@ test("CloudPTZController serializes rapid nudges, enforces hardware cooldown, an
         clock += ms;
       },
     },
-    { panStep: 20, tiltStep: 10, cacheTtlMs: 5_000, minIntervalMs: 250 },
+    { panStep: 10, tiltStep: 5, cacheTtlMs: 5_000, minIntervalMs: 250 },
   );
 
   // Continuous motion is rejected
@@ -109,17 +109,13 @@ test("CloudPTZController serializes rapid nudges, enforces hardware cooldown, an
   ]);
 
   assert.equal(queries, 1);
-  assert.deepEqual(r1, { moved: true, position: { x: -80, y: 0 } });
-  assert.deepEqual(r2, { moved: true, position: { x: -60, y: 0 } });
-  assert.deepEqual(r3, { moved: true, position: { x: -60, y: 10 } });
+  assert.deepEqual(r1, { moved: true, position: { x: -90, y: 0 } });
+  assert.deepEqual(r2, { moved: true, position: { x: -80, y: 0 } });
+  assert.deepEqual(r3, { moved: true, position: { x: -80, y: 5 } });
   assert.deepEqual(sleeps, [250, 250]);
   assert.deepEqual(
     writes.map((w) => w.value),
-    [
-      '{"x":-80,"y":0,"x_dir":2,"y_dir":2}',
-      '{"x":-60,"y":0,"x_dir":2,"y_dir":2}',
-      '{"x":-60,"y":10,"x_dir":2,"y_dir":2}',
-    ],
+    ['{"x":-90,"y":0}', '{"x":-80,"y":0}', '{"x":-80,"y":5}'],
   );
 
   // Stop clears cache so next move re-queries hardware position
@@ -129,7 +125,7 @@ test("CloudPTZController serializes rapid nudges, enforces hardware cooldown, an
   clock += 300;
   await controller.move("lumi.e1", "right");
   assert.equal(queries, 2);
-  assert.equal(writes.at(-1)?.value, '{"x":-120,"y":0,"x_dir":2,"y_dir":2}');
+  assert.equal(writes.at(-1)?.value, '{"x":-110,"y":0}');
 });
 
 test("CloudPTZController returns position_unavailable when camera reports no ptz_position", async () => {
