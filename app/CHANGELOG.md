@@ -1,3 +1,8 @@
+## 1.6.41 — Paginate device discovery & add Camera E1 cloud PTZ
+
+- Paginate `/app/v1.0/lumi/app/position/device/query` with alphabetically signed `size` and `startIndex` parameters in both runtime discovery and `setup.ts` so accounts with more than 30 devices discover all cameras (#6, #23).
+- Route Camera E1 (`lumi.camera.acn006` and `lumi.camera.acn007`) PTZ commands through the cloud `ptz_position` (`14.88.85`) encoder attribute with bounded degree steps, and automatically fall back to `ptz_position` at runtime if another camera rejects local P2P `0x102A` with `code=-1` (#3).
+
 ## 1.6.40 — Keep talkback working across sessions
 
 - Stop resetting the channel 2 DRW sequence counter (`talk_seq_`) when starting a new talkback session so repeated talkback sessions on the same P2P connection stay audible instead of being dropped as duplicates by the camera (#39, thanks @maxmaxme).
