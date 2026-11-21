@@ -1,3 +1,7 @@
+## 1.6.40 — Keep talkback working across sessions
+
+- Stop resetting the channel 2 DRW sequence counter (`talk_seq_`) when starting a new talkback session so repeated talkback sessions on the same P2P connection stay audible instead of being dropped as duplicates by the camera (#39, thanks @maxmaxme).
+
 ## 1.6.39 — Release native HA ownership without interrupting media
 
 - Update the shared native SDK to 0.1.4. Explicit HA removal can restore MQTT publication while keeping the enrolled P2P/media controller. Temporary disconnection keeps the confirmed native owner and does not republish duplicates.
