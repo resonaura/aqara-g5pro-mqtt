@@ -38,6 +38,7 @@ import {
   type RTSPPortEntry,
 } from "./ports.js";
 import { RTMPIngestServer } from "./rtmp.js";
+import { CloudPTZController, usesCloudPtzPosition } from "./ptz-cloud.js";
 import { assignUniqueSlugs } from "./slug.js";
 import { FrameSnapshotter } from "./snapshot.js";
 import { OfflineCardManager } from "./offline-card.js";
@@ -120,12 +121,39 @@ const cameraData: Array<{
 
 const rtspBasePort = parseInt(process.env.RTSP_PORT || "8555", 10);
 
-// PTZ-capable Aqara models (pan/tilt cameras: G3, E1, etc.). G5 Pro (agl004) / G2H / G4 are fixed.
+const cloudPtz = new CloudPTZController();
+const cloudPtzFallbackDids = new Set<string>();
+const lastP2PPtz = new Map<string, { direction: string; at: number }>();
+
+NativeMediaEngine.getInstance().on(
+  "ptz_response",
+  (did: string, info: { ioctl?: number; code?: number; outcome?: string }) => {
+    if (info?.outcome === "rejected" && info?.code === -1 && !cloudPtzFallbackDids.has(did)) {
+      cloudPtzFallbackDids.add(did);
+      const pending = lastP2PPtz.get(did);
+      lastP2PPtz.delete(did);
+      console.warn(
+        `⚠️ [PTZ] Camera ${did} rejected local P2P 0x102A (code=-1); switching to cloud ptz_position fallback`,
+      );
+      if (pending && Date.now() - pending.at < 3000) {
+        void cloudPtz.move(did, pending.direction).catch((err: any) => {
+          console.error(`❌ [PTZ] Cloud fallback move failed:`, err?.message || err);
+        });
+      }
+    }
+  },
+);
+
+// PTZ-capable Aqara models (pan/tilt cameras: G3, E1, G350, etc.). G5 Pro (agl004) / G2H / G4 are fixed.
 function supportsPtz(model: string): boolean {
   const m = (model || "").toLowerCase();
   return (
     m.includes("acn001") ||
     m.includes("acn006") ||
+    m.includes("acn007") ||
+    m.includes("agl010") ||
+    m.includes("gwpgl1") ||
+    m.includes("gwpagl01") ||
     m.includes("e1") ||
     m.includes("g3") ||
     m.includes("ptz") ||
@@ -763,11 +791,28 @@ async function executeCameraCommand(topic: string, msg: Buffer) {
   if (domain === "button" && attr.startsWith("ptz_")) {
     const dir = attr.replace(/^ptz_/, "");
     console.log(`🕹️ [PTZ] ${cameraInfo.device.deviceName} → ${dir}`);
+    if (usesCloudPtzPosition(cameraInfo.device.model) || cloudPtzFallbackDids.has(subjectId)) {
+      try {
+        const result = await cloudPtz.move(subjectId, dir);
+        if (!result.moved && result.reason && result.reason !== "bounded_step_noop") {
+          console.warn(
+            `⚠️ [PTZ] Cloud move skipped for ${cameraInfo.device.deviceName}: ${result.reason}`,
+          );
+        }
+      } catch (err: any) {
+        console.error(
+          `❌ [PTZ] Cloud move failed for ${cameraInfo.device.deviceName}:`,
+          err?.message || err,
+        );
+      }
+      return;
+    }
     if (!cameraInfo.bridge) {
       console.warn(
         `⚠️ [PTZ] P2P stream not active for ${cameraInfo.device.deviceName}; start it first`,
       );
     } else {
+      lastP2PPtz.set(subjectId, { direction: dir, at: Date.now() });
       cameraInfo.bridge.ptz(dir);
     }
     return;

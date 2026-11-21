@@ -300,6 +300,12 @@ export class NativeMediaEngine extends EventEmitter {
       this.emit("request_keyframe", msg.did);
     } else if (msg.event === "talkback_ready") {
       this.emit("talkback_ready", msg.did);
+    } else if (msg.event === "ptz_response") {
+      this.emit("ptz_response", msg.did, {
+        ioctl: msg.ioctl,
+        code: msg.code,
+        outcome: msg.outcome,
+      });
     } else if (msg.event === "session_started") {
       this.emit("session_started", msg.did, msg.rtsp_port);
     } else if (msg.event === "keyframe") {

@@ -43,6 +43,17 @@ function aqaraSign(opts: { nonce: string; time: string; token?: string; body?: s
   return md5(pre);
 }
 
+export function serializeSortedQueryParams(params: Record<string, unknown>): string {
+  return Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+}
+
+export const DEVICE_QUERY_PAGE_SIZE = 300;
+const MAX_DEVICE_QUERY_PAGES = 100;
+
 export const api = axios.create({
   timeout: 12_000,
   headers: {
@@ -63,10 +74,12 @@ api.interceptors.request.use((config) => {
   const time = Date.now().toString();
   const nonce = crypto.randomBytes(16).toString("hex").toUpperCase();
   let body = "";
-  if (config.method === "get" && config.params) {
-    body = Object.entries(config.params)
-      .map(([k, v]) => `${k}=${v}`)
-      .join("&");
+  if (
+    config.method?.toLowerCase() === "get" &&
+    config.params &&
+    typeof config.params === "object"
+  ) {
+    body = serializeSortedQueryParams(config.params as Record<string, unknown>);
   } else if (config.data && typeof config.data === "string" && config.data.length > 0) {
     body = config.data;
   } else if (config.data && typeof config.data === "object") {
@@ -130,9 +143,65 @@ export async function queryAttrs(attrs: string[], subjectId: string): Promise<Aq
   return res.data;
 }
 
-export async function getDevices(): Promise<AqaraPullDevicesResponse> {
-  const res = await api.get("/app/v1.0/lumi/app/position/device/query");
-  return res.data;
+export async function getDevices(
+  pageSize = DEVICE_QUERY_PAGE_SIZE,
+): Promise<AqaraPullDevicesResponse> {
+  const effectivePageSize = Math.max(1, Math.min(DEVICE_QUERY_PAGE_SIZE, Math.floor(pageSize)));
+  const allDevices: Device[] = [];
+  const seenDids = new Set<string>();
+  let startIndex = 0;
+  let lastResponse: AqaraPullDevicesResponse | undefined;
+  let totalCount: number | undefined;
+
+  for (let page = 0; page < MAX_DEVICE_QUERY_PAGES; page++) {
+    const res = await api.get<AqaraPullDevicesResponse>(
+      "/app/v1.0/lumi/app/position/device/query",
+      {
+        params: { size: effectivePageSize, startIndex },
+      },
+    );
+    const data = res.data;
+    lastResponse = data;
+
+    if (data?.code !== 0 || !data.result || !Array.isArray(data.result.devices)) {
+      return data;
+    }
+
+    const batch = data.result.devices;
+    if (typeof data.result.count === "number" && Number.isFinite(data.result.count)) {
+      totalCount = data.result.count;
+    }
+
+    let added = 0;
+    for (const device of batch) {
+      if (device?.did) {
+        if (seenDids.has(device.did)) continue;
+        seenDids.add(device.did);
+      }
+      allDevices.push(device);
+      added++;
+    }
+
+    startIndex += batch.length;
+
+    if (batch.length === 0 || added === 0) {
+      break;
+    }
+    if (totalCount !== undefined) {
+      if (startIndex >= totalCount) break;
+    } else if (batch.length < effectivePageSize) {
+      break;
+    }
+  }
+
+  return {
+    ...lastResponse!,
+    result: {
+      ...lastResponse!.result,
+      devices: allDevices,
+      count: totalCount ?? allDevices.length,
+    },
+  };
 }
 
 export async function getDevice(id: string): Promise<Device> {

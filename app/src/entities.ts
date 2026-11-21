@@ -135,7 +135,14 @@ export function isEntitySupported(model: string, attr: string): boolean {
 
   // PTZ-only attributes
   if (attr === "ptz_cruise" || attr === "humans_track" || attr.startsWith("ptz_")) {
-    return isE1 || m.includes("g3") || m.includes("ptz");
+    return (
+      isE1 ||
+      m.includes("g3") ||
+      m.includes("gwpgl1") ||
+      m.includes("gwpagl01") ||
+      m.includes("agl010") ||
+      m.includes("ptz")
+    );
   }
 
   // Outdoor G5 Pro / Advanced AI & PIR specific attributes

@@ -186,27 +186,72 @@ async function main() {
     const userId = resp.data.result.userId;
     console.log(`\n✅ Login success`);
 
-    // Get device list
+    // Get full device list (Aqara defaults to 30 devices when size/startIndex are omitted)
     console.log("\n📋 Fetching device list...");
-    const devTime = Date.now().toString();
-    const devNonce = crypto.randomBytes(16).toString("hex").toUpperCase();
-    const deviceResp = await axios.get(`${server}/app/v1.0/lumi/app/position/device/query`, {
-      headers: {
-        ...baseHeaders,
-        Token: token,
-        Time: devTime,
-        Nonce: devNonce,
-        Sign: aqaraSign({ nonce: devNonce, time: devTime, token }),
-      },
-      timeout: 15000,
-    });
+    const DEVICE_PAGE_SIZE = 300;
+    const MAX_DEVICE_PAGES = 100;
+    const allDevices: any[] = [];
+    const seenDids = new Set<string>();
+    let startIndex = 0;
+    let totalCount: number | undefined;
+    let deviceCode: number | "unknown" = "unknown";
 
-    const deviceCode = Number.isFinite(Number(deviceResp.data.code))
-      ? Number(deviceResp.data.code)
-      : "unknown";
+    for (let page = 0; page < MAX_DEVICE_PAGES; page++) {
+      const devTime = Date.now().toString();
+      const devNonce = crypto.randomBytes(16).toString("hex").toUpperCase();
+      const query = `size=${DEVICE_PAGE_SIZE}&startIndex=${startIndex}`;
+      const deviceResp = await axios.get(
+        `${server}/app/v1.0/lumi/app/position/device/query?${query}`,
+        {
+          headers: {
+            ...baseHeaders,
+            Token: token,
+            ...(userId ? { Userid: userId } : {}),
+            Time: devTime,
+            Nonce: devNonce,
+            Sign: aqaraSign({ nonce: devNonce, time: devTime, token, body: query }),
+          },
+          timeout: 15000,
+        },
+      );
+
+      deviceCode = Number.isFinite(Number(deviceResp.data?.code))
+        ? Number(deviceResp.data.code)
+        : "unknown";
+      if (deviceResp.data?.code !== 0) {
+        break;
+      }
+
+      const batch: any[] = Array.isArray(deviceResp.data?.result?.devices)
+        ? deviceResp.data.result.devices
+        : [];
+      if (typeof deviceResp.data?.result?.count === "number") {
+        totalCount = deviceResp.data.result.count;
+      }
+
+      let added = 0;
+      for (const device of batch) {
+        if (device?.did) {
+          if (seenDids.has(device.did)) continue;
+          seenDids.add(device.did);
+        }
+        allDevices.push(device);
+        added++;
+      }
+
+      startIndex += batch.length;
+
+      if (batch.length === 0 || added === 0) {
+        break;
+      }
+      if (totalCount !== undefined) {
+        if (startIndex >= totalCount) break;
+      } else if (batch.length < DEVICE_PAGE_SIZE) {
+        break;
+      }
+    }
+
     console.log(`📥 Devices response (code=${deviceCode})`);
-
-    const allDevices: any[] = deviceResp.data.result?.devices || [];
     console.log(`   Total devices in account: ${allDevices.length}`);
 
     const devices = allDevices.filter((d: any) => d.model?.startsWith("lumi.camera"));
