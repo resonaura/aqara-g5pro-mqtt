@@ -400,7 +400,9 @@ void P2PClient::start_talkback() {
     if (!is_connected_)
         return;
     std::cerr << "[P2P-Native] Sending 0x100A startTalk to " << config_.did << std::endl;
-    talk_seq_ = 0;
+    // Keep talk_seq_ running across talk sessions: DRW channel 2 is reliable per P2P
+    // session, so the camera drops sequence numbers it has already seen, and a reset
+    // silences every later talk session until it outgrows the longest earlier one.
     talk_frames_sent_ = 0;
     auto frame = PPCSCipher::build_lumi_frame(LumiCmdType::TALK_START, nullptr, 0, cmd_seq_++);
     send_enc_drw(0, ch0_seq_++, frame.data(), frame.size());
